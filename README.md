@@ -32,7 +32,26 @@ GMAIL_APP_PASSWORD=sua-senha-de-app
 EMAIL_TEST_RECIPIENT=sgtambrosio2019@gmail.com
 ```
 
-Enquanto `EMAIL_TEST_RECIPIENT` estiver definido, todos os avisos e oficios sao redirecionados para esse e-mail de teste. A rotina automatica verifica os prazos configurados e evita reenviar o mesmo e-mail no mesmo dia.
+O remetente usa `GMAIL_USER`. O destinatario dos oficios e o e-mail cadastrado no fornecedor do empenho; `EMAIL_TEST_RECIPIENT` fica apenas como referencia de simulacao/configuracao local. A rotina automatica verifica os prazos configurados e evita reenviar o mesmo e-mail no mesmo dia.
+
+## Prontidao para producao
+
+Itens ja aplicados:
+
+- `.env` protegido por `.gitignore`; use `.env.example` como referencia sem segredos reais.
+- Escrita do `data/store.json` serializada e atomica, reduzindo risco de corrupcao enquanto a migracao para banco nao acontece.
+- Endpoint `/health` com checagem de storage, configuracao de e-mail e scheduler.
+- Logs estruturados em JSON para falhas de request e rotina de e-mail.
+- Historico de e-mail com chave de idempotencia, tentativas, erro e data de envio.
+- Retry simples para falhas transientes de SMTP.
+
+Pendencias antes de producao real:
+
+- Migrar `data/store.json` para PostgreSQL gerenciado.
+- Mover uploads para storage persistente/externo.
+- Substituir Gmail SMTP por provedor transacional ou documentar monitoramento/rotacao da senha de app.
+- Endurecer sessoes, expirar tokens e ampliar RBAC.
+- Criar Dockerfile/CI/CD e monitor externo para `/health`.
 
 ## O que este início já cobre
 

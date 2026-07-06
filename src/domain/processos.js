@@ -86,6 +86,7 @@ export function isPublicConsultation(method = "", pathname = "") {
   if (String(method).toUpperCase() !== "GET") return false;
   return [
     /^\/api\/meta$/,
+    /^\/health$/,
     /^\/api\/dashboard$/,
     /^\/api\/dashboard\/execucao-mensal$/,
     /^\/api\/dashboard\/distribuicao-status$/,

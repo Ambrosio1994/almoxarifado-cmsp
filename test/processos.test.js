@@ -166,6 +166,7 @@ describe("regras de processo", () => {
   it("libera consultas publicas e exige autenticacao em alteracoes", () => {
     assert.equal(isPublicConsultation("GET", "/api/processes"), true);
     assert.equal(isPublicConsultation("GET", "/api/dashboard"), true);
+    assert.equal(isPublicConsultation("GET", "/health"), true);
     assert.equal(isPublicConsultation("POST", "/api/processes"), false);
     assert.equal(mutationRequiresAuthenticatedUser("GET"), false);
     assert.equal(mutationRequiresAuthenticatedUser("POST"), true);

@@ -83,6 +83,11 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    if (url.pathname === "/health") {
+      await handleHealth(res);
+      return;
+    }
+
     if (url.pathname.startsWith("/uploads/")) {
       await serveUpload(res, url.pathname);
       return;
@@ -90,6 +95,7 @@ const server = createServer(async (req, res) => {
 
     await serveStatic(res, url.pathname);
   } catch (error) {
+    logError("request_error", { message: error.message, stack: error.stack });
     sendJson(res, 500, { error: "Erro interno do servidor", details: error.message });
   }
 });
@@ -1082,6 +1088,34 @@ function sendText(res, statusCode, payload) {
   res.end(payload);
 }
 
+async function handleHealth(res) {
+  const checks = {
+    storage: false,
+    emailConfigured: Boolean(GMAIL_USER && GMAIL_APP_PASSWORD),
+    schedulerRunning: emailSchedulerRunning
+  };
+  try {
+    const store = await readStore();
+    checks.storage = Boolean(store && typeof store === "object");
+  } catch (error) {
+    checks.storageError = error.message;
+  }
+  const ok = checks.storage && checks.emailConfigured && checks.schedulerRunning;
+  sendJson(res, ok ? 200 : 503, {
+    ok,
+    checks,
+    checkedAt: new Date().toISOString()
+  });
+}
+
+function logInfo(event, data = {}) {
+  console.log(JSON.stringify({ level: "info", event, at: new Date().toISOString(), ...data }));
+}
+
+function logError(event, data = {}) {
+  console.error(JSON.stringify({ level: "error", event, at: new Date().toISOString(), ...data }));
+}
+
 function emailStatusPayload() {
   return {
     enabled: Boolean(GMAIL_USER && GMAIL_APP_PASSWORD),
@@ -1100,12 +1134,12 @@ function startEmailScheduler() {
   emailSchedulerRunning = true;
   setTimeout(() => {
     runDueEmailNotifications().catch((error) => {
-      console.error("Falha ao executar rotina de e-mails:", error.message);
+      logError("email_scheduler_failed", { message: error.message });
     });
   }, 10_000);
   setInterval(() => {
     runDueEmailNotifications().catch((error) => {
-      console.error("Falha ao executar rotina de e-mails:", error.message);
+      logError("email_scheduler_failed", { message: error.message });
     });
   }, EMAIL_CHECK_INTERVAL_MS);
 }
@@ -1153,7 +1187,7 @@ async function runDueEmailNotifications(options = {}) {
 
     const email = await buildNotificationEmail(candidate, recipients, testRecipient);
     try {
-      await sendSmtpMail(email);
+      const sendResult = await sendSmtpMailWithRetry(email);
       const entry = {
         id: crypto.randomUUID(),
         dedupeKey,
@@ -1165,11 +1199,19 @@ async function runDueEmailNotifications(options = {}) {
         destinatarios: recipients,
         assunto: email.subject,
         status: "enviado",
+        tentativas: sendResult.attempts,
         modoTeste: Boolean(testRecipient),
+        enviadoEm: new Date().toISOString(),
         criadoEm: new Date().toISOString()
       };
       history.unshift(entry);
       result.sent.push(entry);
+      logInfo("email_sent", {
+        processoId: candidate.processo.id,
+        tipo: candidate.tipo,
+        destinatarios: recipients.length,
+        tentativas: sendResult.attempts
+      });
     } catch (error) {
       const entry = {
         id: crypto.randomUUID(),
@@ -1182,12 +1224,21 @@ async function runDueEmailNotifications(options = {}) {
         destinatarios: recipients,
         assunto: email.subject,
         status: "erro",
+        tentativas: error.attempts || 1,
         erro: error.message,
+        ultimoErro: error.message,
         modoTeste: Boolean(testRecipient),
         criadoEm: new Date().toISOString()
       };
       history.unshift(entry);
       result.failed.push(entry);
+      logError("email_failed", {
+        processoId: candidate.processo.id,
+        tipo: candidate.tipo,
+        destinatarios: recipients.length,
+        tentativas: entry.tentativas,
+        message: error.message
+      });
     }
   }
 
@@ -1354,6 +1405,35 @@ async function sendSmtpMail(message) {
   } finally {
     await client.quit().catch(() => null);
   }
+}
+
+async function sendSmtpMailWithRetry(message, maxAttempts = 3) {
+  let lastError;
+  let attempts = 0;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    attempts = attempt;
+    try {
+      await sendSmtpMail(message);
+      return { attempts: attempt };
+    } catch (error) {
+      lastError = error;
+      if (!isTransientEmailError(error) || attempt === maxAttempts) break;
+      await delay(1000 * attempt * attempt);
+    }
+  }
+  lastError.attempts = lastError.attempts || attempts;
+  throw lastError;
+}
+
+function isTransientEmailError(error = {}) {
+  const message = String(error.message || "");
+  if (/SMTP (53[045]|55[0-9])/.test(message)) return false;
+  if (/Application-specific password required|InvalidSecondFactor|Authentication/i.test(message)) return false;
+  return /SMTP (4\d\d|421|450|451|452)|timeout|disconnected|encerrada|ECONNRESET|ETIMEDOUT/i.test(message);
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 class SmtpClient {
