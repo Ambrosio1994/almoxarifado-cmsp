@@ -8,6 +8,7 @@ import {
   deadlineBand,
   enrichProcess,
   filterProcesses,
+  isAllowedDocument,
   isPdfDocument,
   isPublicConsultation,
   isProcessOverdue,
@@ -123,10 +124,18 @@ describe("regras de processo", () => {
     assert.equal(canCancelProcess({ ...processo, status: "Pago" }, { email: "usuario@cmsp.local", role: "almoxarifado" }), false);
   });
 
-  it("aceita somente documentos PDF nos documentos obrigatorios", () => {
+  it("identifica documentos PDF para compilacao", () => {
     assert.equal(isPdfDocument("processo.pdf", ""), true);
     assert.equal(isPdfDocument("nota", "application/pdf"), true);
     assert.equal(isPdfDocument("nota.png", "image/png"), false);
+  });
+
+  it("aceita formatos comuns nos documentos do processo", () => {
+    assert.equal(isAllowedDocument("planilha.xlsx", ""), true);
+    assert.equal(isAllowedDocument("dados.csv", ""), true);
+    assert.equal(isAllowedDocument("oficio.docx", ""), true);
+    assert.equal(isAllowedDocument("imagem.png", ""), true);
+    assert.equal(isAllowedDocument("arquivo.exe", ""), false);
   });
 
   it("identifica quando todos os documentos obrigatorios estao anexados", () => {
@@ -150,6 +159,8 @@ describe("regras de processo", () => {
     assert.equal(canAttachDocument({ dataEntrega: "" }, "notaFiscal"), true);
     assert.equal(canAttachDocument({ dataEntrega: "2026-07-03" }, "notaFiscal"), true);
     assert.equal(canAttachDocument({ dataEntrega: "" }, "notaEmpenho"), true);
+    assert.equal(canAttachDocument({ status: "Pago" }, "processoSped"), true);
+    assert.equal(canAttachDocument({ status: "Anulado" }, "processoSped"), false);
   });
 
   it("libera consultas publicas e exige autenticacao em alteracoes", () => {

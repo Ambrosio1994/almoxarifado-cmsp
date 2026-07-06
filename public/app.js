@@ -1,15 +1,22 @@
 const state = {
   meta: { status: [], filtrosRapidos: [] },
   processos: [],
+  dashboardMetrics: {},
+  allProcesses: [],
   fornecedores: [],
   auditoria: [],
   detailObservations: [],
   editing: null,
   observationProcessId: null,
   selectedProcess: null,
+  detailReturnSection: "processes",
   pendingDocumentFile: null,
   detailTab: "general",
-  dashboardYear: ""
+  dashboardYear: "",
+  supplierSearch: "",
+  supplierHistory: "",
+  settings: null,
+  settingsPanel: "templates"
 };
 
 let currentUser = {
@@ -42,6 +49,8 @@ const processForm = document.querySelector("#processForm");
 const processDialog = document.querySelector("#processDialog");
 const processDialogTitle = document.querySelector("#processDialogTitle");
 const newProcessButton = document.querySelector("#newProcessButton");
+const downloadProcessesButton = document.querySelector("#downloadProcessesButton");
+const processExportFormat = document.querySelector("#processExportFormat");
 const addMaterialButton = document.querySelector("#addMaterialButton");
 const materialsList = document.querySelector("#materialsList");
 const formMessage = document.querySelector("#formMessage");
@@ -59,6 +68,11 @@ const detailSubtitle = document.querySelector("#detailSubtitle");
 const detailPanel = document.querySelector("#detailPanel");
 const detailTabs = document.querySelectorAll(".detail-tab");
 const downloadProcessButton = document.querySelector("#downloadProcessButton");
+const downloadDialog = document.querySelector("#downloadDialog");
+const downloadChoices = document.querySelectorAll("[data-download-format]");
+const supplierInfoDialog = document.querySelector("#supplierInfoDialog");
+const supplierInfoForm = document.querySelector("#supplierInfoForm");
+const cancelSupplierInfo = document.querySelector("#cancelSupplierInfo");
 const dashboardView = document.querySelector("#dashboardView");
 const suppliersView = document.querySelector("#suppliersView");
 const settingsView = document.querySelector("#settingsView");
@@ -293,9 +307,54 @@ async function refresh() {
   if (statusFilter.value) params.set("status", statusFilter.value);
   if (quickFilter.value) params.set("filtroRapido", quickFilter.value);
   if (yearFilter?.value) params.set("ano", yearFilter.value);
-  state.processos = await api(`/api/processes?${params}`);
+  const processPath = `/api/processes?${params}`;
+  state.processos = await api(processPath);
+  state.allProcesses = params.toString() ? await api("/api/processes") : state.processos;
   renderTable();
-  renderMetrics(await api("/api/dashboard"));
+  state.dashboardMetrics = await api("/api/dashboard");
+  renderMetrics(state.dashboardMetrics);
+}
+
+function processFilterParams() {
+  const params = new URLSearchParams();
+  if (searchInput.value) params.set("q", searchInput.value);
+  if (statusFilter.value) params.set("status", statusFilter.value);
+  if (quickFilter.value) params.set("filtroRapido", quickFilter.value);
+  if (yearFilter?.value) params.set("ano", yearFilter.value);
+  return params;
+}
+
+async function downloadProcesses() {
+  const params = processFilterParams();
+  const format = processExportFormat?.value || "excel";
+  params.set("format", format);
+  const response = await fetch(`/api/processes/download?${params}`, {
+    headers: {
+      "x-user-email": currentUser.email,
+      "x-user-name": currentUser.name,
+      ...(authToken ? { authorization: `Bearer ${authToken}` } : {})
+    }
+  });
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    alert(data.error || "Nao foi possivel gerar o download.");
+    return;
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = processExportFileName(format);
+  document.body.append(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function processExportFileName(format = "excel") {
+  const date = new Date().toISOString().slice(0, 10);
+  const extensions = { excel: "xls", pdf: "pdf", csv: "csv" };
+  return `processos-${date}.${extensions[format] || "xls"}`;
 }
 
 function renderMetrics(data) {
@@ -315,7 +374,7 @@ function renderTable() {
       <td class="strong-cell">${empty(processo.numeroProcesso)}</td>
       <td class="mono-cell">${documentCell(processo.numeroEmpenho, "Nota de Empenho", processo.documentos?.notaEmpenho)}</td>
       <td>${empty(processo.fornecedor)}</td>
-      <td>${empty(materialsSummary(processo.materiais))}</td>
+      <td>${materialsCell(processo.materiais)}</td>
       <td class="money-cell">${money(processo.valorTotal)}</td>
       <td>${dateCell(deadlineDate(processo))}</td>
       <td>${daysCell(processo)}</td>
@@ -355,6 +414,7 @@ processForm.addEventListener("submit", async (event) => {
 
 document.querySelector("#clearForm").addEventListener("click", clearForm);
 newProcessButton.addEventListener("click", () => openProcessDialog());
+downloadProcessesButton?.addEventListener("click", downloadProcesses);
 addMaterialButton.addEventListener("click", () => addMaterialRow());
 searchInput.addEventListener("input", debounce(refresh, 250));
 statusFilter.addEventListener("change", refresh);
@@ -380,7 +440,7 @@ table.addEventListener("click", async (event) => {
 
   if (editId) {
     const processo = state.processos.find((item) => item.id === editId);
-    openProcessDetail(processo);
+    openProcessDetail(processo, "processes");
   }
 
   if (notesId) {
@@ -390,13 +450,7 @@ table.addEventListener("click", async (event) => {
   }
 });
 
-backToProcesses.addEventListener("click", () => {
-  state.selectedProcess = null;
-  processDetailView.classList.add("hidden");
-  processListView.classList.remove("hidden");
-  navItems.forEach((item) => item.classList.toggle("active", item.dataset.section === "processes"));
-  if (sectionTitle) sectionTitle.textContent = "Processos";
-});
+backToProcesses.addEventListener("click", closeProcessDetail);
 
 detailTabs.forEach((tab) => {
   tab.addEventListener("click", () => {
@@ -408,18 +462,41 @@ detailTabs.forEach((tab) => {
 
 downloadProcessButton.addEventListener("click", () => {
   if (!state.selectedProcess) return;
-  const format = prompt("Baixar processo completo como ZIP ou PDF compilado? Digite ZIP ou PDF:", "PDF");
-  if (!format) return;
-  const normalized = format.trim().toLowerCase();
-  if (normalized === "zip") {
-    window.open(`/api/processes/${state.selectedProcess.id}/download?format=zip`, "_blank");
-    return;
-  }
-  if (normalized === "pdf") {
-    window.open(`/api/processes/${state.selectedProcess.id}/download?format=pdf`, "_blank");
-    return;
-  }
-  alert("Formato invalido. Informe ZIP ou PDF.");
+  downloadDialog?.showModal();
+});
+
+downloadChoices.forEach((button) => {
+  button.addEventListener("click", () => {
+    if (!state.selectedProcess) return;
+    downloadDialog?.close();
+    downloadProcess(state.selectedProcess.id, button.dataset.downloadFormat);
+  });
+});
+
+supplierInfoForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const data = Object.fromEntries(new FormData(supplierInfoForm));
+  const razaoSocial = String(data.razaoSocial || "").trim();
+  if (!razaoSocial) return;
+  const supplier = await api("/api/suppliers", {
+    method: "POST",
+    body: JSON.stringify({
+      razaoSocial,
+      emails: splitSupplierInfo(data.emails),
+      telefones: splitSupplierInfo(data.telefones),
+      enderecos: splitSupplierInfo(data.enderecos),
+      observacoes: String(data.observacoes || "").trim()
+    })
+  });
+  const index = state.fornecedores.findIndex((item) => normalizeText(item.razaoSocial) === normalizeText(supplier.razaoSocial));
+  if (index >= 0) state.fornecedores[index] = supplier;
+  else state.fornecedores.push(supplier);
+  supplierInfoDialog?.close();
+  renderSuppliersView();
+});
+
+cancelSupplierInfo?.addEventListener("click", () => {
+  supplierInfoDialog?.close();
 });
 
 navItems.forEach((item) => {
@@ -585,8 +662,10 @@ function openProcessDialog(processo = null) {
   processDialog.showModal();
 }
 
-function openProcessDetail(processo) {
+function openProcessDetail(processo, returnSection = "processes") {
+  if (!processo) return;
   state.selectedProcess = processo;
+  state.detailReturnSection = returnSection;
   state.detailTab = "general";
   processListView.classList.add("hidden");
   dashboardView.classList.add("hidden");
@@ -596,6 +675,39 @@ function openProcessDetail(processo) {
   if (sectionTitle) sectionTitle.textContent = "Processos";
   detailTabs.forEach((tab) => tab.classList.toggle("active", tab.dataset.detailTab === "general"));
   loadDetailObservations(processo.id).then(() => renderProcessDetail());
+}
+
+function closeProcessDetail() {
+  const returnSection = state.detailReturnSection || "processes";
+  state.selectedProcess = null;
+  processDetailView.classList.add("hidden");
+  navItems.forEach((item) => item.classList.toggle("active", item.dataset.section === returnSection));
+  if (sectionTitle) sectionTitle.textContent = returnSection === "suppliers" ? "Fornecedores" : "Processos";
+
+  if (returnSection === "suppliers") {
+    processListView.classList.add("hidden");
+    dashboardView.classList.add("hidden");
+    settingsView.classList.add("hidden");
+    suppliersView.classList.remove("hidden");
+    renderSuppliersView();
+    return;
+  }
+
+  suppliersView.classList.add("hidden");
+  dashboardView.classList.add("hidden");
+  settingsView.classList.add("hidden");
+  processListView.classList.remove("hidden");
+}
+
+function downloadProcess(processId, format) {
+  const normalized = format === "pdf" ? "pdf" : "zip";
+  const link = document.createElement("a");
+  link.href = `/api/processes/${processId}/download?format=${normalized}`;
+  link.target = "_blank";
+  link.rel = "noopener";
+  document.body.append(link);
+  link.click();
+  link.remove();
 }
 
 function renderProcessDetail() {
@@ -707,11 +819,12 @@ function renderTimelineModule(processo) {
   return `
     <ol class="timeline">
       ${events.map((event) => `
-        <li class="${event.date ? "done" : ""}">
+        <li class="${timelineEventClass(event)}">
           <strong>${event.label}</strong>
           <span>${event.date ? (event.showTime ? formatDateTime(event.date) : formatDate(event.date)) : "Pendente"}</span>
           ${event.meta ? `<span>${event.meta}</span>` : ""}
           ${event.details ? `<span>${event.details}</span>` : ""}
+          ${event.documento?.path ? documentTimelinePreview(event.documento) : ""}
         </li>
       `).join("")}
     </ol>
@@ -805,26 +918,29 @@ async function refreshAudit() {
 
 async function attachDocument(documentKey) {
   if (!state.selectedProcess) return;
-  const file = await pickPdfFile();
+  const file = await pickDocumentFile();
   if (!file) return;
   if (documentKey === "complementares") {
     openComplementaryDocumentForm(file);
     return;
   }
-  const contentBase64 = await fileToBase64(file);
-  const updatedProcess = await api(`/api/processes/${state.selectedProcess.id}/documents`, {
-    method: "POST",
-    body: JSON.stringify({
-      documentKey,
-      fileName: file.name,
-      mimeType: file.type || "application/pdf",
-      contentBase64,
-      ...metadata
-    })
-  });
-  state.selectedProcess = updatedProcess;
-  await refresh();
-  renderProcessDetail();
+  try {
+    const contentBase64 = await fileToBase64(file);
+    const updatedProcess = await api(`/api/processes/${state.selectedProcess.id}/documents`, {
+      method: "POST",
+      body: JSON.stringify({
+        documentKey,
+        fileName: file.name,
+        mimeType: file.type || "",
+        contentBase64
+      })
+    });
+    state.selectedProcess = updatedProcess;
+    await refresh();
+    renderProcessDetail();
+  } catch (error) {
+    alert(error.message || "Nao foi possivel anexar o documento.");
+  }
 }
 
 function openComplementaryDocumentForm(file) {
@@ -843,23 +959,27 @@ async function saveComplementaryDocument() {
   const data = Object.fromEntries(new FormData(documentMetadataForm));
   const titulo = String(data.titulo || "").trim();
   if (!titulo) return;
-  const contentBase64 = await fileToBase64(file);
-  const updatedProcess = await api(`/api/processes/${state.selectedProcess.id}/documents`, {
-    method: "POST",
-    body: JSON.stringify({
-      documentKey: "complementares",
-      fileName: file.name,
-      mimeType: file.type || "application/pdf",
-      contentBase64,
-      titulo,
-      descricao: String(data.descricao || "").trim()
-    })
-  });
-  state.pendingDocumentFile = null;
-  documentMetadataDialog.close();
-  state.selectedProcess = updatedProcess;
-  await refresh();
-  renderProcessDetail();
+  try {
+    const contentBase64 = await fileToBase64(file);
+    const updatedProcess = await api(`/api/processes/${state.selectedProcess.id}/documents`, {
+      method: "POST",
+      body: JSON.stringify({
+        documentKey: "complementares",
+        fileName: file.name,
+        mimeType: file.type || "",
+        contentBase64,
+        titulo,
+        descricao: String(data.descricao || "").trim()
+      })
+    });
+    state.pendingDocumentFile = null;
+    documentMetadataDialog.close();
+    state.selectedProcess = updatedProcess;
+    await refresh();
+    renderProcessDetail();
+  } catch (error) {
+    alert(error.message || "Nao foi possivel anexar o documento.");
+  }
 }
 
 async function removeDocument(documentKey) {
@@ -874,11 +994,11 @@ async function removeDocument(documentKey) {
   renderProcessDetail();
 }
 
-function pickPdfFile() {
+function pickDocumentFile() {
   return new Promise((resolve) => {
     const input = document.createElement("input");
     input.type = "file";
-    input.accept = "application/pdf,.pdf";
+    input.accept = ".pdf,.xlsx,.xls,.csv,.docx,.doc,.odt,.ods,.txt,.png,.jpg,.jpeg,application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/msword";
     input.addEventListener("change", () => resolve(input.files?.[0] || null), { once: true });
     input.click();
   });
@@ -1137,9 +1257,9 @@ function executionGroupedChart(rows) {
 }
 
 function financialChart() {
-  const paid = state.processos.filter((processo) => processo.status === "Pago").reduce((sum, processo) => sum + processo.valorTotal, 0);
-  const liquidated = state.processos.filter((processo) => processo.status === "Liquidado").reduce((sum, processo) => sum + processo.valorTotal, 0);
-  const committed = state.processos.reduce((sum, processo) => sum + processo.valorTotal, 0);
+  const committed = state.dashboardMetrics.valorEmpenhado || 0;
+  const liquidated = state.dashboardMetrics.valorLiquidado || 0;
+  const paid = state.dashboardMetrics.valorPago || 0;
   return chartCard("Indicadores financeiros", [
     ["Empenhado", committed],
     ["Liquidado", liquidated],
@@ -1400,33 +1520,214 @@ function canEditGeneralInUi(processo) {
 }
 
 function canAttachDocumentInUi(processo, documentKey) {
-  if (!canEditGeneralInUi(processo)) return false;
-  return true;
+  return Boolean(processo && !processo.inativo && processo.status !== "Anulado" && documentKey);
 }
 
 function renderSuppliersView() {
+  const suppliers = supplierDirectory();
+  const query = state.supplierSearch.trim();
+  const matches = query
+    ? suppliers.filter((fornecedor) => normalizeText(fornecedor.razaoSocial).includes(normalizeText(query)))
+    : suppliers;
+  const selected = query && matches.length === 1 ? matches[0] : null;
+
   suppliersView.innerHTML = `
     <div class="content-header">
       <div>
         <h1>Fornecedores</h1>
       </div>
     </div>
-    <div class="module-list">
-      ${state.fornecedores.map((fornecedor) => `
-        <article class="module-row">
-          <div>
-            <strong>${fornecedor.razaoSocial}</strong>
-            <span>${fornecedor.cnpj} - ${fornecedor.email} - ${fornecedor.telefone}</span>
-            <span>${fornecedor.endereco}</span>
-          </div>
-          <button type="button" class="secondary">Historico de processos</button>
-        </article>
-      `).join("")}
+    <div class="filters supplier-filters">
+      <label class="search-box supplier-search" aria-label="Pesquisar fornecedores">
+        <span>⌕</span>
+        <input id="supplierSearchInput" placeholder="Buscar fornecedor pelo nome" value="${escapeAttribute(state.supplierSearch)}">
+      </label>
     </div>
+    ${query && !matches.length ? `<p class="empty-state">Nenhum fornecedor encontrado na base de dados.</p>` : ""}
+    ${selected ? supplierDetail(selected) : ""}
+    <div class="module-list">
+      ${matches.map((fornecedor) => supplierRow(fornecedor)).join("")}
+    </div>
+  `;
+
+  suppliersView.querySelector("#supplierSearchInput")?.addEventListener("input", (event) => {
+    const cursor = event.target.selectionStart;
+    state.supplierSearch = event.target.value;
+    state.supplierHistory = "";
+    renderSuppliersView();
+    const input = suppliersView.querySelector("#supplierSearchInput");
+    input?.focus();
+    input?.setSelectionRange(cursor, cursor);
+  });
+  suppliersView.querySelectorAll("[data-supplier-history]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.supplierHistory = state.supplierHistory === button.dataset.supplierHistory ? "" : button.dataset.supplierHistory;
+      renderSuppliersView();
+    });
+  });
+  suppliersView.querySelectorAll("[data-supplier-info]").forEach((button) => {
+    button.addEventListener("click", () => openSupplierInfoDialog(button.dataset.supplierInfo));
+  });
+  suppliersView.querySelectorAll("[data-supplier-process]").forEach((row) => {
+    row.addEventListener("click", () => {
+      const processo = state.allProcesses.find((item) => item.id === row.dataset.supplierProcess);
+      openProcessDetail(processo, "suppliers");
+    });
+  });
+}
+
+function supplierDirectory() {
+  const byName = new Map();
+  state.fornecedores.forEach((fornecedor) => {
+    const normalized = normalizeSupplier(fornecedor);
+    if (!normalized.razaoSocial) return;
+    byName.set(normalizeText(normalized.razaoSocial), normalized);
+  });
+  state.allProcesses.forEach((processo) => {
+    if (!processo.fornecedor) return;
+    const key = normalizeText(processo.fornecedor);
+    if (!byName.has(key)) byName.set(key, normalizeSupplier({ razaoSocial: processo.fornecedor }));
+  });
+  return [...byName.values()].sort((a, b) => a.razaoSocial.localeCompare(b.razaoSocial));
+}
+
+function normalizeSupplier(fornecedor = {}) {
+  return {
+    ...fornecedor,
+    razaoSocial: fornecedor.razaoSocial || fornecedor.nome || "",
+    emails: uniqueList([fornecedor.email, ...(fornecedor.emails || [])]),
+    telefones: uniqueList([fornecedor.telefone, ...(fornecedor.telefones || [])]),
+    enderecos: uniqueList([fornecedor.endereco, ...(fornecedor.enderecos || [])])
+  };
+}
+
+function supplierRow(fornecedor) {
+  const key = normalizeText(fornecedor.razaoSocial);
+  const historyOpen = state.supplierHistory === key;
+  return `
+    <article class="module-row supplier-row">
+      <div>
+        <strong>${escapeHtml(fornecedor.razaoSocial)}</strong>
+        ${supplierSummaryLine("CNPJ", [fornecedor.cnpj])}
+        ${supplierSummaryLine("E-mails", fornecedor.emails)}
+        ${supplierSummaryLine("Telefones", fornecedor.telefones)}
+        ${supplierSummaryLine("Enderecos", fornecedor.enderecos)}
+      </div>
+      <div class="supplier-actions">
+        <button type="button" class="secondary" data-supplier-history="${escapeAttribute(key)}">Historico de processos</button>
+        <button type="button" data-supplier-info="${escapeAttribute(fornecedor.razaoSocial)}">Adicionar informacoes</button>
+      </div>
+    </article>
+    ${historyOpen ? supplierHistory(fornecedor) : ""}
   `;
 }
 
-function renderSettingsView() {
+function supplierDetail(fornecedor) {
+  return `
+    <section class="supplier-detail">
+      <div>
+        <strong>${escapeHtml(fornecedor.razaoSocial)}</strong>
+        ${supplierSummaryLine("CNPJ", [fornecedor.cnpj])}
+        ${supplierSummaryLine("E-mails", fornecedor.emails)}
+        ${supplierSummaryLine("Telefones", fornecedor.telefones)}
+        ${supplierSummaryLine("Enderecos", fornecedor.enderecos)}
+        ${fornecedor.observacoes ? `<span>Observacoes: ${escapeHtml(fornecedor.observacoes)}</span>` : ""}
+      </div>
+      <div class="supplier-actions">
+        <button type="button" class="secondary" data-supplier-history="${escapeAttribute(normalizeText(fornecedor.razaoSocial))}">Historico de processos</button>
+        <button type="button" data-supplier-info="${escapeAttribute(fornecedor.razaoSocial)}">Adicionar informacoes</button>
+      </div>
+    </section>
+  `;
+}
+
+function supplierHistory(fornecedor) {
+  const processos = processesForSupplier(fornecedor.razaoSocial);
+  return `
+    <section class="supplier-history">
+      <strong>Historico de processos</strong>
+      ${processos.length ? `
+        <div class="table-wrap compact-table">
+          <table>
+            <thead>
+              <tr>
+                <th>Processo</th>
+                <th>Empenho</th>
+                <th>Valor total</th>
+                <th>Status</th>
+                <th>Envio fornecedor</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${processos.map((processo) => `
+                <tr class="clickable-row" data-supplier-process="${escapeAttribute(processo.id)}">
+                  <td><button type="button" class="link-button">${empty(escapeHtml(processo.numeroProcesso))}</button></td>
+                  <td>${empty(escapeHtml(processo.numeroEmpenho))}</td>
+                  <td class="money-cell">${money(processo.valorTotal)}</td>
+                  <td>${statusBadges(processo)}</td>
+                  <td>${dateCell(deadlineDate(processo))}</td>
+                </tr>
+              `).join("")}
+            </tbody>
+          </table>
+        </div>
+      ` : `<p class="empty-state">Nenhum processo vinculado a este fornecedor.</p>`}
+    </section>
+  `;
+}
+
+function processesForSupplier(name = "") {
+  const key = normalizeText(name);
+  return state.allProcesses
+    .filter((processo) => normalizeText(processo.fornecedor) === key)
+    .sort((a, b) => String(b.criadoEm || "").localeCompare(String(a.criadoEm || "")));
+}
+
+function openSupplierInfoDialog(name = "") {
+  const supplier = supplierDirectory().find((item) => normalizeText(item.razaoSocial) === normalizeText(name)) || { razaoSocial: name };
+  supplierInfoForm.reset();
+  supplierInfoForm.elements.razaoSocial.value = supplier.razaoSocial || name;
+  supplierInfoForm.elements.emails.value = (supplier.emails || []).join("\n");
+  supplierInfoForm.elements.telefones.value = (supplier.telefones || []).join("\n");
+  supplierInfoForm.elements.enderecos.value = (supplier.enderecos || []).join("\n");
+  supplierInfoForm.elements.observacoes.value = supplier.observacoes || "";
+  supplierInfoDialog?.showModal();
+}
+
+function splitSupplierInfo(value = "") {
+  return uniqueList(String(value).split(/[\n,;]+/));
+}
+
+function supplierSummaryLine(label, values = []) {
+  const valid = uniqueList(values);
+  return valid.length ? `<span>${label}: ${valid.map(escapeHtml).join(", ")}</span>` : "";
+}
+
+function uniqueList(values = []) {
+  return [...new Set(values.map((value) => String(value || "").trim()).filter(Boolean))];
+}
+
+function normalizeText(value = "") {
+  return String(value)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLowerCase();
+}
+
+async function renderSettingsView() {
+  if (!state.settings) {
+    settingsView.innerHTML = `
+      <div class="content-header">
+        <div>
+          <h1>Configuracoes</h1>
+        </div>
+      </div>
+      <p class="empty-state">Carregando configuracoes...</p>
+    `;
+    state.settings = await loadSettings();
+  }
+
   settingsView.innerHTML = `
     <div class="content-header">
       <div>
@@ -1434,22 +1735,229 @@ function renderSettingsView() {
       </div>
     </div>
     <div class="settings-grid">
-      ${settingsCard("Templates de e-mail", "Modelos usados nas notificacoes automaticas e reenvios manuais.")}
-      ${settingsCard("Prazos para notificacoes", "7, 14, 21, 30 e 31 dias conforme regra do documento.")}
-      ${settingsCard("Lista de status", state.meta.status.join(", "))}
-      ${settingsCard("Usuarios responsaveis", "Cadastro, permissoes e solicitacoes de acesso.")}
+      ${settingsCard("templates", "Templates de e-mail", "Modelos usados nas notificacoes automaticas e reenvios manuais.")}
+      ${settingsCard("notifications", "Prazos para notificacoes", `${state.settings.notificationRules.diasAvisoInterno.join(", ")} dias; oficio no dia ${state.settings.notificationRules.diaOficioFornecedor}.`)}
+      ${settingsCard("statuses", "Lista de status", state.settings.status.join(", "))}
+      ${settingsCard("users", "Usuarios responsaveis", "Cadastro, permissoes e solicitacoes de acesso.")}
+    </div>
+    <section class="settings-panel">
+      ${state.settings.localFallback ? `<p class="settings-note">Servidor atual nao possui a rota de configuracoes; exibindo valores padrao. Reinicie o servidor atualizado para salvar alteracoes.</p>` : ""}
+      ${renderSettingsPanel()}
+    </section>
+  `;
+  bindSettingsHandlers();
+}
+
+async function loadSettings() {
+  try {
+    return await api("/api/settings");
+  } catch (error) {
+    if (error.message !== "Rota nao encontrada") throw error;
+    return defaultSettings();
+  }
+}
+
+function defaultSettings() {
+  return {
+    emailTemplates: {
+      notificacaoInterna: {
+        assunto: "Processo {numeroProcesso} com {dias} dias",
+        corpo: "O processo {numeroProcesso} do fornecedor {fornecedor} esta com {dias} dias desde o envio do empenho."
+      },
+      notificacaoFornecedor: {
+        assunto: "Pendencia de entrega - Empenho {numeroEmpenho}",
+        corpo: "Prezado fornecedor, solicitamos atualizacao sobre a entrega vinculada ao empenho {numeroEmpenho}."
+      },
+      reenvioManual: {
+        assunto: "Reenvio de notificacao - Processo {numeroProcesso}",
+        corpo: "Segue reenvio da notificacao referente ao processo {numeroProcesso}."
+      }
+    },
+    notificationRules: {
+      diasAvisoInterno: [7, 14, 21, 31],
+      diaOficioFornecedor: 30
+    },
+    responsaveis: [],
+    status: state.meta.status,
+    filtrosRapidos: state.meta.filtrosRapidos,
+    usuarios: [],
+    localFallback: true
+  };
+}
+
+function settingsCard(panel, title, description) {
+  return `
+    <article class="settings-card ${state.settingsPanel === panel ? "active" : ""}">
+      <strong>${title}</strong>
+      <span>${description}</span>
+      <button type="button" class="secondary" data-settings-panel="${panel}">Configurar</button>
+    </article>
+  `;
+}
+
+function renderSettingsPanel() {
+  if (state.settingsPanel === "notifications") return renderNotificationSettings();
+  if (state.settingsPanel === "statuses") return renderStatusSettings();
+  if (state.settingsPanel === "users") return renderUsersSettings();
+  return renderEmailTemplateSettings();
+}
+
+function renderEmailTemplateSettings() {
+  const labels = {
+    notificacaoInterna: "Notificacao interna",
+    notificacaoFornecedor: "Notificacao ao fornecedor",
+    reenvioManual: "Reenvio manual"
+  };
+  return `
+    <form id="emailTemplatesForm" class="settings-form">
+      <div class="section-title">
+        <strong>Templates de e-mail</strong>
+        <span>Variaveis aceitas: {numeroProcesso}, {numeroEmpenho}, {fornecedor}, {dias}.</span>
+      </div>
+      ${Object.entries(state.settings.emailTemplates).map(([key, template]) => `
+        <fieldset class="settings-fieldset">
+          <legend>${labels[key] || key}</legend>
+          <label>Assunto <input name="${key}.assunto" value="${escapeAttribute(template.assunto)}"></label>
+          <label>Corpo <textarea name="${key}.corpo" rows="4">${escapeHtml(template.corpo)}</textarea></label>
+        </fieldset>
+      `).join("")}
+      <div class="actions">
+        <button type="submit">Salvar templates</button>
+      </div>
+    </form>
+  `;
+}
+
+function renderNotificationSettings() {
+  const rules = state.settings.notificationRules;
+  return `
+    <form id="notificationSettingsForm" class="settings-form">
+      <div class="section-title">
+        <strong>Prazos para notificacoes</strong>
+        <span>Controle dos marcos usados para alertas internos e oficio ao fornecedor.</span>
+      </div>
+      <label>Dias de aviso interno <input name="diasAvisoInterno" value="${escapeAttribute(rules.diasAvisoInterno.join(", "))}"></label>
+      <label>Dia para oficio ao fornecedor <input name="diaOficioFornecedor" type="number" min="1" step="1" value="${Number(rules.diaOficioFornecedor || 30)}"></label>
+      <div class="actions">
+        <button type="submit">Salvar prazos</button>
+      </div>
+    </form>
+  `;
+}
+
+function renderStatusSettings() {
+  return `
+    <div class="settings-form">
+      <div class="section-title">
+        <strong>Lista de status</strong>
+        <span>Fluxo operacional usado nas regras de bloqueio e nos filtros.</span>
+      </div>
+      <ol class="status-config-list">
+        ${state.settings.status.map((status) => `<li><span>${escapeHtml(status)}</span></li>`).join("")}
+      </ol>
+      <div class="settings-note">A alteracao estrutural de status exige ajuste nas regras de processo, dashboard e filtros. Por isso esta lista fica centralizada no dominio da aplicacao.</div>
     </div>
   `;
 }
 
-function settingsCard(title, description) {
+function renderUsersSettings() {
   return `
-    <article class="settings-card">
-      <strong>${title}</strong>
-      <span>${description}</span>
-      <button type="button" class="secondary">Configurar</button>
-    </article>
+    <div class="settings-form">
+      <div class="section-title">
+        <strong>Usuarios responsaveis</strong>
+        <span>Responsaveis operacionais usados como referencia pela equipe.</span>
+      </div>
+      <form id="responsibleUserForm" class="inline-settings-form">
+        <label>Nome <input name="nome" required></label>
+        <label>E-mail <input name="email" type="email" required></label>
+        <label>Funcao <input name="funcao" placeholder="Ex.: Almoxarifado"></label>
+        <button type="submit">Adicionar</button>
+      </form>
+      <div class="module-list settings-user-list">
+        ${state.settings.responsaveis.length ? state.settings.responsaveis.map((user) => `
+          <article class="module-row">
+            <div>
+              <strong>${escapeHtml(user.nome)}</strong>
+              <span>${escapeHtml(user.email)}${user.funcao ? ` - ${escapeHtml(user.funcao)}` : ""}</span>
+              <span>${user.ativo ? "Ativo" : "Inativo"}</span>
+            </div>
+            <button type="button" class="secondary" data-toggle-responsible="${escapeAttribute(user.id)}" data-active="${user.ativo ? "false" : "true"}">${user.ativo ? "Inativar" : "Ativar"}</button>
+          </article>
+        `).join("") : `<p class="empty-state">Nenhum responsavel cadastrado.</p>`}
+      </div>
+      <div class="settings-note">Usuarios autenticados: ${state.settings.usuarios.map((user) => `${escapeHtml(user.nome)} (${escapeHtml(user.role)})`).join(", ") || "nenhum cadastro encontrado"}.</div>
+    </div>
   `;
+}
+
+function bindSettingsHandlers() {
+  settingsView.querySelectorAll("[data-settings-panel]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.settingsPanel = button.dataset.settingsPanel;
+      renderSettingsView();
+    });
+  });
+  settingsView.querySelector("#emailTemplatesForm")?.addEventListener("submit", saveEmailTemplates);
+  settingsView.querySelector("#notificationSettingsForm")?.addEventListener("submit", saveNotificationSettings);
+  settingsView.querySelector("#responsibleUserForm")?.addEventListener("submit", saveResponsibleUser);
+  settingsView.querySelectorAll("[data-toggle-responsible]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      state.settings = await api(`/api/settings/users/${button.dataset.toggleResponsible}`, {
+        method: "PATCH",
+        body: JSON.stringify({ ativo: button.dataset.active === "true" })
+      });
+      renderSettingsView();
+    });
+  });
+}
+
+async function saveEmailTemplates(event) {
+  event.preventDefault();
+  if (settingsFallbackActive()) return;
+  const data = Object.fromEntries(new FormData(event.currentTarget));
+  const emailTemplates = {};
+  Object.keys(state.settings.emailTemplates).forEach((key) => {
+    emailTemplates[key] = {
+      assunto: data[`${key}.assunto`] || "",
+      corpo: data[`${key}.corpo`] || ""
+    };
+  });
+  state.settings = await api("/api/settings/email-templates", {
+    method: "PUT",
+    body: JSON.stringify({ emailTemplates })
+  });
+  renderSettingsView();
+}
+
+async function saveNotificationSettings(event) {
+  event.preventDefault();
+  if (settingsFallbackActive()) return;
+  const data = Object.fromEntries(new FormData(event.currentTarget));
+  state.settings = await api("/api/settings/notifications", {
+    method: "PUT",
+    body: JSON.stringify({
+      diasAvisoInterno: String(data.diasAvisoInterno || "").split(/[\n,; ]+/),
+      diaOficioFornecedor: Number(data.diaOficioFornecedor || 30)
+    })
+  });
+  renderSettingsView();
+}
+
+async function saveResponsibleUser(event) {
+  event.preventDefault();
+  if (settingsFallbackActive()) return;
+  const data = Object.fromEntries(new FormData(event.currentTarget));
+  state.settings = await api("/api/settings/users", {
+    method: "POST",
+    body: JSON.stringify(data)
+  });
+  renderSettingsView();
+}
+
+function settingsFallbackActive() {
+  if (!state.settings?.localFallback) return false;
+  alert("Reinicie o servidor atualizado para salvar configuracoes.");
+  return true;
 }
 
 function renderMaterialRows(materiais = [{ descricao: "", valorUnitario: "", quantidade: "" }]) {
@@ -1551,6 +2059,16 @@ function materialsSummary(materiais = []) {
   return `${valid[0].descricao} + ${valid.length - 1} itens`;
 }
 
+function materialsCell(materiais = []) {
+  const summary = materialsSummary(materiais);
+  if (!summary) return "-";
+  const full = materiais
+    .filter((material) => material.descricao)
+    .map((material) => material.descricao)
+    .join(", ");
+  return `<span class="materials-cell" title="${escapeAttribute(full)}">${escapeHtml(summary)}</span>`;
+}
+
 function statusClass(status) {
   if (status === "Pago") return "locked";
   if (status === "Anulado") return "cancelled";
@@ -1627,6 +2145,8 @@ function timelineEvents(processo) {
       date: entry.criadoEm,
       meta: entry.usuario || "Usuario",
       details: entry.detalhes || "",
+      documento: entry.documento || documentFromAuditEntry(processo, entry),
+      kind: entry.acao === "Remocao de documento" ? "danger" : "",
       showTime: true
     }));
 
@@ -1636,16 +2156,80 @@ function timelineEvents(processo) {
       date: observacao.atualizadoEm || observacao.criadoEm
     }));
 
-  const events = [...auditEvents, ...explicitEvents, ...observationEvents]
+  const events = dedupeTimelineDocuments([...auditEvents, ...explicitEvents, ...observationEvents]
     .filter((event) => event.label && event.date)
     .filter((event, index, list) => list.findIndex((item) => (
       item.label === event.label
         && formatDateTime(item.date) === formatDateTime(event.date)
         && (item.details || "") === (event.details || "")
     )) === index)
-    .sort((a, b) => new Date(a.date) - new Date(b.date));
+    .sort((a, b) => new Date(a.date) - new Date(b.date)));
 
   return events;
+}
+
+function dedupeTimelineDocuments(events = []) {
+  const seen = new Set();
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const path = events[index].documento?.path;
+    if (!path) continue;
+    if (seen.has(path)) {
+      events[index] = { ...events[index], documento: null };
+      continue;
+    }
+    seen.add(path);
+  }
+  return events;
+}
+
+function timelineEventClass(event) {
+  return [
+    event.date ? "done" : "",
+    event.kind === "danger" ? "danger" : ""
+  ].filter(Boolean).join(" ");
+}
+
+function documentTimelinePreview(documento = {}) {
+  const path = String(documento.path || "");
+  const title = documento.nome || documento.fileName || "Documento anexado";
+  if (!path) return "";
+  return `
+    <a class="timeline-document-preview" href="${escapeAttribute(path)}" target="_blank" rel="noopener" title="Abrir documento em nova aba">
+      <iframe src="${escapeAttribute(`${path}#page=1&toolbar=0&navpanes=0&scrollbar=0`)}" title="${escapeAttribute(title)}"></iframe>
+      <span>${escapeHtml(title)}</span>
+    </a>
+  `;
+}
+
+function documentFromAuditEntry(processo = {}, entry = {}) {
+  if (entry.acao !== "Anexo de documento") return null;
+  const key = String(entry.detalhes || "").match(/Documento (.+) anexado\./)?.[1];
+  if (!key) return null;
+  const value = processo.documentos?.[key];
+  if (!value) return null;
+  if (key === "complementares") return closestDocumentByDate(documentList(value), entry.criadoEm);
+  const documento = documentInfo(value);
+  return isDocumentNearAuditDate(documento, entry.criadoEm) ? documento : null;
+}
+
+function closestDocumentByDate(documents = [], date = "") {
+  const target = new Date(date).getTime();
+  if (!documents.length || Number.isNaN(target)) return null;
+  const closest = documents
+    .map((documento) => ({
+      documento,
+      distance: Math.abs(new Date(documento.uploadedAt || "").getTime() - target)
+    }))
+    .filter((item) => !Number.isNaN(item.distance))
+    .sort((a, b) => a.distance - b.distance)[0];
+  return closest && closest.distance <= 120000 ? closest.documento : null;
+}
+
+function isDocumentNearAuditDate(documento = {}, date = "") {
+  if (!documento.path || !documento.uploadedAt) return false;
+  const uploadedAt = new Date(documento.uploadedAt).getTime();
+  const auditDate = new Date(date).getTime();
+  return !Number.isNaN(uploadedAt) && !Number.isNaN(auditDate) && Math.abs(uploadedAt - auditDate) <= 120000;
 }
 
 function deadlineDate(processo) {

@@ -52,8 +52,29 @@ export function isPdfDocument(fileName = "", mimeType = "") {
   return normalizedMime === "application/pdf" || normalizedName.endsWith(".pdf");
 }
 
+export function isAllowedDocument(fileName = "", mimeType = "") {
+  const normalizedMime = String(mimeType || "").toLowerCase();
+  const normalizedName = String(fileName || "").toLowerCase();
+  const allowedExtensions = [".pdf", ".xlsx", ".xls", ".csv", ".docx", ".doc", ".odt", ".ods", ".txt", ".png", ".jpg", ".jpeg"];
+  const allowedMimes = [
+    "application/pdf",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.ms-excel",
+    "text/csv",
+    "application/csv",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/msword",
+    "application/vnd.oasis.opendocument.text",
+    "application/vnd.oasis.opendocument.spreadsheet",
+    "text/plain",
+    "image/png",
+    "image/jpeg"
+  ];
+  return allowedExtensions.some((extension) => normalizedName.endsWith(extension)) || allowedMimes.includes(normalizedMime);
+}
+
 export function canAttachDocument(processo = {}, documentKey = "") {
-  return true;
+  return Boolean(processo && !processo.inativo && processo.status !== "Anulado" && documentKey);
 }
 
 export function processHasRequiredDocuments(processo = {}) {
@@ -68,7 +89,10 @@ export function isPublicConsultation(method = "", pathname = "") {
     /^\/api\/dashboard$/,
     /^\/api\/dashboard\/execucao-mensal$/,
     /^\/api\/dashboard\/distribuicao-status$/,
+    /^\/api\/settings$/,
     /^\/api\/processes$/,
+    /^\/api\/processes\/export\/?$/,
+    /^\/api\/processes\/download\/?$/,
     /^\/api\/processes\/[^/]+\/observations$/,
     /^\/api\/processes\/[^/]+\/download$/,
     /^\/api\/suppliers$/,
@@ -148,13 +172,14 @@ export function isProcessOverdue(processo = {}) {
   return processo.diasDecorridos > 30 && !["Entregue", "Liquidado", "Pago", "Anulado"].includes(processo.status);
 }
 
-export function createAuditEntry({ processoId, usuario, acao, detalhes }) {
+export function createAuditEntry({ processoId, usuario, acao, detalhes, documento }) {
   return {
     id: crypto.randomUUID(),
     processoId,
     usuario,
     acao,
     detalhes,
+    documento,
     criadoEm: new Date().toISOString()
   };
 }

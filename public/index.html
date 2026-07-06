@@ -74,7 +74,15 @@
               <div>
                 <h1>Processos</h1>
               </div>
-              <button type="button" id="newProcessButton">+ Novo processo</button>
+              <div class="process-header-actions">
+                <select id="processExportFormat" aria-label="Formato de exportacao">
+                  <option value="excel">Excel</option>
+                  <option value="pdf">PDF</option>
+                  <option value="csv">CSV</option>
+                </select>
+                <button type="button" class="secondary" id="downloadProcessesButton">Download</button>
+                <button type="button" id="newProcessButton">+ Novo processo</button>
+              </div>
             </div>
 
             <div class="filters">
@@ -184,6 +192,23 @@
       </form>
     </dialog>
 
+    <dialog id="downloadDialog" class="small-dialog">
+      <form method="dialog" class="dialog-header">
+        <strong>Baixar processo completo</strong>
+        <button type="submit" class="secondary">Fechar</button>
+      </form>
+      <div class="download-options">
+        <button type="button" class="download-choice" data-download-format="zip">
+          <strong>Pasta .ZIP</strong>
+          <span>Todos os arquivos e dados do processo em uma pasta compactada.</span>
+        </button>
+        <button type="button" class="download-choice primary-choice" data-download-format="pdf">
+          <strong>PDF Compilado</strong>
+          <span>Um unico PDF com os documentos PDF anexados ao processo.</span>
+        </button>
+      </div>
+    </dialog>
+
     <dialog id="documentMetadataDialog" class="small-dialog">
       <form method="dialog" class="dialog-header">
         <strong>Novo documento</strong>
@@ -196,6 +221,24 @@
         <div class="actions">
           <button type="submit">Salvar documento</button>
           <button type="button" id="cancelDocumentMetadata" class="secondary">Cancelar</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="supplierInfoDialog" class="small-dialog">
+      <form method="dialog" class="dialog-header">
+        <strong>Informacoes do fornecedor</strong>
+        <button type="submit" class="secondary">Fechar</button>
+      </form>
+      <form id="supplierInfoForm" class="process-form">
+        <input type="hidden" name="razaoSocial">
+        <label>E-mails <textarea name="emails" rows="3" placeholder="Um e-mail por linha"></textarea></label>
+        <label>Telefones <textarea name="telefones" rows="3" placeholder="Um telefone por linha"></textarea></label>
+        <label>Enderecos <textarea name="enderecos" rows="3" placeholder="Um endereco por linha"></textarea></label>
+        <label>Observacoes <textarea name="observacoes" rows="3" placeholder="Informacoes adicionais"></textarea></label>
+        <div class="actions">
+          <button type="submit">Salvar informacoes</button>
+          <button type="button" class="secondary" id="cancelSupplierInfo">Cancelar</button>
         </div>
       </form>
     </dialog>

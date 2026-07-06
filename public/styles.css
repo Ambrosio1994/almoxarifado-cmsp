@@ -590,6 +590,20 @@ button.secondary,
   margin-bottom: 14px;
 }
 
+.process-header-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+#processExportFormat {
+  height: 40px;
+  min-height: 40px;
+  width: 120px;
+}
+
 .search-box {
   align-items: center;
   background: white;
@@ -671,6 +685,15 @@ td {
   padding: 14px 14px;
   text-align: left;
   vertical-align: middle;
+}
+
+.materials-cell {
+  display: -webkit-box;
+  line-clamp: 2;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  max-width: 260px;
+  overflow: hidden;
 }
 
 th {
@@ -871,6 +894,37 @@ tbody td:nth-child(2) {
   font-weight: 500;
 }
 
+.download-options {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+}
+
+.download-choice {
+  align-items: flex-start;
+  background: white;
+  border: 1px solid var(--line);
+  color: var(--ink);
+  display: grid;
+  gap: 5px;
+  justify-items: start;
+  min-height: auto;
+  padding: 14px;
+  text-align: left;
+  width: 100%;
+}
+
+.download-choice span {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.35;
+}
+
+.download-choice.primary-choice {
+  border-color: var(--nav);
+}
+
 .detail-tabs {
   border-bottom: 1px solid var(--line);
   display: flex;
@@ -1036,6 +1090,76 @@ tbody td:nth-child(2) {
   font-size: 13px;
 }
 
+.supplier-filters {
+  margin-top: 8px;
+}
+
+.supplier-search {
+  max-width: 560px;
+  width: min(560px, 100%);
+}
+
+.supplier-detail {
+  align-items: flex-start;
+  background: white;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 14px;
+  padding: 16px;
+}
+
+.supplier-detail strong,
+.supplier-history > strong {
+  display: block;
+  margin-bottom: 8px;
+}
+
+.supplier-detail span {
+  color: var(--muted);
+  display: block;
+  font-size: 13px;
+  margin-top: 4px;
+}
+
+.supplier-row {
+  align-items: flex-start;
+}
+
+.supplier-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.supplier-history {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin: -8px 0 12px;
+  padding: 14px;
+}
+
+.compact-table {
+  margin-top: 10px;
+}
+
+.clickable-row {
+  cursor: pointer;
+}
+
+.link-button {
+  background: transparent;
+  border: 0;
+  color: var(--nav);
+  font: inherit;
+  font-weight: 700;
+  min-height: 0;
+  padding: 0;
+  text-align: left;
+}
+
 .document-actions,
 .note-actions {
   display: flex;
@@ -1109,6 +1233,11 @@ tbody td:nth-child(2) {
   padding: 16px;
 }
 
+.settings-card.active {
+  border-color: var(--green);
+  box-shadow: 0 0 0 1px rgb(23 102 93 / 18%);
+}
+
 .settings-card strong {
   font-size: 15px;
 }
@@ -1121,6 +1250,82 @@ tbody td:nth-child(2) {
 
 .settings-card button {
   justify-self: start;
+}
+
+.settings-panel {
+  margin-top: 16px;
+}
+
+.settings-form {
+  background: white;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+}
+
+.settings-fieldset {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 14px;
+}
+
+.settings-fieldset legend {
+  color: var(--ink);
+  font-weight: 700;
+  padding: 0 6px;
+}
+
+.inline-settings-form {
+  align-items: end;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(180px, 1fr) minmax(220px, 1fr) minmax(160px, 1fr) auto;
+}
+
+.inline-settings-form label {
+  margin-bottom: 0;
+}
+
+.settings-user-list {
+  margin-top: 0;
+}
+
+.status-config-list {
+  counter-reset: status;
+  display: grid;
+  gap: 8px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.status-config-list li {
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: flex;
+  gap: 10px;
+  padding: 10px 12px;
+}
+
+.status-config-list li::before {
+  color: var(--muted);
+  content: counter(status);
+  counter-increment: status;
+  font-size: 12px;
+  font-weight: 700;
+  min-width: 24px;
+}
+
+.settings-note {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
 }
 
 .charts-grid {
@@ -1569,6 +1774,11 @@ tbody td:nth-child(2) {
   border-color: var(--green);
 }
 
+.timeline li.danger::before {
+  background: var(--red);
+  border-color: var(--red);
+}
+
 .timeline strong,
 .timeline span {
   display: block;
@@ -1582,6 +1792,36 @@ tbody td:nth-child(2) {
   color: var(--muted);
   font-size: 13px;
   margin-top: 4px;
+}
+
+.timeline-document-preview {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink);
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+  max-width: 220px;
+  overflow: hidden;
+  padding: 8px;
+  text-decoration: none;
+}
+
+.timeline-document-preview iframe {
+  aspect-ratio: 3 / 4;
+  border: 0;
+  height: 190px;
+  pointer-events: none;
+  width: 100%;
+}
+
+.timeline-document-preview span {
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.25;
+  margin: 0;
+  overflow-wrap: anywhere;
 }
 
 label {
@@ -1619,9 +1859,13 @@ textarea {
 :root[data-theme="dark"] #yearFilter,
 :root[data-theme="dark"] .filter-chip,
 :root[data-theme="dark"] .download-button,
+:root[data-theme="dark"] .download-choice,
 :root[data-theme="dark"] .detail-card,
 :root[data-theme="dark"] .dashboard-grid .metric,
 :root[data-theme="dark"] .settings-card,
+:root[data-theme="dark"] .settings-form,
+:root[data-theme="dark"] .supplier-detail,
+:root[data-theme="dark"] .supplier-history,
 :root[data-theme="dark"] .chart-card,
 :root[data-theme="dark"] dialog,
 :root[data-theme="dark"] table {
@@ -1634,6 +1878,7 @@ textarea {
 :root[data-theme="dark"] textarea,
 :root[data-theme="dark"] .new-data-panel,
 :root[data-theme="dark"] .note,
+:root[data-theme="dark"] .status-config-list li,
 :root[data-theme="dark"] button.secondary,
 :root[data-theme="dark"] #clearForm,
 :root[data-theme="dark"] .icon-button,
@@ -1656,6 +1901,7 @@ textarea {
 :root[data-theme="dark"] .strong-cell,
 :root[data-theme="dark"] .mono-cell,
 :root[data-theme="dark"] .doc-link,
+:root[data-theme="dark"] .link-button,
 :root[data-theme="dark"] .doc-link.missing,
 :root[data-theme="dark"] .money-cell,
 :root[data-theme="dark"] .detail-field strong,
@@ -1897,6 +2143,7 @@ dialog::backdrop {
   .content-header,
   .detail-hero,
   .filters,
+  .supplier-detail,
   .section-title {
     align-items: stretch;
     flex-direction: column;
@@ -1919,6 +2166,7 @@ dialog::backdrop {
   .detail-grid,
   .dashboard-grid,
   .settings-grid,
+  .inline-settings-form,
   .charts-grid,
   .split {
     grid-template-columns: 1fr;
@@ -1940,6 +2188,10 @@ dialog::backdrop {
     align-items: stretch;
     flex-direction: column;
     gap: 12px;
+  }
+
+  .supplier-actions {
+    justify-content: flex-start;
   }
 
   .remove-material {

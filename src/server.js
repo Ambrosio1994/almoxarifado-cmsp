@@ -1,7 +1,9 @@
 import { createServer } from "node:http";
+import { spawn } from "node:child_process";
 import { createPublicKey, randomBytes, scryptSync, timingSafeEqual, verify } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -15,10 +17,12 @@ import {
   dashboardStatusDistribution,
   enrichProcess,
   filterProcesses,
+  isAllowedDocument,
   isPdfDocument,
   isPublicConsultation,
   mutationRequiresAuthenticatedUser,
   QUICK_FILTERS,
+  summarizeMaterials,
   STATUS
 } from "./domain/processos.js";
 import { readStore, writeStore } from "./storage.js";
@@ -34,6 +38,28 @@ const LOCAL_ADMIN_EMAIL = normalizeEmail(process.env.LOCAL_ADMIN_EMAIL);
 const LOCAL_ADMIN_PASSWORD = process.env.LOCAL_ADMIN_PASSWORD || "";
 const sessions = new Map();
 let googleKeysCache = { expiresAt: 0, keys: [] };
+
+const DEFAULT_SETTINGS = {
+  emailTemplates: {
+    notificacaoInterna: {
+      assunto: "Processo {numeroProcesso} com {dias} dias",
+      corpo: "O processo {numeroProcesso} do fornecedor {fornecedor} esta com {dias} dias desde o envio do empenho."
+    },
+    notificacaoFornecedor: {
+      assunto: "Pendencia de entrega - Empenho {numeroEmpenho}",
+      corpo: "Prezado fornecedor, solicitamos atualizacao sobre a entrega vinculada ao empenho {numeroEmpenho}."
+    },
+    reenvioManual: {
+      assunto: "Reenvio de notificacao - Processo {numeroProcesso}",
+      corpo: "Segue reenvio da notificacao referente ao processo {numeroProcesso}."
+    }
+  },
+  notificationRules: {
+    diasAvisoInterno: [7, 14, 21, 31],
+    diaOficioFornecedor: 30
+  },
+  responsaveis: []
+};
 
 const server = createServer(async (req, res) => {
   try {
@@ -219,6 +245,73 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (req.method === "GET" && url.pathname === "/api/settings") {
+    sendJson(res, 200, settingsPayload(store));
+    return;
+  }
+
+  if (req.method === "PUT" && url.pathname === "/api/settings/email-templates") {
+    const body = await readJson(req);
+    const settings = ensureSettings(store);
+    settings.emailTemplates = sanitizeEmailTemplates(body.emailTemplates || body);
+    await writeStore(store);
+    sendJson(res, 200, settingsPayload(store));
+    return;
+  }
+
+  if (req.method === "PUT" && url.pathname === "/api/settings/notifications") {
+    const body = await readJson(req);
+    const settings = ensureSettings(store);
+    settings.notificationRules = sanitizeNotificationRules(body.notificationRules || body);
+    await writeStore(store);
+    sendJson(res, 200, settingsPayload(store));
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/settings/users") {
+    const body = await readJson(req);
+    const settings = ensureSettings(store);
+    const nome = String(body.nome || "").trim();
+    const email = normalizeEmail(body.email);
+    if (!nome || !email) {
+      sendJson(res, 400, { error: "Nome e e-mail sao obrigatorios." });
+      return;
+    }
+    const existing = settings.responsaveis.find((responsavel) => responsavel.email === email);
+    if (existing) {
+      existing.nome = nome;
+      existing.funcao = String(body.funcao || existing.funcao || "").trim();
+      existing.ativo = body.ativo !== false;
+    } else {
+      settings.responsaveis.push({
+        id: crypto.randomUUID(),
+        nome,
+        email,
+        funcao: String(body.funcao || "").trim(),
+        ativo: true,
+        criadoEm: new Date().toISOString()
+      });
+    }
+    await writeStore(store);
+    sendJson(res, 200, settingsPayload(store));
+    return;
+  }
+
+  const settingsUserMatch = url.pathname.match(/^\/api\/settings\/users\/([^/]+)$/);
+  if (settingsUserMatch && req.method === "PATCH") {
+    const body = await readJson(req);
+    const settings = ensureSettings(store);
+    const responsavel = settings.responsaveis.find((item) => item.id === settingsUserMatch[1]);
+    if (!responsavel) {
+      sendJson(res, 404, { error: "Usuario responsavel nao encontrado." });
+      return;
+    }
+    responsavel.ativo = body.ativo !== false;
+    await writeStore(store);
+    sendJson(res, 200, settingsPayload(store));
+    return;
+  }
+
   if (req.method === "GET" && url.pathname === "/api/dashboard") {
     const processos = store.processos.map((processo) => enrichProcess(processo));
     sendJson(res, 200, dashboardMetrics(processos));
@@ -239,6 +332,14 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (req.method === "GET" && ["/api/processes/export", "/api/processes/export/", "/api/processes/download", "/api/processes/download/"].includes(url.pathname)) {
+    const format = String(url.searchParams.get("format") || "csv").toLowerCase();
+    const filtered = filterProcesses(store.processos, Object.fromEntries(url.searchParams));
+    const enriched = applyQuickFilter(filtered.map((processo) => enrichProcess(processo)), url.searchParams.get("filtroRapido"));
+    sendProcessesExport(res, enriched, format);
+    return;
+  }
+
   if (req.method === "GET" && url.pathname === "/api/processes") {
     const filtered = filterProcesses(store.processos, Object.fromEntries(url.searchParams));
     const enriched = filtered.map((processo) => enrichProcess(processo));
@@ -248,6 +349,12 @@ async function handleApi(req, res, url) {
 
   if (req.method === "POST" && url.pathname === "/api/processes") {
     const body = await readJson(req);
+    const duplicate = duplicateProcessFields(store.processos, body);
+    if (duplicate) {
+      sendJson(res, 409, { error: duplicate });
+      return;
+    }
+
     const processo = {
       id: crypto.randomUUID(),
       numeroProcesso: body.numeroProcesso || "",
@@ -297,6 +404,12 @@ async function handleApi(req, res, url) {
 
     if (body.versao && Number(body.versao) !== Number(current.versao)) {
       sendJson(res, 409, { error: "O processo foi alterado por outro usuario. Atualize a tela antes de salvar." });
+      return;
+    }
+
+    const duplicate = duplicateProcessFields(store.processos, body, current.id);
+    if (duplicate) {
+      sendJson(res, 409, { error: duplicate });
       return;
     }
 
@@ -475,13 +588,8 @@ async function handleApi(req, res, url) {
     }
 
     const current = store.processos[index];
-    if (!canEditProcess(current, role)) {
-      sendJson(res, 403, { error: "Este processo nao pode ser alterado neste status." });
-      return;
-    }
-
-    if (!isPdfDocument(body.fileName, body.mimeType)) {
-      sendJson(res, 400, { error: "Apenas arquivos PDF sao aceitos" });
+    if (!isAllowedDocument(body.fileName, body.mimeType)) {
+      sendJson(res, 400, { error: "Formato de documento nao aceito. Use PDF, Excel, CSV, Word, texto ou imagem." });
       return;
     }
 
@@ -501,7 +609,7 @@ async function handleApi(req, res, url) {
       titulo: body.documentKey === "complementares" ? String(body.titulo || "").trim() : undefined,
       descricao: body.documentKey === "complementares" ? String(body.descricao || "").trim() : undefined,
       path: `/uploads/${safeProcessId}/${safeFileName}`,
-      mimeType: "application/pdf",
+      mimeType: body.mimeType || contentTypeForPath(safeFileName),
       uploadedAt: new Date().toISOString(),
       uploadedBy: usuario
     };
@@ -526,7 +634,14 @@ async function handleApi(req, res, url) {
       processoId: current.id,
       usuario,
       acao: "Anexo de documento",
-      detalhes: `Documento ${body.documentKey} anexado.`
+      detalhes: `Documento ${body.documentKey} anexado.`,
+      documento: {
+        chave: body.documentKey,
+        nome: documentInfo.titulo || documentInfo.fileName,
+        fileName: documentInfo.fileName,
+        path: documentInfo.path,
+        mimeType: documentInfo.mimeType
+      }
     }));
     await writeStore(store);
     sendJson(res, 200, enrichProcess(store.processos[index]));
@@ -542,12 +657,12 @@ async function handleApi(req, res, url) {
     }
 
     const current = store.processos[index];
-    if (!canEditProcess(current, role)) {
-      sendJson(res, 403, { error: "Este processo nao pode ser alterado neste status." });
+    const documentKey = decodeURIComponent(documentItemMatch[2]);
+    if (!canAttachDocument(current, documentKey)) {
+      sendJson(res, 400, { error: "Este documento nao pode ser removido neste momento." });
       return;
     }
 
-    const documentKey = decodeURIComponent(documentItemMatch[2]);
     const documentos = { ...(current.documentos || {}) };
     const complementaryMatch = documentKey.match(/^complementares:(\d+)$/);
     if (complementaryMatch) {
@@ -604,7 +719,7 @@ async function handleApi(req, res, url) {
     const format = String(url.searchParams.get("format") || "zip").toLowerCase();
     if (format === "pdf") {
       const documents = await processDocumentEntries(processo);
-      const pdf = createCompiledPdf(documents, payload);
+      const pdf = await createCompiledPdf(documents, payload);
       res.writeHead(200, {
         "content-type": "application/pdf",
         "content-disposition": `attachment; filename="${fileName}-processo-compilado.pdf"`
@@ -624,6 +739,35 @@ async function handleApi(req, res, url) {
 
   if (req.method === "GET" && url.pathname === "/api/suppliers") {
     sendJson(res, 200, store.fornecedores);
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/suppliers") {
+    const body = await readJson(req);
+    const razaoSocial = String(body.razaoSocial || "").trim();
+    if (!razaoSocial) {
+      sendJson(res, 400, { error: "Informe o nome do fornecedor." });
+      return;
+    }
+
+    const index = store.fornecedores.findIndex((fornecedor) => normalizeText(fornecedor.razaoSocial) === normalizeText(razaoSocial));
+    const current = index >= 0 ? store.fornecedores[index] : {};
+    const updated = normalizeSupplier({
+      ...current,
+      id: current.id || crypto.randomUUID(),
+      razaoSocial,
+      emails: mergeList(current.emails || current.email, body.emails),
+      telefones: mergeList(current.telefones || current.telefone, body.telefones),
+      enderecos: mergeList(current.enderecos || current.endereco, body.enderecos),
+      observacoes: mergeText(current.observacoes, body.observacoes),
+      atualizadoEm: new Date().toISOString(),
+      criadoEm: current.criadoEm || new Date().toISOString()
+    });
+
+    if (index >= 0) store.fornecedores[index] = updated;
+    else store.fornecedores.push(updated);
+    await writeStore(store);
+    sendJson(res, index >= 0 ? 200 : 201, updated);
     return;
   }
 
@@ -802,8 +946,25 @@ async function serveUpload(res, pathname) {
   }
 
   const content = await readFile(fullPath);
-  res.writeHead(200, { "content-type": "application/pdf" });
+  res.writeHead(200, { "content-type": contentTypeForPath(fullPath) });
   res.end(content);
+}
+
+function contentTypeForPath(pathname = "") {
+  return {
+    ".pdf": "application/pdf",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".xls": "application/vnd.ms-excel",
+    ".csv": "text/csv; charset=utf-8",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".doc": "application/msword",
+    ".odt": "application/vnd.oasis.opendocument.text",
+    ".ods": "application/vnd.oasis.opendocument.spreadsheet",
+    ".txt": "text/plain; charset=utf-8",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg"
+  }[extname(pathname).toLowerCase()] || "application/octet-stream";
 }
 
 async function readJson(req) {
@@ -823,6 +984,65 @@ function sendText(res, statusCode, payload) {
   res.end(payload);
 }
 
+function settingsPayload(store) {
+  const settings = ensureSettings(store);
+  return {
+    ...settings,
+    status: STATUS,
+    filtrosRapidos: QUICK_FILTERS,
+    usuarios: (store.usuarios || []).map((user) => ({
+      id: user.id,
+      nome: user.nome,
+      email: user.email,
+      ativo: user.ativo !== false,
+      role: ADMIN_EMAILS.has(user.email) ? "admin" : "almoxarifado",
+      origemCadastro: user.origemCadastro || "local",
+      precisaDefinirSenha: Boolean(user.precisaDefinirSenha)
+    }))
+  };
+}
+
+function ensureSettings(store) {
+  if (!store.configuracoes) store.configuracoes = {};
+  store.configuracoes.emailTemplates = sanitizeEmailTemplates(store.configuracoes.emailTemplates || {});
+  store.configuracoes.notificationRules = sanitizeNotificationRules(store.configuracoes.notificationRules || {});
+  store.configuracoes.responsaveis = Array.isArray(store.configuracoes.responsaveis)
+    ? store.configuracoes.responsaveis.map((item) => ({
+      id: item.id || crypto.randomUUID(),
+      nome: String(item.nome || "").trim(),
+      email: normalizeEmail(item.email),
+      funcao: String(item.funcao || "").trim(),
+      ativo: item.ativo !== false,
+      criadoEm: item.criadoEm || new Date().toISOString()
+    })).filter((item) => item.nome && item.email)
+    : [];
+  return store.configuracoes;
+}
+
+function sanitizeEmailTemplates(input = {}) {
+  return Object.fromEntries(Object.entries(DEFAULT_SETTINGS.emailTemplates).map(([key, fallback]) => {
+    const template = input[key] || {};
+    return [key, {
+      assunto: String(template.assunto || fallback.assunto).trim(),
+      corpo: String(template.corpo || fallback.corpo).trim()
+    }];
+  }));
+}
+
+function sanitizeNotificationRules(input = {}) {
+  const diasAvisoInterno = (Array.isArray(input.diasAvisoInterno) ? input.diasAvisoInterno : String(input.diasAvisoInterno || "").split(/[\n,; ]+/))
+    .map((day) => Number(day))
+    .filter((day) => Number.isInteger(day) && day > 0)
+    .sort((a, b) => a - b);
+  const diaOficioFornecedor = Number(input.diaOficioFornecedor || DEFAULT_SETTINGS.notificationRules.diaOficioFornecedor);
+  return {
+    diasAvisoInterno: diasAvisoInterno.length ? [...new Set(diasAvisoInterno)] : DEFAULT_SETTINGS.notificationRules.diasAvisoInterno,
+    diaOficioFornecedor: Number.isInteger(diaOficioFornecedor) && diaOficioFornecedor > 0
+      ? diaOficioFornecedor
+      : DEFAULT_SETTINGS.notificationRules.diaOficioFornecedor
+  };
+}
+
 function sanitizeMaterials(input) {
   const items = Array.isArray(input) ? input : legacyMaterials(input);
   return items
@@ -834,6 +1054,174 @@ function sanitizeMaterials(input) {
     .filter((item) => item.descricao);
 }
 
+function sendProcessesExport(res, processos = [], format = "csv") {
+  const rows = processos.map(processExportRow);
+  const stamp = new Date().toISOString().slice(0, 10);
+
+  if (format === "pdf") {
+    const pdf = createProcessesReportPdf(rows);
+    res.writeHead(200, {
+      "content-type": "application/pdf",
+      "content-disposition": `attachment; filename="processos-${stamp}.pdf"`
+    });
+    res.end(pdf);
+    return;
+  }
+
+  if (format === "excel" || format === "xls") {
+    const excel = createProcessesExcel(rows);
+    res.writeHead(200, {
+      "content-type": "application/vnd.ms-excel; charset=utf-8",
+      "content-disposition": `attachment; filename="processos-${stamp}.xls"`
+    });
+    res.end(excel);
+    return;
+  }
+
+  const csv = createProcessesCsv(rows);
+  res.writeHead(200, {
+    "content-type": "text/csv; charset=utf-8",
+    "content-disposition": `attachment; filename="processos-${stamp}.csv"`
+  });
+  res.end(csv);
+}
+
+function processExportRow(processo = {}) {
+  return {
+    processo: processo.numeroProcesso || "",
+    empenho: processo.numeroEmpenho || "",
+    fornecedor: processo.fornecedor || "",
+    materiais: summarizeMaterials(processo.materiais || []),
+    valorTotal: Number(processo.valorTotal || 0),
+    envioFornecedor: processo.dataEnvioFornecedor || processo.dataEnvioEmpenho || "",
+    dias: processo.diasDecorridos || 0,
+    dataEntrega: processo.dataEntrega || "",
+    envioLiquidacao: processo.dataEnvioLiquidacao || "",
+    status: processo.status || ""
+  };
+}
+
+function exportColumns() {
+  return [
+    ["processo", "Processo"],
+    ["empenho", "Empenho"],
+    ["fornecedor", "Fornecedor"],
+    ["materiais", "Materiais"],
+    ["valorTotal", "Valor total"],
+    ["envioFornecedor", "Envio fornecedor"],
+    ["dias", "Dias"],
+    ["dataEntrega", "Data entrega"],
+    ["envioLiquidacao", "Envio liquidacao"],
+    ["status", "Status"]
+  ];
+}
+
+function createProcessesCsv(rows = []) {
+  const columns = exportColumns();
+  const lines = [
+    columns.map(([, label]) => csvCell(label)).join(";"),
+    ...rows.map((row) => columns.map(([key]) => csvCell(row[key])).join(";"))
+  ];
+  return `\uFEFF${lines.join("\n")}`;
+}
+
+function csvCell(value = "") {
+  const text = String(value ?? "");
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
+function createProcessesExcel(rows = []) {
+  const columns = exportColumns();
+  return `<!doctype html>
+<html>
+  <head><meta charset="utf-8"></head>
+  <body>
+    <table>
+      <thead><tr>${columns.map(([, label]) => `<th>${escapeHtmlText(label)}</th>`).join("")}</tr></thead>
+      <tbody>
+        ${rows.map((row) => `<tr>${columns.map(([key]) => `<td>${escapeHtmlText(row[key])}</td>`).join("")}</tr>`).join("")}
+      </tbody>
+    </table>
+  </body>
+</html>`;
+}
+
+function createProcessesReportPdf(rows = []) {
+  const lines = [
+    "Relatorio de processos",
+    `Gerado em: ${new Date().toLocaleString("pt-BR")}`,
+    `Total de processos: ${rows.length}`,
+    "",
+    ...rows.flatMap((row) => [
+      `${row.processo || "-"} | ${row.empenho || "-"} | ${row.status || "-"}`,
+      `${row.fornecedor || "-"} | ${formatCurrency(row.valorTotal)}`,
+      ""
+    ])
+  ];
+  const pageLines = chunkList(lines, 34);
+  const pageObjects = [];
+  pageLines.forEach((chunk, index) => {
+    const pageId = 4 + (index * 2);
+    const contentId = pageId + 1;
+    const escapedLines = chunk.map((line, lineIndex) => `BT /F1 ${index === 0 && lineIndex === 0 ? 18 : 9} Tf 40 ${790 - (lineIndex * 22)} Td (${escapePdfText(line)}) Tj ET`).join("\n");
+    const stream = Buffer.from(escapedLines, "latin1");
+    pageObjects.push(
+      { id: pageId, body: `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R >> >> /Contents ${contentId} 0 R >>` },
+      { id: contentId, body: `<< /Length ${stream.length} >>\nstream\n${stream.toString("latin1")}\nendstream` }
+    );
+  });
+  const kids = pageLines.map((_, index) => `${4 + (index * 2)} 0 R`).join(" ");
+  return writePdfObjects([
+    { id: 1, body: "<< /Type /Catalog /Pages 2 0 R >>" },
+    { id: 2, body: `<< /Type /Pages /Kids [${kids}] /Count ${pageLines.length} >>` },
+    { id: 3, body: "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>" },
+    ...pageObjects
+  ]);
+}
+
+function chunkList(items = [], size = 1) {
+  const chunks = [];
+  for (let index = 0; index < items.length; index += size) chunks.push(items.slice(index, index + size));
+  return chunks.length ? chunks : [[]];
+}
+
+function formatCurrency(value = 0) {
+  return Number(value || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+}
+
+function escapeHtmlText(value = "") {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function duplicateProcessFields(processos = [], candidate = {}, ignoreId = "") {
+  const numeroProcesso = normalizeProcessIdentifier(candidate.numeroProcesso);
+  const numeroEmpenho = normalizeProcessIdentifier(candidate.numeroEmpenho);
+  const duplicateProcess = processos
+    .filter((processo) => !processo.inativo && processo.id !== ignoreId)
+    .find((processo) => (
+      (numeroProcesso && normalizeProcessIdentifier(processo.numeroProcesso) === numeroProcesso)
+      || (numeroEmpenho && normalizeProcessIdentifier(processo.numeroEmpenho) === numeroEmpenho)
+    ));
+
+  if (!duplicateProcess) return "";
+  if (numeroProcesso && normalizeProcessIdentifier(duplicateProcess.numeroProcesso) === numeroProcesso) {
+    return `Ja existe um processo cadastrado com a numeracao ${candidate.numeroProcesso}: ${duplicateProcess.numeroProcesso || duplicateProcess.id}.`;
+  }
+  return `Ja existe um processo cadastrado com o numero de empenho ${candidate.numeroEmpenho}: ${duplicateProcess.numeroProcesso || duplicateProcess.id}.`;
+}
+
+function normalizeProcessIdentifier(value = "") {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9]/g, "")
+    .toUpperCase();
+}
+
 function legacyMaterials(input = {}) {
   if (!input.material && !input.valorUnitario && !input.quantidade) return [];
   return [{
@@ -841,6 +1229,43 @@ function legacyMaterials(input = {}) {
     valorUnitario: input.valorUnitario,
     quantidade: input.quantidade
   }];
+}
+
+function normalizeSupplier(fornecedor = {}) {
+  const emails = mergeList(fornecedor.email, fornecedor.emails);
+  const telefones = mergeList(fornecedor.telefone, fornecedor.telefones);
+  const enderecos = mergeList(fornecedor.endereco, fornecedor.enderecos);
+  return {
+    ...fornecedor,
+    razaoSocial: String(fornecedor.razaoSocial || fornecedor.nome || "").trim(),
+    emails,
+    telefones,
+    enderecos,
+    email: emails[0] || "",
+    telefone: telefones[0] || "",
+    endereco: enderecos[0] || "",
+    observacoes: String(fornecedor.observacoes || "").trim()
+  };
+}
+
+function mergeList(...values) {
+  return [...new Set(values.flatMap((value) => {
+    if (Array.isArray(value)) return value;
+    return String(value || "").split(/[\n,;]+/);
+  }).map((value) => String(value || "").trim()).filter(Boolean))];
+}
+
+function mergeText(current = "", next = "") {
+  const items = mergeList(String(current || "").split("\n"), String(next || "").split("\n"));
+  return items.join("\n");
+}
+
+function normalizeText(value = "") {
+  return String(value)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLowerCase();
 }
 
 function safeName(value = "") {
@@ -900,8 +1325,10 @@ async function processDocumentEntries(processo) {
   return entries;
 }
 
-function createCompiledPdf(documentEntries, payload) {
+async function createCompiledPdf(documentEntries, payload) {
   const pdfEntries = documentEntries.filter((entry) => isPdfBuffer(entry.data));
+  const united = await unitePdfDocuments(pdfEntries.map((entry) => entry.data));
+  if (united) return united;
   const merged = mergePdfDocuments(pdfEntries.map((entry) => entry.data));
   if (merged) return merged;
   return createSummaryPdf(payload, pdfEntries.length
@@ -911,6 +1338,36 @@ function createCompiledPdf(documentEntries, payload) {
 
 function isPdfBuffer(buffer) {
   return Buffer.isBuffer(buffer) && buffer.subarray(0, 5).toString("latin1") === "%PDF-";
+}
+
+async function unitePdfDocuments(pdfBuffers) {
+  if (!pdfBuffers.length) return null;
+  const directory = await mkdtemp(join(tmpdir(), "almox-pdf-"));
+  try {
+    const inputPaths = [];
+    for (const [index, pdfBuffer] of pdfBuffers.entries()) {
+      const inputPath = join(directory, `${index + 1}.pdf`);
+      await writeFile(inputPath, pdfBuffer);
+      inputPaths.push(inputPath);
+    }
+    const outputPath = join(directory, "compilado.pdf");
+    const exitCode = await runCommand("pdfunite", [...inputPaths, outputPath]);
+    if (exitCode !== 0) return null;
+    const output = await readFile(outputPath);
+    return isPdfBuffer(output) ? output : null;
+  } catch {
+    return null;
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
+function runCommand(command, args) {
+  return new Promise((resolve) => {
+    const child = spawn(command, args, { stdio: "ignore" });
+    child.on("error", () => resolve(-1));
+    child.on("close", (code) => resolve(code ?? -1));
+  });
 }
 
 function mergePdfDocuments(pdfBuffers) {
