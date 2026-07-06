@@ -26,6 +26,7 @@ function emptyStore() {
     fornecedores: [],
     auditoria: [],
     observacoes: [],
+    emailHistorico: [],
     usuarios: [],
     configuracoes: {}
   };

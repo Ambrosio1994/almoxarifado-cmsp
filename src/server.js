@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { connect as connectTls } from "node:tls";
 import { spawn } from "node:child_process";
 import { createPublicKey, randomBytes, scryptSync, timingSafeEqual, verify } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -21,6 +22,7 @@ import {
   isPdfDocument,
   isPublicConsultation,
   mutationRequiresAuthenticatedUser,
+  processDeadlineDate,
   QUICK_FILTERS,
   summarizeMaterials,
   STATUS
@@ -36,27 +38,33 @@ const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "";
 const ADMIN_EMAILS = new Set(parseList(process.env.ADMIN_EMAILS));
 const LOCAL_ADMIN_EMAIL = normalizeEmail(process.env.LOCAL_ADMIN_EMAIL);
 const LOCAL_ADMIN_PASSWORD = process.env.LOCAL_ADMIN_PASSWORD || "";
+const SMTP_HOST = process.env.SMTP_HOST || "smtp.gmail.com";
+const SMTP_PORT = Number(process.env.SMTP_PORT || 465);
+const EMAIL_TEST_RECIPIENT = normalizeEmail(process.env.EMAIL_TEST_RECIPIENT || "sgtambrosio2019@gmail.com");
+const GMAIL_USER = normalizeEmail(process.env.GMAIL_USER || process.env.SMTP_USER || EMAIL_TEST_RECIPIENT);
+const GMAIL_APP_PASSWORD = process.env.GMAIL_APP_PASSWORD || process.env.SMTP_PASS || "";
+const EMAIL_FROM_NAME = process.env.EMAIL_FROM_NAME || "Almoxarifado CMSP";
+const EMAIL_CHECK_INTERVAL_MS = Number(process.env.EMAIL_CHECK_INTERVAL_MS || 60 * 60 * 1000);
 const sessions = new Map();
 let googleKeysCache = { expiresAt: 0, keys: [] };
+let emailSchedulerRunning = false;
 
 const DEFAULT_SETTINGS = {
   emailTemplates: {
-    notificacaoInterna: {
-      assunto: "Processo {numeroProcesso} com {dias} dias",
-      corpo: "O processo {numeroProcesso} do fornecedor {fornecedor} esta com {dias} dias desde o envio do empenho."
+    avisoPrazos: {
+      assunto: "Aviso de prazo - Processo {numeroProcesso}",
+      corpo: "O processo {numeroProcesso} do fornecedor {fornecedor} esta com {dias} dias desde o envio do empenho.",
+      anexos: []
     },
-    notificacaoFornecedor: {
-      assunto: "Pendencia de entrega - Empenho {numeroEmpenho}",
-      corpo: "Prezado fornecedor, solicitamos atualizacao sobre a entrega vinculada ao empenho {numeroEmpenho}."
-    },
-    reenvioManual: {
-      assunto: "Reenvio de notificacao - Processo {numeroProcesso}",
-      corpo: "Segue reenvio da notificacao referente ao processo {numeroProcesso}."
+    oficioFornecedor: {
+      assunto: "Oficio ao fornecedor - Empenho {numeroEmpenho}",
+      corpo: "Prezado fornecedor, solicitamos atualizacao sobre a entrega vinculada ao empenho {numeroEmpenho}.",
+      anexos: []
     }
   },
   notificationRules: {
-    diasAvisoInterno: [7, 14, 21, 31],
-    diaOficioFornecedor: 30
+    diasAvisoInterno: [14, 21, 28],
+    diaOficioFornecedor: 31
   },
   responsaveis: []
 };
@@ -88,6 +96,7 @@ const server = createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   console.log(`Almoxarifado CMSP em http://localhost:${PORT}`);
+  startEmailScheduler();
 });
 
 async function handleAuth(req, res, url) {
@@ -250,10 +259,99 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (req.method === "GET" && url.pathname === "/api/emails/status") {
+    sendJson(res, 200, emailStatusPayload());
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/emails/history") {
+    sendJson(res, 200, ensureEmailHistory(store).slice(0, 100));
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/emails/run-due") {
+    const body = await readJson(req);
+    const result = await runDueEmailNotifications({
+      manual: true,
+      force: Boolean(body.force),
+      processId: String(body.processId || ""),
+      tipo: String(body.tipo || ""),
+      testRecipient: Object.prototype.hasOwnProperty.call(body, "testRecipient")
+        ? normalizeEmail(body.testRecipient)
+        : ""
+    });
+    sendJson(res, 200, result);
+    return;
+  }
+
   if (req.method === "PUT" && url.pathname === "/api/settings/email-templates") {
     const body = await readJson(req);
     const settings = ensureSettings(store);
     settings.emailTemplates = sanitizeEmailTemplates(body.emailTemplates || body);
+    await writeStore(store);
+    sendJson(res, 200, settingsPayload(store));
+    return;
+  }
+
+  const templateAttachmentMatch = url.pathname.match(/^\/api\/settings\/email-templates\/([^/]+)\/attachments$/);
+  if (templateAttachmentMatch && req.method === "POST") {
+    const templateKey = decodeURIComponent(templateAttachmentMatch[1]);
+    const settings = ensureSettings(store);
+    const template = settings.emailTemplates[templateKey];
+    if (!template) {
+      sendJson(res, 404, { error: "Template nao encontrado" });
+      return;
+    }
+
+    const body = await readJson(req);
+    if (!body.fileName || !body.contentBase64) {
+      sendJson(res, 400, { error: "Documento, nome do arquivo e conteudo sao obrigatorios" });
+      return;
+    }
+
+    if (!isAllowedDocument(body.fileName, body.mimeType)) {
+      sendJson(res, 400, { error: "Formato de documento nao aceito. Use PDF, Excel, CSV, Word, texto ou imagem." });
+      return;
+    }
+
+    const safeTemplateKey = safeName(templateKey);
+    const attachmentId = crypto.randomUUID();
+    const safeFileName = `${attachmentId}-${safeName(body.fileName)}`;
+    const dir = join(UPLOAD_ROOT, "email-templates", safeTemplateKey);
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, safeFileName), Buffer.from(body.contentBase64, "base64"));
+
+    const attachment = {
+      id: attachmentId,
+      fileName: body.fileName,
+      path: `/uploads/email-templates/${safeTemplateKey}/${safeFileName}`,
+      mimeType: body.mimeType || contentTypeForPath(safeFileName),
+      uploadedAt: new Date().toISOString(),
+      uploadedBy: usuario
+    };
+    template.anexos = [...(Array.isArray(template.anexos) ? template.anexos : []), attachment];
+    await writeStore(store);
+    sendJson(res, 200, settingsPayload(store));
+    return;
+  }
+
+  const templateAttachmentItemMatch = url.pathname.match(/^\/api\/settings\/email-templates\/([^/]+)\/attachments\/([^/]+)$/);
+  if (templateAttachmentItemMatch && req.method === "DELETE") {
+    const templateKey = decodeURIComponent(templateAttachmentItemMatch[1]);
+    const attachmentId = decodeURIComponent(templateAttachmentItemMatch[2]);
+    const settings = ensureSettings(store);
+    const template = settings.emailTemplates[templateKey];
+    if (!template) {
+      sendJson(res, 404, { error: "Template nao encontrado" });
+      return;
+    }
+    const before = Array.isArray(template.anexos) ? template.anexos.length : 0;
+    template.anexos = (Array.isArray(template.anexos) ? template.anexos : [])
+      .filter((attachment) => attachment.id !== attachmentId);
+    if (template.anexos.length === before) {
+      sendJson(res, 404, { error: "Anexo nao encontrado" });
+      return;
+    }
     await writeStore(store);
     sendJson(res, 200, settingsPayload(store));
     return;
@@ -984,6 +1082,443 @@ function sendText(res, statusCode, payload) {
   res.end(payload);
 }
 
+function emailStatusPayload() {
+  return {
+    enabled: Boolean(GMAIL_USER && GMAIL_APP_PASSWORD),
+    host: SMTP_HOST,
+    port: SMTP_PORT,
+    user: GMAIL_USER || "",
+    fromName: EMAIL_FROM_NAME,
+    simulationRecipient: EMAIL_TEST_RECIPIENT,
+    mode: "producao",
+    schedulerRunning: emailSchedulerRunning
+  };
+}
+
+function startEmailScheduler() {
+  if (emailSchedulerRunning) return;
+  emailSchedulerRunning = true;
+  setTimeout(() => {
+    runDueEmailNotifications().catch((error) => {
+      console.error("Falha ao executar rotina de e-mails:", error.message);
+    });
+  }, 10_000);
+  setInterval(() => {
+    runDueEmailNotifications().catch((error) => {
+      console.error("Falha ao executar rotina de e-mails:", error.message);
+    });
+  }, EMAIL_CHECK_INTERVAL_MS);
+}
+
+async function runDueEmailNotifications(options = {}) {
+  const store = await readStore();
+  const settings = ensureSettings(store);
+  const history = ensureEmailHistory(store);
+  const today = new Date().toISOString().slice(0, 10);
+  const testRecipient = normalizeEmail(options.testRecipient || "");
+  const candidates = dueEmailCandidates(store, settings, today, {
+    force: options.force,
+    processId: options.processId,
+    tipo: options.tipo
+  });
+  const result = {
+    ok: true,
+    enabled: Boolean(GMAIL_USER && GMAIL_APP_PASSWORD),
+    redirectRecipient: testRecipient,
+    checkedAt: new Date().toISOString(),
+    candidates: candidates.length,
+    sent: [],
+    skipped: [],
+    failed: []
+  };
+
+  if (!GMAIL_USER || !GMAIL_APP_PASSWORD) {
+    result.ok = false;
+    result.error = "Configure GMAIL_USER e GMAIL_APP_PASSWORD no .env para enviar e-mails.";
+    return result;
+  }
+
+  for (const candidate of candidates) {
+    const dedupeKey = emailDedupeKey(candidate, today);
+    if (!options.force && history.some((entry) => entry.dedupeKey === dedupeKey && entry.status === "enviado")) {
+      result.skipped.push({ processoId: candidate.processo.id, tipo: candidate.tipo, motivo: "ja enviado hoje" });
+      continue;
+    }
+
+    const recipients = testRecipient ? [testRecipient] : candidate.recipients;
+    if (!recipients.length) {
+      result.skipped.push({ processoId: candidate.processo.id, tipo: candidate.tipo, motivo: "sem destinatario" });
+      continue;
+    }
+
+    const email = await buildNotificationEmail(candidate, recipients, testRecipient);
+    try {
+      await sendSmtpMail(email);
+      const entry = {
+        id: crypto.randomUUID(),
+        dedupeKey,
+        processoId: candidate.processo.id,
+        numeroProcesso: candidate.processo.numeroProcesso || "",
+        numeroEmpenho: candidate.processo.numeroEmpenho || "",
+        tipo: candidate.tipo,
+        destinatariosOriginais: candidate.recipients,
+        destinatarios: recipients,
+        assunto: email.subject,
+        status: "enviado",
+        modoTeste: Boolean(testRecipient),
+        criadoEm: new Date().toISOString()
+      };
+      history.unshift(entry);
+      result.sent.push(entry);
+    } catch (error) {
+      const entry = {
+        id: crypto.randomUUID(),
+        dedupeKey,
+        processoId: candidate.processo.id,
+        numeroProcesso: candidate.processo.numeroProcesso || "",
+        numeroEmpenho: candidate.processo.numeroEmpenho || "",
+        tipo: candidate.tipo,
+        destinatariosOriginais: candidate.recipients,
+        destinatarios: recipients,
+        assunto: email.subject,
+        status: "erro",
+        erro: error.message,
+        modoTeste: Boolean(testRecipient),
+        criadoEm: new Date().toISOString()
+      };
+      history.unshift(entry);
+      result.failed.push(entry);
+    }
+  }
+
+  store.emailHistorico = history.slice(0, 500);
+  await writeStore(store);
+  result.ok = result.failed.length === 0;
+  return result;
+}
+
+function dueEmailCandidates(store, settings, today, options = {}) {
+  const rules = settings.notificationRules;
+  const fornecedores = Array.isArray(store.fornecedores) ? store.fornecedores : [];
+  const active = (store.processos || [])
+    .map((processo) => enrichProcess(processo))
+    .filter((processo) => !processo.inativo && !["Entregue", "Liquidado", "Pago", "Anulado"].includes(processo.status))
+    .filter((processo) => !options.processId || processo.id === options.processId);
+  const candidates = [];
+
+  for (const processo of active) {
+    const dias = Number(processo.diasDecorridos || 0);
+    const supplier = fornecedorForProcess(fornecedores, processo);
+    if (rules.diasAvisoInterno.includes(dias)) {
+      candidates.push({
+        tipo: "avisoPrazos",
+        processo,
+        recipients: internalNotificationRecipients(settings),
+        template: settings.emailTemplates.avisoPrazos
+      });
+    }
+    if (dias === Number(rules.diaOficioFornecedor || 31)) {
+      candidates.push({
+        tipo: "oficioFornecedor",
+        processo,
+        recipients: supplierRecipients(supplier),
+        template: settings.emailTemplates.oficioFornecedor
+      });
+    }
+  }
+
+  if (options.force && options.processId && active.length && options.tipo === "oficioFornecedor") {
+    const processo = active[0];
+    const supplier = fornecedorForProcess(fornecedores, processo);
+    return [{
+      tipo: "oficioFornecedor",
+      processo,
+      recipients: supplierRecipients(supplier),
+      template: settings.emailTemplates.oficioFornecedor,
+      forceTest: true,
+      scheduledDate: today,
+      deadlineDate: processDeadlineDate(processo)
+    }];
+  }
+
+  if (!candidates.length && options.force && active.length) {
+    const processo = active[0];
+    candidates.push({
+      tipo: "avisoPrazos",
+      processo,
+      recipients: internalNotificationRecipients(settings),
+      template: settings.emailTemplates.avisoPrazos,
+      forceTest: true
+    });
+  }
+
+  return candidates.map((candidate) => ({
+    ...candidate,
+    scheduledDate: today,
+    deadlineDate: processDeadlineDate(candidate.processo)
+  }));
+}
+
+function internalNotificationRecipients(settings) {
+  const responsaveis = (settings.responsaveis || [])
+    .filter((item) => item.ativo !== false)
+    .flatMap((item) => item.email);
+  return uniqueEmails([...responsaveis, ...ADMIN_EMAILS]);
+}
+
+function supplierRecipients(supplier = {}) {
+  return uniqueEmails([supplier.email, ...(supplier.emails || [])]);
+}
+
+function fornecedorForProcess(fornecedores = [], processo = {}) {
+  return fornecedores.find((fornecedor) => normalizeText(fornecedor.razaoSocial) === normalizeText(processo.fornecedor)) || {};
+}
+
+function uniqueEmails(values = []) {
+  return [...new Set(values.map(normalizeEmail).filter(Boolean))];
+}
+
+function emailDedupeKey(candidate, today) {
+  return `${today}:${candidate.tipo}:${candidate.processo.id}:${candidate.processo.diasDecorridos}`;
+}
+
+async function buildNotificationEmail(candidate, recipients, testRecipient = "") {
+  const processo = candidate.processo;
+  const variables = {
+    numeroProcesso: processo.numeroProcesso || "",
+    numeroEmpenho: processo.numeroEmpenho || "",
+    fornecedor: processo.fornecedor || "",
+    dias: processo.diasDecorridos || 0
+  };
+  const subject = fillTemplate(candidate.template.assunto, variables);
+  const body = [
+    testRecipient ? "[MODO TESTE] Este e-mail foi redirecionado para teste." : "",
+    candidate.forceTest ? "[TESTE FORCADO] Nao havia empenho exatamente no prazo de disparo; foi usado o primeiro empenho ativo." : "",
+    fillTemplate(candidate.template.corpo, variables),
+    "",
+    `Processo: ${processo.numeroProcesso || "-"}`,
+    `Empenho: ${processo.numeroEmpenho || "-"}`,
+    `Fornecedor: ${processo.fornecedor || "-"}`,
+    `Data de referencia: ${processDeadlineDate(processo) || "-"}`,
+    `Dias decorridos: ${processo.diasDecorridos || 0}`
+  ].filter((line, index) => line || index > 1).join("\n");
+  return {
+    from: GMAIL_USER,
+    fromName: EMAIL_FROM_NAME,
+    to: recipients,
+    subject,
+    text: body,
+    attachments: await emailTemplateAttachments(candidate.template)
+  };
+}
+
+function fillTemplate(template = "", variables = {}) {
+  return String(template).replace(/\{(\w+)\}/g, (_, key) => String(variables[key] ?? ""));
+}
+
+async function emailTemplateAttachments(template = {}) {
+  const attachments = [];
+  for (const attachment of template.anexos || []) {
+    const uploadPath = String(attachment.path || "");
+    if (!uploadPath.startsWith("/uploads/")) continue;
+    const relativePath = uploadPath.replace(/^\/uploads\/+/, "");
+    const fullPath = normalize(join(UPLOAD_ROOT, relativePath));
+    if (!fullPath.startsWith(UPLOAD_ROOT)) continue;
+    try {
+      attachments.push({
+        fileName: attachment.fileName || "anexo",
+        mimeType: attachment.mimeType || contentTypeForPath(fullPath),
+        content: await readFile(fullPath)
+      });
+    } catch {
+      // Missing attachments should not block the notification itself.
+    }
+  }
+  return attachments;
+}
+
+function ensureEmailHistory(store) {
+  if (!Array.isArray(store.emailHistorico)) store.emailHistorico = [];
+  return store.emailHistorico;
+}
+
+async function sendSmtpMail(message) {
+  const client = await SmtpClient.connect({
+    host: SMTP_HOST,
+    port: SMTP_PORT,
+    user: GMAIL_USER,
+    pass: GMAIL_APP_PASSWORD
+  });
+  try {
+    await client.send(message);
+  } finally {
+    await client.quit().catch(() => null);
+  }
+}
+
+class SmtpClient {
+  constructor(socket, credentials) {
+    this.socket = socket;
+    this.credentials = credentials;
+    this.buffer = "";
+    this.pending = [];
+    this.socket.setEncoding("utf8");
+    this.socket.on("data", (chunk) => this.receive(chunk));
+    this.socket.on("error", (error) => this.rejectPending(error));
+    this.socket.on("close", () => this.rejectPending(new Error("Conexao SMTP encerrada.")));
+  }
+
+  static connect(credentials) {
+    return new Promise((resolve, reject) => {
+      const socket = connectTls({
+        host: credentials.host,
+        port: credentials.port,
+        servername: credentials.host
+      }, async () => {
+        const client = new SmtpClient(socket, credentials);
+        try {
+          await client.readReply([220]);
+          await client.command(`EHLO ${smtpLocalName()}`, [250]);
+          await client.command("AUTH LOGIN", [334]);
+          await client.command(Buffer.from(credentials.user).toString("base64"), [334]);
+          await client.command(Buffer.from(credentials.pass).toString("base64"), [235]);
+          resolve(client);
+        } catch (error) {
+          socket.destroy();
+          reject(error);
+        }
+      });
+      socket.once("error", reject);
+    });
+  }
+
+  receive(chunk) {
+    this.buffer += chunk;
+    while (true) {
+      const lineEnd = this.buffer.indexOf("\n");
+      if (lineEnd === -1) return;
+      const line = this.buffer.slice(0, lineEnd + 1);
+      this.buffer = this.buffer.slice(lineEnd + 1);
+      const pending = this.pending[0];
+      if (!pending) continue;
+      pending.lines.push(line.trimEnd());
+      if (/^\d{3} /.test(line)) {
+        this.pending.shift();
+        const code = Number(line.slice(0, 3));
+        if (pending.expected.includes(code)) pending.resolve({ code, lines: pending.lines });
+        else pending.reject(new Error(`SMTP ${code}: ${pending.lines.join(" | ")}`));
+      }
+    }
+  }
+
+  readReply(expected) {
+    return new Promise((resolve, reject) => {
+      this.pending.push({ expected, resolve, reject, lines: [] });
+    });
+  }
+
+  async command(command, expected) {
+    this.socket.write(`${command}\r\n`);
+    return this.readReply(expected);
+  }
+
+  async send(message) {
+    await this.command(`MAIL FROM:<${smtpAddress(message.from)}>`, [250]);
+    for (const recipient of message.to) {
+      await this.command(`RCPT TO:<${smtpAddress(recipient)}>`, [250, 251]);
+    }
+    await this.command("DATA", [354]);
+    this.socket.write(`${dotStuff(buildMimeMessage(message))}\r\n.\r\n`);
+    await this.readReply([250]);
+  }
+
+  async quit() {
+    if (this.socket.destroyed) return;
+    await this.command("QUIT", [221]);
+    this.socket.end();
+  }
+
+  rejectPending(error) {
+    while (this.pending.length) this.pending.shift().reject(error);
+  }
+}
+
+function buildMimeMessage(message) {
+  const boundary = `almox-${randomBytes(12).toString("hex")}`;
+  const headers = [
+    `From: ${encodedMailbox(message.fromName, message.from)}`,
+    `To: ${message.to.map((email) => `<${email}>`).join(", ")}`,
+    `Subject: ${encodeHeader(message.subject)}`,
+    "MIME-Version: 1.0",
+    `Date: ${new Date().toUTCString()}`,
+    `Message-ID: <${randomBytes(16).toString("hex")}@almoxarifado-cmsp.local>`
+  ];
+
+  if (!message.attachments?.length) {
+    return [
+      ...headers,
+      "Content-Type: text/plain; charset=utf-8",
+      "Content-Transfer-Encoding: base64",
+      "",
+      wrapBase64(Buffer.from(message.text || "", "utf8").toString("base64"))
+    ].join("\r\n");
+  }
+
+  const parts = [
+    ...headers,
+    `Content-Type: multipart/mixed; boundary="${boundary}"`,
+    "",
+    `--${boundary}`,
+    "Content-Type: text/plain; charset=utf-8",
+    "Content-Transfer-Encoding: base64",
+    "",
+    wrapBase64(Buffer.from(message.text || "", "utf8").toString("base64"))
+  ];
+
+  for (const attachment of message.attachments) {
+    parts.push(
+      `--${boundary}`,
+      `Content-Type: ${attachment.mimeType || "application/octet-stream"}; name="${escapeHeaderParam(attachment.fileName)}"`,
+      "Content-Transfer-Encoding: base64",
+      `Content-Disposition: attachment; filename="${escapeHeaderParam(attachment.fileName)}"`,
+      "",
+      wrapBase64(Buffer.from(attachment.content).toString("base64"))
+    );
+  }
+  parts.push(`--${boundary}--`);
+  return parts.join("\r\n");
+}
+
+function encodedMailbox(name = "", email = "") {
+  return `${encodeHeader(name)} <${email}>`;
+}
+
+function encodeHeader(value = "") {
+  const text = String(value || "");
+  if (/^[\x20-\x7e]*$/.test(text)) return text.replace(/[\r\n]+/g, " ");
+  return `=?UTF-8?B?${Buffer.from(text, "utf8").toString("base64")}?=`;
+}
+
+function escapeHeaderParam(value = "") {
+  return String(value || "anexo").replace(/["\r\n]/g, "_");
+}
+
+function wrapBase64(value = "") {
+  return String(value).replace(/.{1,76}/g, "$&\r\n").trimEnd();
+}
+
+function dotStuff(message = "") {
+  return String(message).replace(/^\./, "..").replace(/\r?\n\./g, "\r\n..");
+}
+
+function smtpAddress(value = "") {
+  return String(value).replace(/[<>\r\n]/g, "").trim();
+}
+
+function smtpLocalName() {
+  return "localhost";
+}
+
 function settingsPayload(store) {
   const settings = ensureSettings(store);
   return {
@@ -1021,12 +1556,32 @@ function ensureSettings(store) {
 
 function sanitizeEmailTemplates(input = {}) {
   return Object.fromEntries(Object.entries(DEFAULT_SETTINGS.emailTemplates).map(([key, fallback]) => {
-    const template = input[key] || {};
+    const template = input[key] || legacyEmailTemplate(input, key) || {};
     return [key, {
       assunto: String(template.assunto || fallback.assunto).trim(),
-      corpo: String(template.corpo || fallback.corpo).trim()
+      corpo: String(template.corpo || fallback.corpo).trim(),
+      anexos: sanitizeTemplateAttachments(template.anexos)
     }];
   }));
+}
+
+function legacyEmailTemplate(input = {}, key = "") {
+  if (key === "avisoPrazos") return input.notificacaoInterna;
+  if (key === "oficioFornecedor") return input.notificacaoFornecedor;
+  return null;
+}
+
+function sanitizeTemplateAttachments(input = []) {
+  return (Array.isArray(input) ? input : [])
+    .map((attachment) => ({
+      id: String(attachment.id || crypto.randomUUID()),
+      fileName: String(attachment.fileName || "").trim(),
+      path: String(attachment.path || "").trim(),
+      mimeType: String(attachment.mimeType || "").trim(),
+      uploadedAt: String(attachment.uploadedAt || "").trim(),
+      uploadedBy: String(attachment.uploadedBy || "").trim()
+    }))
+    .filter((attachment) => attachment.fileName && attachment.path);
 }
 
 function sanitizeNotificationRules(input = {}) {
