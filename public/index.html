@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Almoxarifado CMSP</title>
+    <link rel="stylesheet" href="/styles.css">
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+  </head>
+  <body>
+    <section class="auth-screen" id="authScreen">
+      <main class="auth-card">
+        <section class="auth-panel" id="loginPanel">
+          <form id="loginForm" class="auth-form">
+            <div class="google-sdk-button" id="googleSdkButton"></div>
+            <button type="button" class="google-button hidden" id="googleSignupButton">
+              <span>G</span>
+              Continuar com Google
+            </button>
+            <div class="auth-divider"><span>OU</span></div>
+            <label class="email-only"><input name="email" type="email" autocomplete="email" placeholder="Digite seu e-mail" required></label>
+            <label class="password-step hidden" id="passwordStep"><input name="senha" type="password" autocomplete="current-password" placeholder="Digite sua senha"></label>
+            <button type="submit" class="email-submit" id="emailSubmitButton">Continuar com e-mail</button>
+          </form>
+          <p class="auth-note">Ao continuar, voce reconhece a Politica de Privacidade do Almoxarifado CMSP.</p>
+          <p class="auth-message" id="authMessage"></p>
+        </section>
+
+        <section class="auth-panel hidden" id="setPasswordPanel">
+          <div>
+            <h1>Defina sua senha</h1>
+            <p id="setPasswordEmail">Cadastro criado via Google.</p>
+          </div>
+          <form id="setPasswordForm" class="auth-form">
+            <input type="hidden" name="pendingUserId">
+            <label>Senha <input name="senha" type="password" autocomplete="new-password" minlength="6" required></label>
+            <label>Confirmar senha <input name="confirmacao" type="password" autocomplete="new-password" minlength="6" required></label>
+            <button type="submit">Salvar senha e entrar</button>
+          </form>
+        </section>
+      </main>
+    </section>
+    <aside class="sidebar hidden" id="sidebar">
+      <button type="button" class="sidebar-toggle" id="sidebarToggle" aria-label="Minimizar menu">‹</button>
+      <div class="sidebar-resizer" id="sidebarResizer" aria-hidden="true"></div>
+      <div class="brand">
+        <strong>Almoxarifado</strong>
+        <span>CMSP · CONTROLE DE EMPENHOS</span>
+      </div>
+      <nav class="side-nav" aria-label="Navegacao principal">
+        <a href="#" class="nav-item" data-section="dashboard"><span>▦</span>Painel</a>
+        <a href="#" class="nav-item active" data-section="processes"><span>▱</span>Processos</a>
+        <a href="#" class="nav-item" data-section="suppliers"><span>▤</span>Fornecedores</a>
+        <a href="#" class="nav-item" data-section="settings"><span>⚙</span>Configuracoes</a>
+      </nav>
+      <button type="button" class="sidebar-logout" id="logoutButton">Sair</button>
+    </aside>
+
+    <div class="app-shell hidden" id="appShell">
+      <header class="topbar">
+        <strong id="sectionTitle">Painel</strong>
+        <button type="button" class="theme-toggle" id="themeToggle" aria-label="Alternar para modo escuro" title="Alternar tema">
+          <span aria-hidden="true">◐</span>
+          <strong>Escuro</strong>
+        </button>
+      </header>
+
+      <main>
+        <section class="metrics" id="metrics"></section>
+
+        <section class="workspace" id="processListView">
+          <section class="content">
+            <div class="content-header">
+              <div>
+                <h1>Processos</h1>
+              </div>
+              <button type="button" id="newProcessButton">+ Novo processo</button>
+            </div>
+
+            <div class="filters">
+              <label class="search-box" aria-label="Pesquisar processos">
+                <span>⌕</span>
+                <input id="searchInput" placeholder="Buscar por processo, empenho, nota fiscal, fornecedor ou material">
+              </label>
+              <select id="quickFilter" aria-label="Filtro rapido"></select>
+              <select id="statusFilter" aria-label="Status"></select>
+            </div>
+
+            <div class="quick-filter-bar" id="quickFilterBar"></div>
+
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Nº Processo no SPED</th>
+                    <th>Nº Empenho</th>
+                    <th>Fornecedor</th>
+                    <th>Materiais</th>
+                    <th>Valor total</th>
+                    <th>Envio fornecedor</th>
+                    <th>Dias</th>
+                    <th>Data entrega</th>
+                    <th>Envio liquidacao</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody id="processTable"></tbody>
+              </table>
+            </div>
+          </section>
+        </section>
+
+        <section class="module-view hidden" id="dashboardView"></section>
+        <section class="module-view hidden" id="suppliersView"></section>
+        <section class="module-view hidden" id="settingsView"></section>
+
+        <section class="process-detail hidden" id="processDetailView">
+          <button type="button" class="back-link" id="backToProcesses">&lt; Voltar</button>
+          <div class="detail-hero">
+            <div>
+              <div class="detail-title-row">
+                <h1 id="detailProcessNumber">Processo</h1>
+                <div id="detailStatusBadges"></div>
+              </div>
+              <p id="detailSubtitle"></p>
+            </div>
+            <button type="button" class="download-button" id="downloadProcessButton">Baixar processo completo</button>
+          </div>
+
+          <nav class="detail-tabs" aria-label="Modulos do processo">
+            <button type="button" class="detail-tab active" data-detail-tab="general">Dados gerais</button>
+            <button type="button" class="detail-tab" data-detail-tab="documents">Documentos</button>
+            <button type="button" class="detail-tab" data-detail-tab="timeline">Linha do tempo</button>
+            <button type="button" class="detail-tab" data-detail-tab="deliveries">Entregas</button>
+            <button type="button" class="detail-tab" data-detail-tab="observations">Observacoes</button>
+            <button type="button" class="detail-tab" data-detail-tab="emails">E-mails</button>
+          </nav>
+
+          <section class="detail-card" id="detailPanel"></section>
+        </section>
+      </main>
+    </div>
+
+    <dialog id="processDialog">
+      <form method="dialog" class="dialog-header">
+        <strong id="processDialogTitle">Novo processo</strong>
+        <button type="submit" class="secondary">Fechar</button>
+      </form>
+      <form id="processForm" class="process-form">
+        <input type="hidden" name="id">
+        <input type="hidden" name="versao">
+
+        <div class="split">
+          <label>Numero do processo <input name="numeroProcesso"></label>
+          <label>Numero do empenho <input name="numeroEmpenho"></label>
+        </div>
+        <label>Fornecedor <input name="fornecedor"></label>
+
+        <section class="materials-section">
+          <div class="section-title">
+            <strong>Materiais</strong>
+            <button type="button" id="addMaterialButton" class="secondary">Adicionar material</button>
+          </div>
+          <div id="materialsList"></div>
+        </section>
+
+        <div class="actions">
+          <button type="submit">Salvar</button>
+          <button type="button" id="clearForm">Limpar</button>
+        </div>
+        <p class="form-message" id="formMessage"></p>
+      </form>
+    </dialog>
+
+    <dialog id="observationsDialog">
+      <form method="dialog" class="dialog-header">
+        <strong>Observacoes</strong>
+        <button>Fechar</button>
+      </form>
+      <div id="observationsList"></div>
+      <form id="observationForm" class="observation-form">
+        <textarea name="conteudo" rows="4" placeholder="Nova observacao"></textarea>
+        <button>Registrar</button>
+      </form>
+    </dialog>
+
+    <dialog id="documentMetadataDialog" class="small-dialog">
+      <form method="dialog" class="dialog-header">
+        <strong>Novo documento</strong>
+        <button type="submit" class="secondary">Fechar</button>
+      </form>
+      <form id="documentMetadataForm" class="process-form document-metadata-form">
+        <p class="selected-file" id="documentSelectedFile"></p>
+        <label>Nome <input name="titulo" required></label>
+        <label>Descricao <textarea name="descricao" rows="3" placeholder="Opcional"></textarea></label>
+        <div class="actions">
+          <button type="submit">Salvar documento</button>
+          <button type="button" id="cancelDocumentMetadata" class="secondary">Cancelar</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>

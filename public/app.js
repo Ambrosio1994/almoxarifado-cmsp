@@ -1,0 +1,1701 @@
+const state = {
+  meta: { status: [], filtrosRapidos: [] },
+  processos: [],
+  fornecedores: [],
+  auditoria: [],
+  detailObservations: [],
+  editing: null,
+  observationProcessId: null,
+  selectedProcess: null,
+  pendingDocumentFile: null,
+  detailTab: "general",
+  dashboardYear: ""
+};
+
+let currentUser = {
+  email: "admin@cmsp.local",
+  name: "Administrador",
+  role: "admin"
+};
+let authToken = localStorage.getItem("almoxAuthToken") || "";
+const authScreen = document.querySelector("#authScreen");
+const appShell = document.querySelector("#appShell");
+const sidebar = document.querySelector("#sidebar");
+const loginPanel = document.querySelector("#loginPanel");
+const setPasswordPanel = document.querySelector("#setPasswordPanel");
+const loginForm = document.querySelector("#loginForm");
+const setPasswordForm = document.querySelector("#setPasswordForm");
+const setPasswordEmail = document.querySelector("#setPasswordEmail");
+const googleSignupButton = document.querySelector("#googleSignupButton");
+const googleSdkButton = document.querySelector("#googleSdkButton");
+const passwordStep = document.querySelector("#passwordStep");
+const emailSubmitButton = document.querySelector("#emailSubmitButton");
+const authMessage = document.querySelector("#authMessage");
+const logoutButton = document.querySelector("#logoutButton");
+const statusSelect = document.querySelector("#statusSelect");
+const statusFilter = document.querySelector("#statusFilter");
+const quickFilter = document.querySelector("#quickFilter");
+const quickFilterBar = document.querySelector("#quickFilterBar");
+const yearFilter = document.querySelector("#yearFilter");
+const searchInput = document.querySelector("#searchInput");
+const processForm = document.querySelector("#processForm");
+const processDialog = document.querySelector("#processDialog");
+const processDialogTitle = document.querySelector("#processDialogTitle");
+const newProcessButton = document.querySelector("#newProcessButton");
+const addMaterialButton = document.querySelector("#addMaterialButton");
+const materialsList = document.querySelector("#materialsList");
+const formMessage = document.querySelector("#formMessage");
+const table = document.querySelector("#processTable");
+const metrics = document.querySelector("#metrics");
+const dialog = document.querySelector("#observationsDialog");
+const observationsList = document.querySelector("#observationsList");
+const observationForm = document.querySelector("#observationForm");
+const processListView = document.querySelector("#processListView");
+const processDetailView = document.querySelector("#processDetailView");
+const backToProcesses = document.querySelector("#backToProcesses");
+const detailProcessNumber = document.querySelector("#detailProcessNumber");
+const detailStatusBadges = document.querySelector("#detailStatusBadges");
+const detailSubtitle = document.querySelector("#detailSubtitle");
+const detailPanel = document.querySelector("#detailPanel");
+const detailTabs = document.querySelectorAll(".detail-tab");
+const downloadProcessButton = document.querySelector("#downloadProcessButton");
+const dashboardView = document.querySelector("#dashboardView");
+const suppliersView = document.querySelector("#suppliersView");
+const settingsView = document.querySelector("#settingsView");
+const navItems = document.querySelectorAll(".nav-item");
+const sectionTitle = document.querySelector("#sectionTitle");
+const sidebarToggle = document.querySelector("#sidebarToggle");
+const sidebarResizer = document.querySelector("#sidebarResizer");
+const themeToggle = document.querySelector("#themeToggle");
+const documentMetadataDialog = document.querySelector("#documentMetadataDialog");
+const documentMetadataForm = document.querySelector("#documentMetadataForm");
+const documentSelectedFile = document.querySelector("#documentSelectedFile");
+const cancelDocumentMetadata = document.querySelector("#cancelDocumentMetadata");
+
+initTheme();
+await initAuth();
+
+function initTheme() {
+  const savedTheme = localStorage.getItem("almoxTheme") || "light";
+  applyTheme(savedTheme === "dark" ? "dark" : "light");
+  themeToggle?.addEventListener("click", () => {
+    const nextTheme = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+    applyTheme(nextTheme);
+    localStorage.setItem("almoxTheme", nextTheme);
+  });
+}
+
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  const isDark = theme === "dark";
+  if (!themeToggle) return;
+  themeToggle.setAttribute("aria-label", isDark ? "Alternar para modo claro" : "Alternar para modo escuro");
+  themeToggle.querySelector("span").textContent = isDark ? "☼" : "◐";
+  themeToggle.querySelector("strong").textContent = isDark ? "Claro" : "Escuro";
+}
+
+async function initAuth() {
+  bindAuthEvents();
+  await initGoogleIdentity();
+  if (!authToken) {
+    showAuth();
+    return;
+  }
+
+  try {
+    const user = await api("/auth/session");
+    setCurrentUser(user);
+    showApp();
+    await boot();
+  } catch {
+    localStorage.removeItem("almoxAuthToken");
+    authToken = "";
+    showAuth();
+  }
+}
+
+function bindAuthEvents() {
+  loginForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const data = Object.fromEntries(new FormData(loginForm));
+    if (passwordStep?.classList.contains("hidden")) {
+      passwordStep.classList.remove("hidden");
+      passwordStep.querySelector("input").required = true;
+      emailSubmitButton.textContent = "Entrar";
+      passwordStep.querySelector("input").focus();
+      return;
+    }
+    try {
+      const response = await api("/auth/login", {
+        method: "POST",
+        body: JSON.stringify(data)
+      });
+      startSession(response);
+    } catch (error) {
+      authMessage.textContent = error.message;
+    }
+  });
+
+  googleSignupButton.addEventListener("click", () => {
+    authMessage.textContent = "Login Google real aguardando configuracao do GOOGLE_CLIENT_ID.";
+  });
+  document.querySelectorAll("[data-auth-back]").forEach((button) => {
+    button.addEventListener("click", () => showAuthPanel("login"));
+  });
+
+  setPasswordForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const data = Object.fromEntries(new FormData(setPasswordForm));
+    try {
+      const response = await api("/auth/set-password", {
+        method: "POST",
+        body: JSON.stringify(data)
+      });
+      startSession(response);
+    } catch (error) {
+      authMessage.textContent = error.message;
+      showAuthPanel("login");
+    }
+  });
+
+  logoutButton.addEventListener("click", async () => {
+    await api("/auth/logout", { method: "POST" }).catch(() => null);
+    localStorage.removeItem("almoxAuthToken");
+    authToken = "";
+    location.reload();
+  });
+}
+
+async function initGoogleIdentity() {
+  if (!googleSdkButton) return;
+  try {
+    const config = await api("/auth/google/config");
+    if (!config.enabled || !config.clientId) {
+      googleSignupButton?.classList.remove("hidden");
+      googleSdkButton.classList.add("hidden");
+      return;
+    }
+    await waitForGoogleIdentity();
+    googleSdkButton.classList.remove("hidden");
+    googleSignupButton?.classList.add("hidden");
+    window.google.accounts.id.initialize({
+      client_id: config.clientId,
+      callback: handleGoogleCredential,
+      ux_mode: "popup",
+      auto_select: false
+    });
+    window.google.accounts.id.renderButton(googleSdkButton, {
+      theme: "outline",
+      size: "large",
+      text: "continue_with",
+      shape: "rectangular",
+      width: 390,
+      locale: "pt-BR"
+    });
+  } catch {
+    googleSignupButton?.classList.remove("hidden");
+    googleSdkButton.classList.add("hidden");
+  }
+}
+
+function waitForGoogleIdentity() {
+  return new Promise((resolve, reject) => {
+    let attempts = 0;
+    const timer = setInterval(() => {
+      attempts += 1;
+      if (window.google?.accounts?.id) {
+        clearInterval(timer);
+        resolve();
+      }
+      if (attempts > 80) {
+        clearInterval(timer);
+        reject(new Error("SDK do Google nao carregou."));
+      }
+    }, 100);
+  });
+}
+
+async function handleGoogleCredential(response) {
+  if (!response?.credential) {
+    authMessage.textContent = "O Google nao retornou a credencial de login. Tente novamente.";
+    return;
+  }
+  try {
+    const session = await api("/auth/google/callback", {
+      method: "POST",
+      body: JSON.stringify({ credential: response.credential })
+    });
+    await startSession(session);
+  } catch (error) {
+    authMessage.textContent = error.message;
+  }
+}
+
+async function startSession(response) {
+  authToken = response.token;
+  localStorage.setItem("almoxAuthToken", authToken);
+  setCurrentUser(response.user);
+  showApp();
+  await boot();
+}
+
+function setCurrentUser(user) {
+  currentUser = {
+    email: user.email,
+    name: user.nome || user.name || user.email,
+    role: user.role || "almoxarifado"
+  };
+}
+
+function showAuth() {
+  authScreen.classList.remove("hidden");
+  appShell.classList.add("hidden");
+  sidebar.classList.add("hidden");
+  showAuthPanel("login");
+}
+
+function showApp() {
+  authScreen.classList.add("hidden");
+  appShell.classList.remove("hidden");
+  sidebar.classList.remove("hidden");
+}
+
+function showAuthPanel(panel) {
+  loginPanel.classList.toggle("hidden", panel !== "login");
+  setPasswordPanel.classList.toggle("hidden", panel !== "password");
+  if (panel !== "login") authMessage.textContent = "";
+  if (panel === "login") {
+    passwordStep?.classList.add("hidden");
+    if (passwordStep?.querySelector("input")) {
+      passwordStep.querySelector("input").required = false;
+      passwordStep.querySelector("input").value = "";
+    }
+    if (emailSubmitButton) emailSubmitButton.textContent = "Continuar com e-mail";
+  }
+}
+
+async function boot() {
+  state.meta = await api("/api/meta");
+  state.fornecedores = await api("/api/suppliers");
+  state.auditoria = await api("/api/audit");
+  fillSelect(statusSelect, state.meta.status, "Todos os status");
+  fillSelect(statusFilter, state.meta.status, "Todos os status");
+  fillSelect(quickFilter, state.meta.filtrosRapidos, "Filtros rapidos");
+  await refresh();
+  renderYearOptions();
+  renderQuickFilters();
+  openSection("dashboard");
+}
+
+async function refresh() {
+  const params = new URLSearchParams();
+  if (searchInput.value) params.set("q", searchInput.value);
+  if (statusFilter.value) params.set("status", statusFilter.value);
+  if (quickFilter.value) params.set("filtroRapido", quickFilter.value);
+  if (yearFilter?.value) params.set("ano", yearFilter.value);
+  state.processos = await api(`/api/processes?${params}`);
+  renderTable();
+  renderMetrics(await api("/api/dashboard"));
+}
+
+function renderMetrics(data) {
+  const items = (data.porStatus || []).filter(([, value]) => value > 0);
+
+  metrics.innerHTML = items.map(([label, value]) => `
+    <article class="metric">
+      <span>${label}</span>
+      <strong>${value}</strong>
+    </article>
+  `).join("");
+}
+
+function renderTable() {
+  table.innerHTML = state.processos.map((processo) => `
+    <tr data-edit="${processo.id}">
+      <td class="strong-cell">${empty(processo.numeroProcesso)}</td>
+      <td class="mono-cell">${documentCell(processo.numeroEmpenho, "Nota de Empenho", processo.documentos?.notaEmpenho)}</td>
+      <td>${empty(processo.fornecedor)}</td>
+      <td>${empty(materialsSummary(processo.materiais))}</td>
+      <td class="money-cell">${money(processo.valorTotal)}</td>
+      <td>${dateCell(deadlineDate(processo))}</td>
+      <td>${daysCell(processo)}</td>
+      <td>${dateCell(processo.dataEntrega)}</td>
+      <td>${dateCell(processo.dataEnvioLiquidacao)}</td>
+      <td>${statusBadges(processo)}</td>
+    </tr>
+  `).join("");
+}
+
+processForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const data = Object.fromEntries(new FormData(processForm));
+  data.materiais = readMaterials();
+  const id = data.id;
+  delete data.id;
+
+  try {
+    const savedProcess = await api(id ? `/api/processes/${id}` : "/api/processes", {
+      method: id ? "PUT" : "POST",
+      body: JSON.stringify(data)
+    });
+    formMessage.textContent = "Processo salvo.";
+    clearForm();
+    processDialog.close();
+    await refresh();
+    await refreshAudit();
+    if (state.selectedProcess?.id === savedProcess.id) {
+      state.selectedProcess = savedProcess;
+      await loadDetailObservations(savedProcess.id);
+      renderProcessDetail();
+    }
+  } catch (error) {
+    formMessage.textContent = error.message;
+  }
+});
+
+document.querySelector("#clearForm").addEventListener("click", clearForm);
+newProcessButton.addEventListener("click", () => openProcessDialog());
+addMaterialButton.addEventListener("click", () => addMaterialRow());
+searchInput.addEventListener("input", debounce(refresh, 250));
+statusFilter.addEventListener("change", refresh);
+quickFilter.addEventListener("change", refresh);
+yearFilter?.addEventListener("change", refresh);
+documentMetadataForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  await saveComplementaryDocument();
+});
+cancelDocumentMetadata?.addEventListener("click", () => {
+  state.pendingDocumentFile = null;
+  documentMetadataDialog.close();
+});
+materialsList.addEventListener("click", (event) => {
+  if (!event.target.dataset.removeMaterial) return;
+  event.target.closest(".material-row").remove();
+  ensureOneMaterialRow();
+});
+
+table.addEventListener("click", async (event) => {
+  const editId = event.target.dataset.edit || event.target.closest("tr")?.dataset.edit;
+  const notesId = event.target.dataset.notes;
+
+  if (editId) {
+    const processo = state.processos.find((item) => item.id === editId);
+    openProcessDetail(processo);
+  }
+
+  if (notesId) {
+    state.observationProcessId = notesId;
+    await loadObservations();
+    dialog.showModal();
+  }
+});
+
+backToProcesses.addEventListener("click", () => {
+  state.selectedProcess = null;
+  processDetailView.classList.add("hidden");
+  processListView.classList.remove("hidden");
+  navItems.forEach((item) => item.classList.toggle("active", item.dataset.section === "processes"));
+  if (sectionTitle) sectionTitle.textContent = "Processos";
+});
+
+detailTabs.forEach((tab) => {
+  tab.addEventListener("click", () => {
+    state.detailTab = tab.dataset.detailTab;
+    detailTabs.forEach((item) => item.classList.toggle("active", item === tab));
+    renderDetailPanel();
+  });
+});
+
+downloadProcessButton.addEventListener("click", () => {
+  if (!state.selectedProcess) return;
+  const format = prompt("Baixar processo completo como ZIP ou PDF compilado? Digite ZIP ou PDF:", "PDF");
+  if (!format) return;
+  const normalized = format.trim().toLowerCase();
+  if (normalized === "zip") {
+    window.open(`/api/processes/${state.selectedProcess.id}/download?format=zip`, "_blank");
+    return;
+  }
+  if (normalized === "pdf") {
+    window.open(`/api/processes/${state.selectedProcess.id}/download?format=pdf`, "_blank");
+    return;
+  }
+  alert("Formato invalido. Informe ZIP ou PDF.");
+});
+
+navItems.forEach((item) => {
+  item.addEventListener("click", (event) => {
+    event.preventDefault();
+    openSection(item.dataset.section);
+  });
+});
+
+sidebarToggle?.addEventListener("click", () => {
+  document.body.classList.toggle("sidebar-collapsed");
+  sidebarToggle.textContent = document.body.classList.contains("sidebar-collapsed") ? "›" : "‹";
+});
+
+sidebarResizer?.addEventListener("pointerdown", (event) => {
+  if (document.body.classList.contains("sidebar-collapsed")) return;
+  event.preventDefault();
+  sidebarResizer.setPointerCapture(event.pointerId);
+  document.body.classList.add("resizing-sidebar");
+});
+
+sidebarResizer?.addEventListener("pointermove", (event) => {
+  if (!document.body.classList.contains("resizing-sidebar")) return;
+  const width = Math.min(360, Math.max(188, event.clientX));
+  document.documentElement.style.setProperty("--sidebar-width", `${width}px`);
+});
+
+sidebarResizer?.addEventListener("pointerup", (event) => {
+  sidebarResizer.releasePointerCapture(event.pointerId);
+  document.body.classList.remove("resizing-sidebar");
+});
+
+sidebarResizer?.addEventListener("pointercancel", () => {
+  document.body.classList.remove("resizing-sidebar");
+});
+
+detailPanel.addEventListener("click", async (event) => {
+  if (event.target.dataset.openEdit) {
+    openProcessDialog(state.selectedProcess);
+  }
+
+  const notesId = event.target.dataset.openNotes;
+  if (notesId) {
+    state.observationProcessId = notesId;
+    await loadObservations();
+    dialog.showModal();
+  }
+
+  const attachKey = event.target.dataset.attachDocument;
+  if (attachKey) {
+    await attachDocument(attachKey);
+  }
+
+  const openPath = event.target.dataset.openDocument;
+  if (openPath) {
+    window.open(openPath, "_blank");
+  }
+
+  const downloadPath = event.target.dataset.downloadDocument;
+  if (downloadPath) {
+    const link = document.createElement("a");
+    link.href = downloadPath;
+    link.download = "";
+    link.click();
+  }
+
+  const removeDocumentKey = event.target.dataset.removeDocument;
+  if (removeDocumentKey) {
+    await removeDocument(removeDocumentKey);
+  }
+
+  const editObservationId = event.target.dataset.editObservation;
+  if (editObservationId) {
+    await editObservation(editObservationId);
+  }
+
+  const deleteObservationId = event.target.dataset.deleteObservation;
+  if (deleteObservationId) {
+    await deleteObservation(deleteObservationId);
+  }
+
+  if (event.target.dataset.cancelProcess) {
+    await cancelSelectedProcess();
+  }
+
+  if (event.target.dataset.updateStatus) {
+    await saveNewProcessData();
+  }
+
+  if (event.target.dataset.registerPartialDelivery) {
+    await registerPartialDelivery();
+  }
+
+  if (event.target.dataset.showNewData) {
+    const panel = detailPanel.querySelector("[data-new-data-panel]");
+    panel?.classList.toggle("hidden");
+    panel?.querySelector("[data-detail-date]")?.focus();
+  }
+});
+
+observationForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const data = Object.fromEntries(new FormData(observationForm));
+  await api(`/api/processes/${state.observationProcessId}/observations`, {
+    method: "POST",
+    body: JSON.stringify(data)
+  });
+  observationForm.reset();
+  await loadObservations();
+  if (state.selectedProcess?.id === state.observationProcessId) {
+    await loadDetailObservations(state.observationProcessId);
+    if (["timeline", "observations"].includes(state.detailTab)) renderDetailPanel();
+  }
+});
+
+async function loadObservations() {
+  const items = await api(`/api/processes/${state.observationProcessId}/observations`);
+  observationsList.innerHTML = items.length ? items.map((item) => `
+    <article class="note">
+      <span>${new Date(item.criadoEm).toLocaleString("pt-BR")} - ${item.usuario}</span>
+      <div>${item.conteudo}</div>
+      <div class="note-actions">
+        <button type="button" class="secondary" data-edit-observation="${item.id}">Alterar</button>
+        <button type="button" class="secondary" data-delete-observation="${item.id}">Excluir</button>
+      </div>
+    </article>
+  `).join("") : "<p>Nenhuma observacao registrada.</p>";
+}
+
+observationsList.addEventListener("click", async (event) => {
+  const editObservationId = event.target.dataset.editObservation;
+  if (editObservationId) await editObservation(editObservationId);
+
+  const deleteObservationId = event.target.dataset.deleteObservation;
+  if (deleteObservationId) await deleteObservation(deleteObservationId);
+});
+
+function fillForm(processo) {
+  processForm.id.value = processo.id;
+  processForm.versao.value = processo.versao;
+  for (const [key, value] of Object.entries(processo)) {
+    if (processForm.elements[key]) processForm.elements[key].value = value ?? "";
+  }
+  if (processForm.elements.dataEnvioFornecedor && !processForm.elements.dataEnvioFornecedor.value) {
+    processForm.elements.dataEnvioFornecedor.value = processo.dataEnvioEmpenho || "";
+  }
+  renderMaterialRows(processo.materiais);
+  formMessage.textContent = "Editando processo selecionado.";
+}
+
+function clearForm() {
+  processForm.reset();
+  processForm.id.value = "";
+  processForm.versao.value = "";
+  formMessage.textContent = "";
+  renderMaterialRows();
+}
+
+function openProcessDialog(processo = null) {
+  clearForm();
+  processDialogTitle.textContent = processo ? "Editar processo" : "Novo processo";
+  if (processo) fillForm(processo);
+  processDialog.showModal();
+}
+
+function openProcessDetail(processo) {
+  state.selectedProcess = processo;
+  state.detailTab = "general";
+  processListView.classList.add("hidden");
+  dashboardView.classList.add("hidden");
+  suppliersView.classList.add("hidden");
+  settingsView.classList.add("hidden");
+  processDetailView.classList.remove("hidden");
+  if (sectionTitle) sectionTitle.textContent = "Processos";
+  detailTabs.forEach((tab) => tab.classList.toggle("active", tab.dataset.detailTab === "general"));
+  loadDetailObservations(processo.id).then(() => renderProcessDetail());
+}
+
+function renderProcessDetail() {
+  const processo = state.selectedProcess;
+  if (!processo) return;
+  detailProcessNumber.textContent = processo.numeroProcesso || "Processo sem numero";
+  detailStatusBadges.innerHTML = statusBadges(processo);
+  detailSubtitle.textContent = `${processo.fornecedor || "Fornecedor nao informado"} · Empenho ${processo.numeroEmpenho || "nao informado"}`;
+  renderDetailPanel();
+}
+
+function renderDetailPanel() {
+  const processo = state.selectedProcess;
+  if (!processo) return;
+
+  const renderers = {
+    general: renderGeneralModule,
+    documents: renderDocumentsModule,
+    timeline: renderTimelineModule,
+    deliveries: renderDeliveriesModule,
+    observations: renderObservationsModule,
+    emails: renderEmailsModule
+  };
+
+  detailPanel.innerHTML = (renderers[state.detailTab] || renderTimelineModule)(processo);
+}
+
+function renderGeneralModule(processo) {
+  const fornecedor = supplierFor(processo);
+  const totalQuantity = processo.materiais.reduce((sum, material) => sum + Number(material.quantidade || 0), 0);
+  const unitAverage = totalQuantity ? processo.valorTotal / totalQuantity : 0;
+
+  return `
+    <div class="detail-grid">
+      ${detailField("Fornecedor", processo.fornecedor)}
+      ${detailField("CNPJ", fornecedor?.cnpj)}
+      ${detailField("Materiais", processo.materiais.map((material) => material.descricao).join(", "))}
+      ${detailField("Valor unitario medio", money(unitAverage))}
+      ${detailField("Quantidade", totalQuantity || "-")}
+      ${detailField("Valor total", money(processo.valorTotal))}
+      ${detailField("Data de envio para fornecedor", dateCell(deadlineDate(processo)))}
+      ${detailField("Data de entrega", dateCell(processo.dataEntrega))}
+      ${detailField("Data de envio para liquidacao", dateCell(processo.dataEnvioLiquidacao))}
+      ${detailField("Data de liquidacao", dateCell(processo.dataLiquidacao))}
+      ${detailField("Data de pagamento", dateCell(processo.dataPagamento))}
+      ${detailField("Dias decorridos", deadlineDate(processo) && !["Entregue", "Liquidado", "Pago", "Anulado"].includes(processo.status) ? `${processo.diasDecorridos} dias` : "-")}
+      ${processo.status === "Anulado" ? detailField("Motivo da anulacao", processo.motivoAnulacao) : ""}
+    </div>
+    <div class="detail-actions">
+      ${canEditGeneralInUi(processo) ? '<button type="button" class="detail-primary-action" data-open-edit="true">Editar dados do processo</button>' : ""}
+      ${newDataButton(processo)}
+    </div>
+    ${newDataPanel(processo)}
+  `;
+}
+
+function renderDocumentsModule(processo) {
+  const documents = [
+    ["processoSped", "Processo SPED", processo.documentos?.processoSped],
+    ["notaEmpenho", "Nota de Empenho", processo.documentos?.notaEmpenho],
+    ["notaFiscal", "Nota Fiscal", processo.documentos?.notaFiscal]
+  ];
+  const complementaryDocuments = documentList(processo.documentos?.complementares);
+
+  return `
+    <div class="module-list">
+      ${documents.map(([key, label, value]) => {
+        const doc = documentInfo(value);
+        return `
+        <article class="module-row">
+          <div>
+            <strong>${label}</strong>
+            ${doc.path
+              ? `<button type="button" class="document-name" data-open-document="${doc.path}">${doc.fileName}</button>`
+              : `<span>${`Nao ha ${label} anexado`}</span>`}
+          </div>
+          <div class="document-actions">
+            ${doc.path ? "" : `<button type="button" class="secondary" data-attach-document="${key}" ${canAttachDocumentInUi(processo, key) ? "" : "disabled"}>Anexar</button>`}
+            <button type="button" class="secondary danger-action" ${doc.path ? `data-remove-document="${key}"` : "disabled"}>Remover</button>
+            <button type="button" class="secondary" ${doc.path ? `data-download-document="${doc.path}"` : "disabled"}>Baixar</button>
+          </div>
+        </article>
+      `;}).join("")}
+      ${complementaryDocuments.length
+        ? complementaryDocuments.map((doc, index) => `
+          <article class="module-row document-extra-item">
+            <div>
+              <button type="button" class="document-name document-title" data-open-document="${doc.path}">${escapeHtml(doc.titulo || doc.nome || doc.fileName)}</button>
+              ${doc.descricao ? `<span>${escapeHtml(doc.descricao)}</span>` : ""}
+              <span>${escapeHtml(doc.fileName)}</span>
+            </div>
+            <div class="document-actions">
+              <button type="button" class="secondary danger-action" data-remove-document="complementares:${index}">Remover</button>
+              <button type="button" class="secondary" data-download-document="${doc.path}">Baixar</button>
+            </div>
+          </article>
+        `).join("")
+        : ""}
+      <div class="document-extra-toolbar">
+        <button type="button" class="secondary small-action" data-attach-document="complementares" ${canAttachDocumentInUi(processo, "complementares") ? "" : "disabled"}>+ Novo Documento</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderTimelineModule(processo) {
+  const events = timelineEvents(processo);
+
+  return `
+    <ol class="timeline">
+      ${events.map((event) => `
+        <li class="${event.date ? "done" : ""}">
+          <strong>${event.label}</strong>
+          <span>${event.date ? (event.showTime ? formatDateTime(event.date) : formatDate(event.date)) : "Pendente"}</span>
+          ${event.meta ? `<span>${event.meta}</span>` : ""}
+          ${event.details ? `<span>${event.details}</span>` : ""}
+        </li>
+      `).join("")}
+    </ol>
+  `;
+}
+
+function renderDeliveriesModule(processo) {
+  const delivered = ["Entrega parcial", "Entregue", "Liquidado", "Pago"].includes(processo.status);
+  return `
+    <div class="module-list">
+      <article class="module-row">
+        <div>
+          <strong>${delivered ? "Entrega registrada" : "Nenhuma entrega registrada"}</strong>
+          <span>${delivered ? `Data: ${dateCell(processo.dataEntrega)}` : "Use este modulo para registrar quantidade entregue, pendente e data da entrega."}</span>
+        </div>
+        <button type="button" class="secondary" data-register-partial-delivery="true">Registrar entrega parcial</button>
+      </article>
+    </div>
+  `;
+}
+
+function renderObservationsModule(processo) {
+  const observations = state.detailObservations.length
+    ? state.detailObservations.map((observacao) => `
+      <article class="note">
+        <span>${new Date(observacao.criadoEm).toLocaleString("pt-BR")} - ${observacao.usuario}</span>
+        <div>${observacao.conteudo}</div>
+        <div class="note-actions">
+          <button type="button" class="secondary" data-edit-observation="${observacao.id}">Alterar</button>
+          <button type="button" class="secondary" data-delete-observation="${observacao.id}">Excluir</button>
+        </div>
+      </article>
+    `).join("")
+    : "<p>Nenhuma observacao registrada.</p>";
+
+  return `
+    <div class="module-list">
+      <article class="module-row">
+        <div>
+          <strong>Observacoes do processo</strong>
+          <span>Abra a janela de observacoes para consultar e registrar anotacoes cronologicas.</span>
+        </div>
+        <button type="button" class="secondary" data-open-notes="${processo.id}">Abrir observacoes</button>
+      </article>
+      <div class="notes-inline">${observations}</div>
+    </div>
+  `;
+}
+
+function renderEmailsModule() {
+  return `
+    <div class="module-list">
+      <article class="module-row">
+        <div>
+          <strong>Notificacoes automaticas</strong>
+          <span>E-mails internos aos 7, 14, 21 e 31 dias; oficio automatico aos 30 dias.</span>
+        </div>
+        <button type="button" class="secondary">Reenviar notificacao</button>
+      </article>
+      <article class="module-row">
+        <div>
+          <strong>Historico de e-mails</strong>
+          <span>Data, hora, destinatario, assunto e status do envio.</span>
+        </div>
+        <button type="button" class="secondary">Ver historico</button>
+      </article>
+    </div>
+  `;
+}
+
+function detailField(label, value) {
+  return `
+    <div class="detail-field">
+      <span>${label}</span>
+      <strong>${value || "-"}</strong>
+    </div>
+  `;
+}
+
+function supplierFor(processo) {
+  return state.fornecedores.find((fornecedor) => fornecedor.razaoSocial === processo.fornecedor);
+}
+
+async function loadDetailObservations(processId) {
+  state.detailObservations = await api(`/api/processes/${processId}/observations`);
+}
+
+async function refreshAudit() {
+  state.auditoria = await api("/api/audit");
+}
+
+async function attachDocument(documentKey) {
+  if (!state.selectedProcess) return;
+  const file = await pickPdfFile();
+  if (!file) return;
+  if (documentKey === "complementares") {
+    openComplementaryDocumentForm(file);
+    return;
+  }
+  const contentBase64 = await fileToBase64(file);
+  const updatedProcess = await api(`/api/processes/${state.selectedProcess.id}/documents`, {
+    method: "POST",
+    body: JSON.stringify({
+      documentKey,
+      fileName: file.name,
+      mimeType: file.type || "application/pdf",
+      contentBase64,
+      ...metadata
+    })
+  });
+  state.selectedProcess = updatedProcess;
+  await refresh();
+  renderProcessDetail();
+}
+
+function openComplementaryDocumentForm(file) {
+  state.pendingDocumentFile = file;
+  const suggestedName = String(file.name || "").replace(/\.pdf$/i, "");
+  documentMetadataForm.reset();
+  documentMetadataForm.elements.titulo.value = suggestedName;
+  documentSelectedFile.textContent = `Arquivo selecionado: ${file.name}`;
+  documentMetadataDialog.showModal();
+  documentMetadataForm.elements.titulo.focus();
+}
+
+async function saveComplementaryDocument() {
+  if (!state.selectedProcess || !state.pendingDocumentFile) return;
+  const file = state.pendingDocumentFile;
+  const data = Object.fromEntries(new FormData(documentMetadataForm));
+  const titulo = String(data.titulo || "").trim();
+  if (!titulo) return;
+  const contentBase64 = await fileToBase64(file);
+  const updatedProcess = await api(`/api/processes/${state.selectedProcess.id}/documents`, {
+    method: "POST",
+    body: JSON.stringify({
+      documentKey: "complementares",
+      fileName: file.name,
+      mimeType: file.type || "application/pdf",
+      contentBase64,
+      titulo,
+      descricao: String(data.descricao || "").trim()
+    })
+  });
+  state.pendingDocumentFile = null;
+  documentMetadataDialog.close();
+  state.selectedProcess = updatedProcess;
+  await refresh();
+  renderProcessDetail();
+}
+
+async function removeDocument(documentKey) {
+  if (!state.selectedProcess) return;
+  if (!confirm("Remover este documento anexado?")) return;
+  const updatedProcess = await api(`/api/processes/${state.selectedProcess.id}/documents/${documentKey}`, {
+    method: "DELETE"
+  });
+  state.selectedProcess = updatedProcess;
+  await refresh();
+  await refreshAudit();
+  renderProcessDetail();
+}
+
+function pickPdfFile() {
+  return new Promise((resolve) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "application/pdf,.pdf";
+    input.addEventListener("change", () => resolve(input.files?.[0] || null), { once: true });
+    input.click();
+  });
+}
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener("load", () => {
+      resolve(String(reader.result).split(",")[1] || "");
+    });
+    reader.addEventListener("error", () => reject(reader.error));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function editObservation(observationId) {
+  const current = state.detailObservations.find((item) => item.id === observationId)
+    || await findDialogObservation(observationId);
+  const conteudo = prompt("Alterar observacao:", current?.conteudo || "");
+  if (!conteudo?.trim()) return;
+  const processId = current?.processoId || state.observationProcessId || state.selectedProcess?.id;
+
+  await api(`/api/processes/${processId}/observations/${observationId}`, {
+    method: "PUT",
+    body: JSON.stringify({ conteudo: conteudo.trim() })
+  });
+  await refreshObservationViews();
+}
+
+async function deleteObservation(observationId) {
+  if (!confirm("Excluir esta observacao?")) return;
+  const current = state.detailObservations.find((item) => item.id === observationId)
+    || await findDialogObservation(observationId);
+  const processId = current?.processoId || state.observationProcessId || state.selectedProcess?.id;
+  await api(`/api/processes/${processId}/observations/${observationId}`, {
+    method: "DELETE"
+  });
+  await refreshObservationViews();
+}
+
+async function cancelSelectedProcess() {
+  if (!state.selectedProcess) return;
+  const motivo = prompt("Informe o motivo da anulacao do empenho:");
+  if (!motivo?.trim()) return;
+
+  const updatedProcess = await api(`/api/processes/${state.selectedProcess.id}/cancel`, {
+    method: "POST",
+    body: JSON.stringify({ motivo: motivo.trim() })
+  });
+  state.selectedProcess = updatedProcess;
+  await refresh();
+  await refreshAudit();
+  renderProcessDetail();
+}
+
+async function saveNewProcessData() {
+  if (!state.selectedProcess) return;
+  const statusField = detailPanel.querySelector("[data-detail-status]");
+  const dateField = detailPanel.querySelector("[data-detail-date]");
+  const status = statusField?.value;
+  const date = dateField?.value;
+  const step = nextProcessStep(state.selectedProcess);
+  if (!status || !date) {
+    alert("Informe a data para salvar.");
+    return;
+  }
+
+  const overrides = { status };
+  if (step?.field) overrides[step.field] = date;
+
+  const updatedProcess = await api(`/api/processes/${state.selectedProcess.id}`, {
+    method: "PUT",
+    body: JSON.stringify(processUpdatePayload(overrides))
+  });
+  state.selectedProcess = updatedProcess;
+  await refresh();
+  await refreshAudit();
+  renderProcessDetail();
+}
+async function registerPartialDelivery() {
+  if (!state.selectedProcess) return;
+  const date = prompt("Informe a data da entrega parcial (AAAA-MM-DD):", state.selectedProcess.dataEntrega || "");
+  if (!date?.trim()) return;
+
+  const updatedProcess = await api(`/api/processes/${state.selectedProcess.id}`, {
+    method: "PUT",
+    body: JSON.stringify(processUpdatePayload({
+      status: "Entrega parcial",
+      dataEntrega: date.trim()
+    }))
+  });
+  state.selectedProcess = updatedProcess;
+  await refresh();
+  await refreshAudit();
+  renderProcessDetail();
+}
+
+function processUpdatePayload(overrides = {}) {
+  const processo = state.selectedProcess;
+  return {
+    numeroProcesso: processo.numeroProcesso || "",
+    numeroEmpenho: processo.numeroEmpenho || "",
+    fornecedor: processo.fornecedor || "",
+    materiais: processo.materiais || [],
+    dataEnvioFornecedor: processo.dataEnvioFornecedor || deadlineDate(processo),
+    dataEntrega: processo.dataEntrega || "",
+    dataEnvioLiquidacao: processo.dataEnvioLiquidacao || "",
+    dataLiquidacao: processo.dataLiquidacao || "",
+    dataPagamento: processo.dataPagamento || "",
+    status: processo.status || "Enviado para SALC",
+    versao: processo.versao,
+    ...overrides
+  };
+}
+
+async function refreshObservationViews() {
+  if (state.observationProcessId) await loadObservations();
+  if (state.selectedProcess) {
+    await loadDetailObservations(state.selectedProcess.id);
+    if (["timeline", "observations"].includes(state.detailTab)) renderDetailPanel();
+  }
+}
+
+async function findDialogObservation(observationId) {
+  if (!state.observationProcessId) return null;
+  const items = await api(`/api/processes/${state.observationProcessId}/observations`);
+  return items.find((item) => item.id === observationId);
+}
+
+function documentInfo(value) {
+  if (!value) return {};
+  if (typeof value === "string") return { fileName: value, path: "" };
+  return value;
+}
+
+function documentList(value) {
+  if (!value) return [];
+  const items = Array.isArray(value) ? value : [value];
+  return items.map(documentInfo).filter((doc) => doc.path);
+}
+
+function escapeHtml(value = "") {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+function openSection(section) {
+  navItems.forEach((item) => item.classList.toggle("active", item.dataset.section === section));
+  const titles = { dashboard: "Painel", processes: "Processos", suppliers: "Fornecedores", settings: "Configuracoes" };
+  if (sectionTitle) sectionTitle.textContent = titles[section] || "";
+  processListView.classList.toggle("hidden", section !== "processes");
+  dashboardView.classList.toggle("hidden", section !== "dashboard");
+  suppliersView.classList.toggle("hidden", section !== "suppliers");
+  settingsView.classList.toggle("hidden", section !== "settings");
+  processDetailView.classList.add("hidden");
+  state.selectedProcess = null;
+
+  if (section === "dashboard") renderDashboardView();
+  if (section === "suppliers") renderSuppliersView();
+  if (section === "settings") renderSettingsView();
+}
+
+async function renderDashboardView() {
+  dashboardView.innerHTML = `
+    <div class="content-header">
+      <div>
+        <h1>Painel</h1>
+      </div>
+      <select class="dashboard-year" id="dashboardYearSelect" aria-label="Ano do painel">
+        ${dashboardYearOptions(state.dashboardYear)}
+      </select>
+    </div>
+    <div class="dashboard-grid">
+      ${metrics.innerHTML}
+    </div>
+    <div class="chart-card">
+      <p class="empty-state">Carregando graficos...</p>
+    </div>
+  `;
+
+  const yearSelect = dashboardView.querySelector("#dashboardYearSelect");
+  yearSelect.addEventListener("change", (event) => {
+    state.dashboardYear = event.target.value;
+    renderDashboardView();
+  });
+  const year = state.dashboardYear || yearSelect.value || new Date().getFullYear();
+  const [monthlyExecution, statusDistribution] = await Promise.all([
+    api(`/api/dashboard/execucao-mensal?ano=${year}`),
+    api(`/api/dashboard/distribuicao-status?ano=${year}`)
+  ]);
+
+  dashboardView.innerHTML = `
+    <div class="content-header">
+      <div>
+        <h1>Painel</h1>
+      </div>
+      <select class="dashboard-year" id="dashboardYearSelect" aria-label="Ano do painel">
+        ${dashboardYearOptions(year)}
+      </select>
+    </div>
+    <div class="dashboard-grid">
+      ${metrics.innerHTML}
+    </div>
+    <div class="charts-grid">
+      ${executionGroupedChart(monthlyExecution)}
+      ${budgetStatusChart(statusDistribution)}
+      ${financialChart()}
+    </div>
+  `;
+  dashboardView.querySelector("#dashboardYearSelect").addEventListener("change", (event) => {
+    state.dashboardYear = event.target.value;
+    renderDashboardView();
+  });
+}
+
+function dashboardYearOptions(selected = "") {
+  const years = [...new Set(state.processos
+    .map((processo) => deadlineDate(processo) ? new Date(`${deadlineDate(processo)}T00:00:00`).getFullYear() : "")
+    .filter(Boolean))]
+    .sort((a, b) => b - a);
+  const current = selected || years[0] || new Date().getFullYear();
+  return years.map((year) => `<option value="${year}" ${String(year) === String(current) ? "selected" : ""}>Ano: ${year}</option>`).join("");
+}
+
+function executionGroupedChart(rows) {
+  const max = Math.max(...rows.flatMap((row) => [row.empenhado, row.liquidado, row.pago]), 1);
+  const yTicks = [max, max * 0.75, max * 0.5, max * 0.25, 0];
+  return `
+    <article class="chart-card grouped-chart-card">
+      <div class="chart-title-row">
+        <h2>Execucao mensal</h2>
+        <div class="chart-legend">
+          <span><i class="legend-committed"></i>Empenhado</span>
+          <span><i class="legend-liquidated"></i>Liquidado</span>
+          <span><i class="legend-paid"></i>Pago</span>
+        </div>
+      </div>
+      <div class="grouped-chart">
+        <div class="y-axis">
+          ${yTicks.map((tick) => `<span>${compactMoney(tick)}</span>`).join("")}
+        </div>
+        <div class="grouped-plot">
+          <div class="grid-lines"></div>
+          <div class="month-groups">
+            ${rows.map((row) => groupedMonth(row, max)).join("")}
+          </div>
+        </div>
+      </div>
+    </article>
+  `;
+}
+
+function financialChart() {
+  const paid = state.processos.filter((processo) => processo.status === "Pago").reduce((sum, processo) => sum + processo.valorTotal, 0);
+  const liquidated = state.processos.filter((processo) => processo.status === "Liquidado").reduce((sum, processo) => sum + processo.valorTotal, 0);
+  const committed = state.processos.reduce((sum, processo) => sum + processo.valorTotal, 0);
+  return chartCard("Indicadores financeiros", [
+    ["Empenhado", committed],
+    ["Liquidado", liquidated],
+    ["Pago", paid]
+  ], money);
+}
+
+function groupedMonth(row, max) {
+  const series = [
+    ["empenhado", "Empenhado", row.empenhado],
+    ["liquidado", "Liquidado", row.liquidado],
+    ["pago", "Pago", row.pago]
+  ];
+  return `
+    <div class="month-group">
+      <div class="group-bars">
+        ${series.map(([key, label, value]) => `
+          <div class="group-bar ${key}" style="height: ${Number(value) ? Math.max(6, (Number(value) / max) * 100) : 0}%">
+            <div class="column-tooltip">${row.mes} - ${label}: ${money(value)}</div>
+          </div>
+        `).join("")}
+      </div>
+      <span>${row.mes}</span>
+    </div>
+  `;
+}
+
+function budgetStatusChart(entries) {
+  const normalized = entries.map((entry) => [entry.status, entry.quantidade]);
+  return pieChartCard("Distribuicao por status", normalized);
+}
+
+function chartCard(title, entries, formatter) {
+  const max = Math.max(...entries.map(([, value]) => Number(value)), 1);
+  return `
+    <article class="chart-card">
+      <h2>${title}</h2>
+      <div class="chart-bars">
+        ${entries.map(([label, value]) => `
+          <div class="chart-row">
+            <span>${label}</span>
+            <div class="bar-track">
+              <div class="bar-fill ${chartKey(label)}" style="width: ${Math.max(4, (Number(value) / max) * 100)}%"></div>
+            </div>
+            <strong>${formatter(value)}</strong>
+          </div>
+        `).join("")}
+      </div>
+    </article>
+  `;
+}
+
+function columnChartCard(title, entries, formatter) {
+  const max = Math.max(...entries.map(([, value]) => Number(value)), 1);
+  const yTicks = [max, max * 0.75, max * 0.5, max * 0.25, 0];
+  return `
+    <article class="chart-card monthly-chart">
+      <h2>${title}</h2>
+      <div class="column-chart">
+        <div class="y-axis">
+          ${yTicks.map((tick) => `<span>${compactMoney(tick)}</span>`).join("")}
+        </div>
+        <div class="plot-area">
+          <div class="grid-lines"></div>
+          <div class="columns">
+            ${entries.map(([label, value]) => `
+              <div class="column-item">
+                <div class="column-bar" style="height: ${Math.max(8, (Number(value) / max) * 100)}%"></div>
+                <div class="column-tooltip">${monthLabel(label)}: empenhado ${formatter(value)}</div>
+                <span>${monthLabel(label)}</span>
+              </div>
+            `).join("")}
+          </div>
+        </div>
+      </div>
+    </article>
+  `;
+}
+
+function pieChartCard(title, entries) {
+  const total = entries.reduce((sum, [, value]) => sum + Number(value), 0) || 1;
+  const fallbackColors = ["#14213a", "#6b7280", "#7c3aed", "#b42318"];
+  let cursor = -90;
+  const slices = entries.map(([label, value], index) => {
+    const percent = total ? (Number(value) / total) * 100 : 0;
+    const start = cursor;
+    const end = cursor + (percent / 100) * 360;
+    cursor = end;
+    return {
+      label,
+      value: Number(value),
+      percent,
+      color: chartColor(label, fallbackColors[index % fallbackColors.length]),
+      start,
+      end,
+      mid: start + (end - start) / 2
+    };
+  });
+
+  return `
+    <article class="chart-card pie-card">
+      <h2>${title}</h2>
+      <div class="pie-layout">
+        <svg class="external-pie" viewBox="0 0 620 360" role="img" aria-label="${title}">
+          ${slices.map((slice) => pieSlice(slice, total)).join("")}
+        </svg>
+      </div>
+    </article>
+  `;
+}
+
+function pieSlice(slice, total) {
+  if (!slice.value) return "";
+  const center = { x: 310, y: 178 };
+  const radius = 112;
+  const labelRadius = 170;
+  const edge = polarPoint(center, radius, slice.mid);
+  const labelPoint = polarPoint(center, labelRadius, slice.mid);
+  const textAnchor = labelPoint.x >= center.x ? "start" : "end";
+  const labelX = labelPoint.x + (labelPoint.x >= center.x ? 14 : -14);
+  const label = `${slice.label}: ${slice.value}`;
+  const path = describeArcSector(center.x, center.y, radius, slice.start, slice.end);
+
+  return `
+    <g class="pie-slice">
+      <path class="pie-sector" d="${path}" fill="${slice.color}"></path>
+      <path class="pie-leader" d="M ${edge.x} ${edge.y} L ${labelPoint.x} ${labelPoint.y} L ${labelX} ${labelPoint.y}" stroke="${slice.color}"></path>
+      <text class="pie-label" x="${labelX}" y="${labelPoint.y + 4}" text-anchor="${textAnchor}">${label}</text>
+      <foreignObject class="pie-tooltip" x="${center.x - 86}" y="${center.y - 30}" width="172" height="60">
+        <div xmlns="http://www.w3.org/1999/xhtml">
+          <span>${slice.label}</span>
+          <strong>${slice.value} processos</strong>
+        </div>
+      </foreignObject>
+    </g>
+  `;
+}
+
+function describeArcSector(cx, cy, radius, startAngle, endAngle) {
+  const start = polarPoint({ x: cx, y: cy }, radius, endAngle);
+  const end = polarPoint({ x: cx, y: cy }, radius, startAngle);
+  const largeArc = endAngle - startAngle <= 180 ? 0 : 1;
+  return [
+    `M ${cx} ${cy}`,
+    `L ${start.x} ${start.y}`,
+    `A ${radius} ${radius} 0 ${largeArc} 0 ${end.x} ${end.y}`,
+    "Z"
+  ].join(" ");
+}
+
+function polarPoint(center, radius, angle) {
+  const radians = (angle * Math.PI) / 180;
+  return {
+    x: center.x + radius * Math.cos(radians),
+    y: center.y + radius * Math.sin(radians)
+  };
+}
+
+function chartColor(label, fallback) {
+  if (label === "Empenhado") return "#2563eb";
+  if (label === "Liquidado") return "#b86e07";
+  if (label === "Pago") return "#17665d";
+  return fallback;
+}
+
+function chartKey(label) {
+  if (label === "Empenhado") return "empenhado";
+  if (label === "Liquidado") return "liquidado";
+  if (label === "Pago") return "pago";
+  return "";
+}
+
+function newDataButton(processo) {
+  const step = nextProcessStep(processo);
+  if (!step) return "";
+  return `<button type="button" class="secondary" data-show-new-data="true">${step.button}</button>`;
+}
+
+function newDataPanel(processo) {
+  const step = nextProcessStep(processo);
+  if (!step) return "";
+  return `
+    <div class="new-data-panel hidden" data-new-data-panel>
+      <input type="hidden" data-detail-status value="${step.status}">
+      <span class="new-data-title">${step.title}</span>
+      <label>Data
+        <input type="date" data-detail-date required>
+      </label>
+      <button type="button" class="secondary" data-update-status="true">Salvar</button>
+    </div>
+  `;
+}
+
+function canEditStatusInUi(processo) {
+  if (!processo || ["Pago", "Anulado"].includes(processo.status)) return false;
+  return Boolean(nextProcessStep(processo, true));
+}
+
+function nextProcessStep(processo, skipPermissionCheck = false) {
+  if (!processo || (!skipPermissionCheck && ["Pago", "Anulado"].includes(processo.status))) return null;
+  const steps = {
+    "Enviado para SALC": {
+      button: "Registrar envio de empenho para fornecedor",
+      title: "Informe a data de envio do empenho para fornecedor",
+      status: "Empenho enviado ao fornecedor",
+      field: "dataEnvioFornecedor"
+    },
+    "Empenho enviado ao fornecedor": {
+      button: "Registrar entrega",
+      title: "Informe a data de entrega",
+      status: "Entregue",
+      field: "dataEntrega"
+    },
+    "Aguardando entrega": {
+      button: "Registrar entrega",
+      title: "Informe a data de entrega",
+      status: "Entregue",
+      field: "dataEntrega"
+    },
+    "Entrega parcial": {
+      button: "Registrar entrega final",
+      title: "Informe a data de entrega final",
+      status: "Entregue",
+      field: "dataEntrega"
+    },
+    "Entregue": {
+      button: "Registrar envio para liquidacao",
+      title: "Informe a data de envio para liquidacao",
+      status: "Enviado para liquidacao",
+      field: "dataEnvioLiquidacao"
+    },
+    "Aguardando envio para liquidacao": {
+      button: "Registrar envio para liquidacao",
+      title: "Informe a data de envio para liquidacao",
+      status: "Enviado para liquidacao",
+      field: "dataEnvioLiquidacao"
+    },
+    "Enviado para liquidacao": {
+      button: "Registrar liquidacao",
+      title: "Informe a data de liquidacao",
+      status: "Liquidado",
+      field: "dataLiquidacao"
+    },
+    "Liquidado": {
+      button: "Registrar pagamento",
+      title: "Informe a data de pagamento",
+      status: "Pago",
+      field: "dataPagamento"
+    }
+  };
+  return steps[processo.status] || null;
+}
+function canEditGeneralInUi(processo) {
+  if (!processo || processo.status === "Anulado") return false;
+  if (processo.status === "Pago") return false;
+  if (processo.status === "Liquidado") return isCurrentUserAdmin();
+  return true;
+}
+
+function canAttachDocumentInUi(processo, documentKey) {
+  if (!canEditGeneralInUi(processo)) return false;
+  return true;
+}
+
+function renderSuppliersView() {
+  suppliersView.innerHTML = `
+    <div class="content-header">
+      <div>
+        <h1>Fornecedores</h1>
+      </div>
+    </div>
+    <div class="module-list">
+      ${state.fornecedores.map((fornecedor) => `
+        <article class="module-row">
+          <div>
+            <strong>${fornecedor.razaoSocial}</strong>
+            <span>${fornecedor.cnpj} - ${fornecedor.email} - ${fornecedor.telefone}</span>
+            <span>${fornecedor.endereco}</span>
+          </div>
+          <button type="button" class="secondary">Historico de processos</button>
+        </article>
+      `).join("")}
+    </div>
+  `;
+}
+
+function renderSettingsView() {
+  settingsView.innerHTML = `
+    <div class="content-header">
+      <div>
+        <h1>Configuracoes</h1>
+      </div>
+    </div>
+    <div class="settings-grid">
+      ${settingsCard("Templates de e-mail", "Modelos usados nas notificacoes automaticas e reenvios manuais.")}
+      ${settingsCard("Prazos para notificacoes", "7, 14, 21, 30 e 31 dias conforme regra do documento.")}
+      ${settingsCard("Lista de status", state.meta.status.join(", "))}
+      ${settingsCard("Usuarios responsaveis", "Cadastro, permissoes e solicitacoes de acesso.")}
+    </div>
+  `;
+}
+
+function settingsCard(title, description) {
+  return `
+    <article class="settings-card">
+      <strong>${title}</strong>
+      <span>${description}</span>
+      <button type="button" class="secondary">Configurar</button>
+    </article>
+  `;
+}
+
+function renderMaterialRows(materiais = [{ descricao: "", valorUnitario: "", quantidade: "" }]) {
+  materialsList.innerHTML = "";
+  materiais.forEach((material) => addMaterialRow(material));
+  ensureOneMaterialRow();
+}
+
+function addMaterialRow(material = { descricao: "", valorUnitario: "", quantidade: "" }) {
+  const row = document.createElement("div");
+  row.className = "material-row";
+  row.innerHTML = `
+    <label>Descricao <input data-material-field="descricao" value="${escapeAttribute(material.descricao || "")}"></label>
+    <label>Valor unitario <input data-material-field="valorUnitario" type="number" min="0" step="0.01" value="${Number(material.valorUnitario || 0) || ""}"></label>
+    <label>Quantidade <input data-material-field="quantidade" type="number" min="0" step="1" value="${Number(material.quantidade || 0) || ""}"></label>
+    <button type="button" class="secondary remove-material" data-remove-material="true">Remover</button>
+  `;
+  materialsList.append(row);
+}
+
+function ensureOneMaterialRow() {
+  if (!materialsList.children.length) addMaterialRow();
+}
+
+function readMaterials() {
+  return [...materialsList.querySelectorAll(".material-row")]
+    .map((row) => ({
+      descricao: row.querySelector('[data-material-field="descricao"]').value.trim(),
+      valorUnitario: Number(row.querySelector('[data-material-field="valorUnitario"]').value || 0),
+      quantidade: Number(row.querySelector('[data-material-field="quantidade"]').value || 0)
+    }))
+    .filter((material) => material.descricao);
+}
+
+function fillSelect(select, items, placeholder) {
+  if (!select) return;
+  select.innerHTML = [`<option value="">${placeholder}</option>`]
+    .concat(items.map((item) => `<option value="${item}">${item}</option>`))
+    .join("");
+}
+
+function renderQuickFilters() {
+  const filters = ["Todos", ...state.meta.filtrosRapidos];
+  quickFilterBar.innerHTML = filters.map((label) => `
+    <button type="button" class="filter-chip ${label === "Todos" ? "active" : ""}" data-filter="${label === "Todos" ? "" : label}">
+      ${label === "Todos" ? "▽ " : ""}${label}
+    </button>
+  `).join("");
+
+  quickFilterBar.addEventListener("click", async (event) => {
+    const chip = event.target.closest(".filter-chip");
+    if (!chip) return;
+    quickFilter.value = chip.dataset.filter;
+    quickFilterBar.querySelectorAll(".filter-chip").forEach((button) => {
+      button.classList.toggle("active", button === chip);
+    });
+    await refresh();
+  });
+}
+
+function renderYearOptions() {
+  if (!yearFilter) return;
+  const years = [...new Set(state.processos
+    .map((processo) => deadlineDate(processo) ? new Date(`${deadlineDate(processo)}T00:00:00`).getFullYear() : "")
+    .filter(Boolean))]
+    .sort((a, b) => b - a);
+
+  yearFilter.innerHTML = '<option value="">Ano: Todos</option>'
+    + years.map((year) => `<option value="${year}">Ano: ${year}</option>`).join("");
+  if (years.includes(2026)) yearFilter.value = "2026";
+}
+
+async function api(path, options = {}) {
+  const response = await fetch(path, {
+    ...options,
+    headers: {
+      "content-type": "application/json",
+      "x-user-email": currentUser.email,
+      "x-user-name": currentUser.name,
+      ...(authToken ? { authorization: `Bearer ${authToken}` } : {}),
+      ...(options.headers || {})
+    }
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "Falha na operacao");
+  return data;
+}
+
+function documentCell(label, documentName, documentPath) {
+  if (!label) return "-";
+  if (!documentPath) return `<span class="doc-link missing" title="Nao ha ${documentName} anexado">${label}</span>`;
+  return `<span class="doc-link" title="${documentPath}">${label}</span>`;
+}
+
+function materialsSummary(materiais = []) {
+  const valid = materiais.filter((material) => material.descricao);
+  if (!valid.length) return "";
+  if (valid.length === 1) return valid[0].descricao;
+  return `${valid[0].descricao} + ${valid.length - 1} itens`;
+}
+
+function statusClass(status) {
+  if (status === "Pago") return "locked";
+  if (status === "Anulado") return "cancelled";
+  if (status === "Liquidado") return "warning";
+  return "ok";
+}
+
+function statusBadges(processo) {
+  const badges = [`<span class="status ${statusClass(processo.status)}">${statusLabel(processo.status)}</span>`];
+  if (isOverdue(processo)) {
+    badges.push(`<span class="status overdue">+${processo.diasDecorridos}d em atraso</span>`);
+  }
+  return `<div class="status-stack">${badges.join("")}</div>`;
+}
+
+function isOverdue(processo) {
+  return processo.diasDecorridos > 30 && !["Entregue", "Liquidado", "Pago", "Anulado"].includes(processo.status);
+}
+
+function canCancelInUi(processo) {
+  if (!processo || processo.status === "Anulado") return false;
+  if (processo.status === "Pago") return isCurrentUserAdmin();
+  if (isCurrentUserAdmin()) return true;
+  return processo.criadoPorEmail === currentUser.email;
+}
+
+function isCurrentUserAdmin() {
+  return currentUser.role === "admin";
+}
+
+function empty(value) {
+  return value || "-";
+}
+
+function money(value) {
+  return Number(value || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+}
+
+function monthLabel(value) {
+  if (value === "Sem data") return value;
+  const [, month] = String(value).split("-");
+  return ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"][Number(month) - 1] || value;
+}
+
+function compactMoney(value) {
+  const amount = Number(value || 0);
+  if (amount >= 1000) return `${Math.round(amount / 1000)}k`;
+  return `${Math.round(amount)}`;
+}
+
+function dateCell(value) {
+  return value || "-";
+}
+
+function daysCell(processo) {
+  if (!deadlineDate(processo)) return "-";
+  if (["Entregue", "Liquidado", "Pago", "Anulado"].includes(processo.status)) return "-";
+  return `<span class="days ${processo.faixaPrazo}">${processo.diasDecorridos}</span>`;
+}
+
+function timelineEvents(processo) {
+  const explicitEvents = [
+    processo.status === "Entrega parcial" && processo.dataEntrega && { label: "Entrega parcial", date: processo.dataEntrega },
+    ["Entregue", "Liquidado", "Pago"].includes(processo.status) && processo.dataEntrega && { label: "Entregue", date: processo.dataEntrega },
+    processo.dataEnvioLiquidacao && { label: "Enviado para liquidacao", date: processo.dataEnvioLiquidacao },
+    ["Liquidado", "Pago"].includes(processo.status) && { label: "Liquidado", date: processo.dataLiquidacao || processo.dataEnvioLiquidacao || processo.atualizadoEm },
+    processo.status === "Pago" && { label: "Pago", date: processo.dataPagamento || processo.atualizadoEm },
+    processo.status === "Anulado" && { label: "Anulado", date: processo.anuladoEm || processo.atualizadoEm }
+  ].filter(Boolean);
+
+  const auditEvents = visibleAuditEntries(processo)
+    .map((entry) => ({
+      label: auditLabel(entry),
+      date: entry.criadoEm,
+      meta: entry.usuario || "Usuario",
+      details: entry.detalhes || "",
+      showTime: true
+    }));
+
+  const observationEvents = state.detailObservations
+    .map((observacao) => ({
+      label: `Observacao: ${observacao.conteudo}`,
+      date: observacao.atualizadoEm || observacao.criadoEm
+    }));
+
+  const events = [...auditEvents, ...explicitEvents, ...observationEvents]
+    .filter((event) => event.label && event.date)
+    .filter((event, index, list) => list.findIndex((item) => (
+      item.label === event.label
+        && formatDateTime(item.date) === formatDateTime(event.date)
+        && (item.details || "") === (event.details || "")
+    )) === index)
+    .sort((a, b) => new Date(a.date) - new Date(b.date));
+
+  return events;
+}
+
+function deadlineDate(processo) {
+  return processo.dataEnvioFornecedor || processo.dataEnvioEmpenho || "";
+}
+
+function auditLabel(entry) {
+  if (entry.acao === "Criacao de processo") return "Processo criado";
+  if (entry.acao === "Anulacao de empenho") return "Empenho anulado";
+  if (entry.acao === "Carga inicial") return "Registro importado";
+  const statusMatch = String(entry.detalhes || "").match(/Status atual: (.+)\.$/);
+  if (statusMatch) return statusMatch[1];
+  return entry.acao || "Alteracao";
+}
+
+function visibleAuditEntries(processo) {
+  return state.auditoria
+    .filter((entry) => entry.processoId === processo.id)
+    .filter((entry) => entry.acao !== "Carga inicial")
+    .sort((a, b) => new Date(a.criadoEm) - new Date(b.criadoEm));
+}
+
+function formatDate(value) {
+  return String(value || "").slice(0, 10);
+}
+
+function formatDateTime(value) {
+  if (!value) return "-";
+  return new Date(value).toLocaleString("pt-BR");
+}
+
+function statusLabel(status = "") {
+  return status
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toUpperCase();
+}
+
+function escapeAttribute(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function debounce(fn, wait) {
+  let timer;
+  return (...args) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), wait);
+  };
+}
