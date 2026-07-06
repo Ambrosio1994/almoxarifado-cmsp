@@ -22,6 +22,18 @@ Depois acesse:
 http://localhost:3000
 ```
 
+## Envio de e-mails pelo Gmail
+
+Configure o arquivo `.env` com uma conta Gmail e uma senha de app:
+
+```text
+GMAIL_USER=seu-email@gmail.com
+GMAIL_APP_PASSWORD=sua-senha-de-app
+EMAIL_TEST_RECIPIENT=destino-de-teste@example.com
+```
+
+Enquanto `EMAIL_TEST_RECIPIENT` estiver definido, todos os avisos e oficios sao redirecionados para esse e-mail de teste. A rotina automatica verifica os prazos configurados e evita reenviar o mesmo e-mail no mesmo dia.
+
 ## O que este início já cobre
 
 - Consulta pública de processos.
@@ -36,7 +48,7 @@ http://localhost:3000
   - `Pago`: edição bloqueada permanentemente.
 - Registro de auditoria das alterações feitas pela API.
 - Observações por processo em ordem cronológica.
-- Estrutura inicial para fornecedores, documentos, notificações e relatórios.
+- Estrutura para fornecedores, documentos, notificações reais por Gmail e relatórios.
 
 ## Estrutura
 
@@ -65,4 +77,4 @@ almoxarifado-cmsp/
 2. Trocar o armazenamento em JSON por um banco relacional.
 3. Implementar autenticação com perfis reais.
 4. Implementar anexos PDF com validação de tipo de arquivo.
-5. Implementar rotina diária de notificações e geração do ofício de 30 dias.
+5. Evoluir historico e acompanhamento visual dos envios de e-mail.

@@ -47,11 +47,21 @@
         <strong>Almoxarifado</strong>
         <span>CMSP · CONTROLE DE EMPENHOS</span>
       </div>
+      <section class="sidebar-profile" id="sidebarProfile" aria-label="Perfil do usuario">
+        <div class="sidebar-avatar" id="sidebarAvatar" aria-hidden="true">
+          <img id="sidebarAvatarImage" alt="">
+          <span id="sidebarAvatarInitials">A</span>
+        </div>
+        <div class="sidebar-profile-text">
+          <strong id="sidebarGreeting">Olá, Administrador</strong>
+          <span id="sidebarUserRole">admin</span>
+        </div>
+      </section>
       <nav class="side-nav" aria-label="Navegacao principal">
         <a href="#" class="nav-item" data-section="dashboard"><span>▦</span>Painel</a>
-        <a href="#" class="nav-item active" data-section="processes"><span>▱</span>Processos</a>
+        <a href="#" class="nav-item active" data-section="processes"><span>▱</span>Empenhos</a>
         <a href="#" class="nav-item" data-section="suppliers"><span>▤</span>Fornecedores</a>
-        <a href="#" class="nav-item" data-section="settings"><span>⚙</span>Configuracoes</a>
+        <a href="#" class="nav-item" data-section="settings"><span>⚙</span>Templates</a>
       </nav>
       <button type="button" class="sidebar-logout" id="logoutButton">Sair</button>
     </aside>
@@ -72,7 +82,7 @@
           <section class="content">
             <div class="content-header">
               <div>
-                <h1>Processos</h1>
+                <h1>Empenhos</h1>
               </div>
               <div class="process-header-actions">
                 <select id="processExportFormat" aria-label="Formato de exportacao">

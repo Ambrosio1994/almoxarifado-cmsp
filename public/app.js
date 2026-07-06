@@ -22,12 +22,19 @@ const state = {
 let currentUser = {
   email: "admin@cmsp.local",
   name: "Administrador",
-  role: "admin"
+  role: "admin",
+  foto: ""
 };
 let authToken = localStorage.getItem("almoxAuthToken") || "";
 const authScreen = document.querySelector("#authScreen");
 const appShell = document.querySelector("#appShell");
 const sidebar = document.querySelector("#sidebar");
+const sidebarProfile = document.querySelector("#sidebarProfile");
+const sidebarAvatar = document.querySelector("#sidebarAvatar");
+const sidebarAvatarImage = document.querySelector("#sidebarAvatarImage");
+const sidebarAvatarInitials = document.querySelector("#sidebarAvatarInitials");
+const sidebarGreeting = document.querySelector("#sidebarGreeting");
+const sidebarUserRole = document.querySelector("#sidebarUserRole");
 const loginPanel = document.querySelector("#loginPanel");
 const setPasswordPanel = document.querySelector("#setPasswordPanel");
 const loginForm = document.querySelector("#loginForm");
@@ -257,8 +264,10 @@ function setCurrentUser(user) {
   currentUser = {
     email: user.email,
     name: user.nome || user.name || user.email,
-    role: user.role || "almoxarifado"
+    role: user.role || "almoxarifado",
+    foto: user.foto || ""
   };
+  renderSidebarProfile();
 }
 
 function showAuth() {
@@ -272,6 +281,39 @@ function showApp() {
   authScreen.classList.add("hidden");
   appShell.classList.remove("hidden");
   sidebar.classList.remove("hidden");
+  renderSidebarProfile();
+}
+
+function renderSidebarProfile() {
+  if (!sidebarProfile) return;
+  const name = displayFirstName(currentUser.name || currentUser.email || "Usuario");
+  sidebarGreeting.textContent = `Olá, ${name}`;
+  sidebarUserRole.textContent = currentUser.role || "almoxarifado";
+  sidebarAvatarInitials.textContent = userInitials(currentUser.name || currentUser.email);
+  if (currentUser.foto) {
+    sidebarAvatarImage.src = currentUser.foto;
+    sidebarAvatarImage.hidden = false;
+  } else {
+    sidebarAvatarImage.removeAttribute("src");
+    sidebarAvatarImage.hidden = true;
+  }
+  sidebarAvatar.classList.toggle("has-image", Boolean(currentUser.foto));
+}
+
+sidebarAvatarImage?.addEventListener("error", () => {
+  sidebarAvatarImage.hidden = true;
+  sidebarAvatarImage.removeAttribute("src");
+  sidebarAvatar?.classList.remove("has-image");
+});
+
+function displayFirstName(name = "") {
+  return String(name).trim().split(/\s+/)[0] || "Usuario";
+}
+
+function userInitials(name = "") {
+  const parts = String(name).trim().split(/\s+/).filter(Boolean);
+  const letters = parts.length > 1 ? [parts[0][0], parts[parts.length - 1][0]] : [parts[0]?.[0] || "U"];
+  return letters.join("").toUpperCase();
 }
 
 function showAuthPanel(panel) {
@@ -325,7 +367,7 @@ function processFilterParams() {
 }
 
 async function downloadProcesses() {
-  const params = processFilterParams();
+  const params = new URLSearchParams();
   const format = processExportFormat?.value || "excel";
   params.set("format", format);
   const response = await fetch(`/api/processes/download?${params}`, {
@@ -354,7 +396,7 @@ async function downloadProcesses() {
 function processExportFileName(format = "excel") {
   const date = new Date().toISOString().slice(0, 10);
   const extensions = { excel: "xls", pdf: "pdf", csv: "csv" };
-  return `processos-${date}.${extensions[format] || "xls"}`;
+  return `empenhos-${date}.${extensions[format] || "xls"}`;
 }
 
 function renderMetrics(data) {
@@ -550,6 +592,11 @@ detailPanel.addEventListener("click", async (event) => {
     await attachDocument(attachKey);
   }
 
+  const testEmailProcessId = event.target.dataset.sendTestEmail;
+  if (testEmailProcessId) {
+    await sendTestEmail(testEmailProcessId);
+  }
+
   const openPath = event.target.dataset.openDocument;
   if (openPath) {
     window.open(openPath, "_blank");
@@ -557,10 +604,7 @@ detailPanel.addEventListener("click", async (event) => {
 
   const downloadPath = event.target.dataset.downloadDocument;
   if (downloadPath) {
-    const link = document.createElement("a");
-    link.href = downloadPath;
-    link.download = "";
-    link.click();
+    downloadDocument(downloadPath);
   }
 
   const removeDocumentKey = event.target.dataset.removeDocument;
@@ -596,6 +640,30 @@ detailPanel.addEventListener("click", async (event) => {
     panel?.querySelector("[data-detail-date]")?.focus();
   }
 });
+
+async function sendTestEmail(processId) {
+  try {
+    const result = await api("/api/emails/run-due", {
+      method: "POST",
+      body: JSON.stringify({ processId, force: true, tipo: "oficioFornecedor" })
+    });
+    if (!result.enabled) {
+      alert(result.error || "Configure o Gmail antes de enviar.");
+      return;
+    }
+    if (result.sent?.length) {
+      alert(`E-mail de teste enviado para ${result.sent[0].destinatarios.join(", ")}.`);
+      return;
+    }
+    if (result.failed?.length) {
+      alert(result.failed[0].erro || "Falha ao enviar e-mail de teste.");
+      return;
+    }
+    alert("Nenhum e-mail foi enviado para este empenho.");
+  } catch (error) {
+    alert(error.message || "Nao foi possivel enviar o e-mail de teste.");
+  }
+}
 
 observationForm.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -672,7 +740,7 @@ function openProcessDetail(processo, returnSection = "processes") {
   suppliersView.classList.add("hidden");
   settingsView.classList.add("hidden");
   processDetailView.classList.remove("hidden");
-  if (sectionTitle) sectionTitle.textContent = "Processos";
+  if (sectionTitle) sectionTitle.textContent = "Empenhos";
   detailTabs.forEach((tab) => tab.classList.toggle("active", tab.dataset.detailTab === "general"));
   loadDetailObservations(processo.id).then(() => renderProcessDetail());
 }
@@ -682,7 +750,7 @@ function closeProcessDetail() {
   state.selectedProcess = null;
   processDetailView.classList.add("hidden");
   navItems.forEach((item) => item.classList.toggle("active", item.dataset.section === returnSection));
-  if (sectionTitle) sectionTitle.textContent = returnSection === "suppliers" ? "Fornecedores" : "Processos";
+  if (sectionTitle) sectionTitle.textContent = returnSection === "suppliers" ? "Fornecedores" : "Empenhos";
 
   if (returnSection === "suppliers") {
     processListView.classList.add("hidden");
@@ -874,15 +942,15 @@ function renderObservationsModule(processo) {
   `;
 }
 
-function renderEmailsModule() {
+function renderEmailsModule(processo) {
   return `
     <div class="module-list">
       <article class="module-row">
         <div>
           <strong>Notificacoes automaticas</strong>
-          <span>E-mails internos aos 7, 14, 21 e 31 dias; oficio automatico aos 30 dias.</span>
+          <span>Envio via Gmail para o e-mail cadastrado no fornecedor.</span>
         </div>
-        <button type="button" class="secondary">Reenviar notificacao</button>
+        <button type="button" class="secondary" data-send-test-email="${processo.id}">Enviar teste</button>
       </article>
       <article class="module-row">
         <div>
@@ -1152,7 +1220,7 @@ function escapeHtml(value = "") {
 
 function openSection(section) {
   navItems.forEach((item) => item.classList.toggle("active", item.dataset.section === section));
-  const titles = { dashboard: "Painel", processes: "Processos", suppliers: "Fornecedores", settings: "Configuracoes" };
+  const titles = { dashboard: "Painel", processes: "Empenhos", suppliers: "Fornecedores", settings: "Templates" };
   if (sectionTitle) sectionTitle.textContent = titles[section] || "";
   processListView.classList.toggle("hidden", section !== "processes");
   dashboardView.classList.toggle("hidden", section !== "dashboard");
@@ -1720,10 +1788,10 @@ async function renderSettingsView() {
     settingsView.innerHTML = `
       <div class="content-header">
         <div>
-          <h1>Configuracoes</h1>
+          <h1>Templates</h1>
         </div>
       </div>
-      <p class="empty-state">Carregando configuracoes...</p>
+      <p class="empty-state">Carregando templates...</p>
     `;
     state.settings = await loadSettings();
   }
@@ -1731,14 +1799,12 @@ async function renderSettingsView() {
   settingsView.innerHTML = `
     <div class="content-header">
       <div>
-        <h1>Configuracoes</h1>
+        <h1>Templates</h1>
       </div>
     </div>
     <div class="settings-grid">
       ${settingsCard("templates", "Templates de e-mail", "Modelos usados nas notificacoes automaticas e reenvios manuais.")}
       ${settingsCard("notifications", "Prazos para notificacoes", `${state.settings.notificationRules.diasAvisoInterno.join(", ")} dias; oficio no dia ${state.settings.notificationRules.diaOficioFornecedor}.`)}
-      ${settingsCard("statuses", "Lista de status", state.settings.status.join(", "))}
-      ${settingsCard("users", "Usuarios responsaveis", "Cadastro, permissoes e solicitacoes de acesso.")}
     </div>
     <section class="settings-panel">
       ${state.settings.localFallback ? `<p class="settings-note">Servidor atual nao possui a rota de configuracoes; exibindo valores padrao. Reinicie o servidor atualizado para salvar alteracoes.</p>` : ""}
@@ -1760,22 +1826,20 @@ async function loadSettings() {
 function defaultSettings() {
   return {
     emailTemplates: {
-      notificacaoInterna: {
-        assunto: "Processo {numeroProcesso} com {dias} dias",
-        corpo: "O processo {numeroProcesso} do fornecedor {fornecedor} esta com {dias} dias desde o envio do empenho."
+      avisoPrazos: {
+        assunto: "Aviso de prazo - Processo {numeroProcesso}",
+        corpo: "O processo {numeroProcesso} do fornecedor {fornecedor} esta com {dias} dias desde o envio do empenho.",
+        anexos: []
       },
-      notificacaoFornecedor: {
-        assunto: "Pendencia de entrega - Empenho {numeroEmpenho}",
-        corpo: "Prezado fornecedor, solicitamos atualizacao sobre a entrega vinculada ao empenho {numeroEmpenho}."
-      },
-      reenvioManual: {
-        assunto: "Reenvio de notificacao - Processo {numeroProcesso}",
-        corpo: "Segue reenvio da notificacao referente ao processo {numeroProcesso}."
+      oficioFornecedor: {
+        assunto: "Oficio ao fornecedor - Empenho {numeroEmpenho}",
+        corpo: "Prezado fornecedor, solicitamos atualizacao sobre a entrega vinculada ao empenho {numeroEmpenho}.",
+        anexos: []
       }
     },
     notificationRules: {
-      diasAvisoInterno: [7, 14, 21, 31],
-      diaOficioFornecedor: 30
+      diasAvisoInterno: [14, 21, 28],
+      diaOficioFornecedor: 31
     },
     responsaveis: [],
     status: state.meta.status,
@@ -1797,22 +1861,18 @@ function settingsCard(panel, title, description) {
 
 function renderSettingsPanel() {
   if (state.settingsPanel === "notifications") return renderNotificationSettings();
-  if (state.settingsPanel === "statuses") return renderStatusSettings();
-  if (state.settingsPanel === "users") return renderUsersSettings();
   return renderEmailTemplateSettings();
 }
 
 function renderEmailTemplateSettings() {
   const labels = {
-    notificacaoInterna: "Notificacao interna",
-    notificacaoFornecedor: "Notificacao ao fornecedor",
-    reenvioManual: "Reenvio manual"
+    avisoPrazos: "Aviso nos dias 14, 21 e 28",
+    oficioFornecedor: "Oficio no dia 31"
   };
   return `
     <form id="emailTemplatesForm" class="settings-form">
       <div class="section-title">
         <strong>Templates de e-mail</strong>
-        <span>Variaveis aceitas: {numeroProcesso}, {numeroEmpenho}, {fornecedor}, {dias}.</span>
       </div>
       ${Object.entries(state.settings.emailTemplates).map(([key, template]) => `
         <fieldset class="settings-fieldset">
@@ -1837,56 +1897,11 @@ function renderNotificationSettings() {
         <span>Controle dos marcos usados para alertas internos e oficio ao fornecedor.</span>
       </div>
       <label>Dias de aviso interno <input name="diasAvisoInterno" value="${escapeAttribute(rules.diasAvisoInterno.join(", "))}"></label>
-      <label>Dia para oficio ao fornecedor <input name="diaOficioFornecedor" type="number" min="1" step="1" value="${Number(rules.diaOficioFornecedor || 30)}"></label>
+      <label>Dia para oficio ao fornecedor <input name="diaOficioFornecedor" type="number" min="1" step="1" value="${Number(rules.diaOficioFornecedor || 31)}"></label>
       <div class="actions">
         <button type="submit">Salvar prazos</button>
       </div>
     </form>
-  `;
-}
-
-function renderStatusSettings() {
-  return `
-    <div class="settings-form">
-      <div class="section-title">
-        <strong>Lista de status</strong>
-        <span>Fluxo operacional usado nas regras de bloqueio e nos filtros.</span>
-      </div>
-      <ol class="status-config-list">
-        ${state.settings.status.map((status) => `<li><span>${escapeHtml(status)}</span></li>`).join("")}
-      </ol>
-      <div class="settings-note">A alteracao estrutural de status exige ajuste nas regras de processo, dashboard e filtros. Por isso esta lista fica centralizada no dominio da aplicacao.</div>
-    </div>
-  `;
-}
-
-function renderUsersSettings() {
-  return `
-    <div class="settings-form">
-      <div class="section-title">
-        <strong>Usuarios responsaveis</strong>
-        <span>Responsaveis operacionais usados como referencia pela equipe.</span>
-      </div>
-      <form id="responsibleUserForm" class="inline-settings-form">
-        <label>Nome <input name="nome" required></label>
-        <label>E-mail <input name="email" type="email" required></label>
-        <label>Funcao <input name="funcao" placeholder="Ex.: Almoxarifado"></label>
-        <button type="submit">Adicionar</button>
-      </form>
-      <div class="module-list settings-user-list">
-        ${state.settings.responsaveis.length ? state.settings.responsaveis.map((user) => `
-          <article class="module-row">
-            <div>
-              <strong>${escapeHtml(user.nome)}</strong>
-              <span>${escapeHtml(user.email)}${user.funcao ? ` - ${escapeHtml(user.funcao)}` : ""}</span>
-              <span>${user.ativo ? "Ativo" : "Inativo"}</span>
-            </div>
-            <button type="button" class="secondary" data-toggle-responsible="${escapeAttribute(user.id)}" data-active="${user.ativo ? "false" : "true"}">${user.ativo ? "Inativar" : "Ativar"}</button>
-          </article>
-        `).join("") : `<p class="empty-state">Nenhum responsavel cadastrado.</p>`}
-      </div>
-      <div class="settings-note">Usuarios autenticados: ${state.settings.usuarios.map((user) => `${escapeHtml(user.nome)} (${escapeHtml(user.role)})`).join(", ") || "nenhum cadastro encontrado"}.</div>
-    </div>
   `;
 }
 
@@ -1898,17 +1913,13 @@ function bindSettingsHandlers() {
     });
   });
   settingsView.querySelector("#emailTemplatesForm")?.addEventListener("submit", saveEmailTemplates);
-  settingsView.querySelector("#notificationSettingsForm")?.addEventListener("submit", saveNotificationSettings);
-  settingsView.querySelector("#responsibleUserForm")?.addEventListener("submit", saveResponsibleUser);
-  settingsView.querySelectorAll("[data-toggle-responsible]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      state.settings = await api(`/api/settings/users/${button.dataset.toggleResponsible}`, {
-        method: "PATCH",
-        body: JSON.stringify({ ativo: button.dataset.active === "true" })
-      });
-      renderSettingsView();
-    });
+  settingsView.querySelectorAll("[data-remove-template-attachment]").forEach((button) => {
+    button.addEventListener("click", () => removeTemplateDocument(button.dataset.templateKey, button.dataset.removeTemplateAttachment));
   });
+  settingsView.querySelectorAll("[data-download-document]").forEach((button) => {
+    button.addEventListener("click", () => downloadDocument(button.dataset.downloadDocument));
+  });
+  settingsView.querySelector("#notificationSettingsForm")?.addEventListener("submit", saveNotificationSettings);
 }
 
 async function saveEmailTemplates(event) {
@@ -1919,7 +1930,8 @@ async function saveEmailTemplates(event) {
   Object.keys(state.settings.emailTemplates).forEach((key) => {
     emailTemplates[key] = {
       assunto: data[`${key}.assunto`] || "",
-      corpo: data[`${key}.corpo`] || ""
+      corpo: data[`${key}.corpo`] || "",
+      anexos: state.settings.emailTemplates[key]?.anexos || []
     };
   });
   state.settings = await api("/api/settings/email-templates", {
@@ -1927,6 +1939,64 @@ async function saveEmailTemplates(event) {
     body: JSON.stringify({ emailTemplates })
   });
   renderSettingsView();
+}
+
+function templateAttachmentList(templateKey, anexos = []) {
+  const items = Array.isArray(anexos) ? anexos : [];
+  if (!items.length) return `<p class="empty-state compact-empty">Nenhum anexo configurado.</p>`;
+  return `
+    <div class="module-list compact-list">
+      ${items.map((attachment) => `
+        <article class="module-row compact-row">
+          <div>
+            <strong>${escapeHtml(attachment.fileName)}</strong>
+            <span>${attachment.uploadedAt ? formatDateTime(attachment.uploadedAt) : ""}</span>
+          </div>
+          <div class="document-actions">
+            <button type="button" class="secondary" data-download-document="${escapeAttribute(attachment.path)}">Baixar</button>
+            <button type="button" class="secondary danger-action" data-template-key="${escapeAttribute(templateKey)}" data-remove-template-attachment="${escapeAttribute(attachment.id)}">Remover</button>
+          </div>
+        </article>
+      `).join("")}
+    </div>
+  `;
+}
+
+async function attachTemplateDocument(templateKey) {
+  if (!templateKey || settingsFallbackActive()) return;
+  const file = await pickDocumentFile();
+  if (!file) return;
+  try {
+    const contentBase64 = await fileToBase64(file);
+    state.settings = await api(`/api/settings/email-templates/${encodeURIComponent(templateKey)}/attachments`, {
+      method: "POST",
+      body: JSON.stringify({
+        fileName: file.name,
+        mimeType: file.type || "",
+        contentBase64
+      })
+    });
+    renderSettingsView();
+  } catch (error) {
+    alert(error.message || "Nao foi possivel anexar o documento ao template.");
+  }
+}
+
+async function removeTemplateDocument(templateKey, attachmentId) {
+  if (!templateKey || !attachmentId || settingsFallbackActive()) return;
+  if (!confirm("Remover este anexo do template?")) return;
+  state.settings = await api(`/api/settings/email-templates/${encodeURIComponent(templateKey)}/attachments/${encodeURIComponent(attachmentId)}`, {
+    method: "DELETE"
+  });
+  renderSettingsView();
+}
+
+function downloadDocument(path) {
+  if (!path) return;
+  const link = document.createElement("a");
+  link.href = path;
+  link.download = "";
+  link.click();
 }
 
 async function saveNotificationSettings(event) {
@@ -1937,19 +2007,8 @@ async function saveNotificationSettings(event) {
     method: "PUT",
     body: JSON.stringify({
       diasAvisoInterno: String(data.diasAvisoInterno || "").split(/[\n,; ]+/),
-      diaOficioFornecedor: Number(data.diaOficioFornecedor || 30)
+      diaOficioFornecedor: Number(data.diaOficioFornecedor || 31)
     })
-  });
-  renderSettingsView();
-}
-
-async function saveResponsibleUser(event) {
-  event.preventDefault();
-  if (settingsFallbackActive()) return;
-  const data = Object.fromEntries(new FormData(event.currentTarget));
-  state.settings = await api("/api/settings/users", {
-    method: "POST",
-    body: JSON.stringify(data)
   });
   renderSettingsView();
 }
@@ -2079,13 +2138,17 @@ function statusClass(status) {
 function statusBadges(processo) {
   const badges = [`<span class="status ${statusClass(processo.status)}">${statusLabel(processo.status)}</span>`];
   if (isOverdue(processo)) {
-    badges.push(`<span class="status overdue">+${processo.diasDecorridos}d em atraso</span>`);
+    badges.push(`<span class="status overdue">+${overdueDays(processo)}d em atraso</span>`);
   }
   return `<div class="status-stack">${badges.join("")}</div>`;
 }
 
 function isOverdue(processo) {
   return processo.diasDecorridos > 30 && !["Entregue", "Liquidado", "Pago", "Anulado"].includes(processo.status);
+}
+
+function overdueDays(processo) {
+  return Math.max(0, Number(processo.diasDecorridos || 0) - 30);
 }
 
 function canCancelInUi(processo) {
@@ -2153,7 +2216,8 @@ function timelineEvents(processo) {
   const observationEvents = state.detailObservations
     .map((observacao) => ({
       label: `Observacao: ${observacao.conteudo}`,
-      date: observacao.atualizadoEm || observacao.criadoEm
+      date: observacao.atualizadoEm || observacao.criadoEm,
+      kind: "observation"
     }));
 
   const events = dedupeTimelineDocuments([...auditEvents, ...explicitEvents, ...observationEvents]
@@ -2185,6 +2249,7 @@ function dedupeTimelineDocuments(events = []) {
 function timelineEventClass(event) {
   return [
     event.date ? "done" : "",
+    event.kind === "observation" ? "observation" : "",
     event.kind === "danger" ? "danger" : ""
   ].filter(Boolean).join(" ");
 }
@@ -2194,10 +2259,11 @@ function documentTimelinePreview(documento = {}) {
   const title = documento.nome || documento.fileName || "Documento anexado";
   if (!path) return "";
   return `
-    <a class="timeline-document-preview" href="${escapeAttribute(path)}" target="_blank" rel="noopener" title="Abrir documento em nova aba">
-      <iframe src="${escapeAttribute(`${path}#page=1&toolbar=0&navpanes=0&scrollbar=0`)}" title="${escapeAttribute(title)}"></iframe>
+    <div class="timeline-document-preview">
+      <iframe src="${escapeAttribute(`${path}#page=1&toolbar=0&navpanes=0&scrollbar=1`)}" title="${escapeAttribute(title)}"></iframe>
       <span>${escapeHtml(title)}</span>
-    </a>
+      <button type="button" class="secondary small-action" data-download-document="${escapeAttribute(path)}">Abrir documento</button>
+    </div>
   `;
 }
 
@@ -2240,9 +2306,19 @@ function auditLabel(entry) {
   if (entry.acao === "Criacao de processo") return "Processo criado";
   if (entry.acao === "Anulacao de empenho") return "Empenho anulado";
   if (entry.acao === "Carga inicial") return "Registro importado";
+  if (entry.acao === "Anexo de documento" || entry.acao === "Remocao de documento") {
+    return humanizeCamelCase(entry.detalhes || entry.acao);
+  }
   const statusMatch = String(entry.detalhes || "").match(/Status atual: (.+)\.$/);
   if (statusMatch) return statusMatch[1];
-  return entry.acao || "Alteracao";
+  return humanizeCamelCase(entry.acao || "Alteracao");
+}
+
+function humanizeCamelCase(value = "") {
+  return String(value)
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/\bSPED\b/gi, "sped")
+    .toLowerCase();
 }
 
 function visibleAuditEntries(processo) {

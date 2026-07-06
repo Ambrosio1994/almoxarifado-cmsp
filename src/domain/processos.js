@@ -90,6 +90,7 @@ export function isPublicConsultation(method = "", pathname = "") {
     /^\/api\/dashboard\/execucao-mensal$/,
     /^\/api\/dashboard\/distribuicao-status$/,
     /^\/api\/settings$/,
+    /^\/api\/emails\/status$/,
     /^\/api\/processes$/,
     /^\/api\/processes\/export\/?$/,
     /^\/api\/processes\/download\/?$/,
