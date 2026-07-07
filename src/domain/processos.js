@@ -73,6 +73,63 @@ export function isAllowedDocument(fileName = "", mimeType = "") {
   return allowedExtensions.some((extension) => normalizedName.endsWith(extension)) || allowedMimes.includes(normalizedMime);
 }
 
+export function validateDocumentUpload(fileName = "", mimeType = "", content = Buffer.alloc(0)) {
+  if (!isSafeUploadFileName(fileName)) return false;
+  if (!isAllowedDocument(fileName, mimeType)) return false;
+  const detectedMime = detectDocumentMime(content);
+  if (!detectedMime) return false;
+  if (detectedMime === "application/x-msdownload") return false;
+
+  const normalizedName = String(fileName || "").toLowerCase();
+  const normalizedMime = String(mimeType || "").toLowerCase();
+  const extensionMimes = [
+    [".pdf", ["application/pdf"]],
+    [".png", ["image/png"]],
+    [".jpg", ["image/jpeg"]],
+    [".jpeg", ["image/jpeg"]],
+    [".csv", ["text/csv", "text/plain"]],
+    [".txt", ["text/plain"]],
+    [".xlsx", ["application/zip"]],
+    [".docx", ["application/zip"]],
+    [".ods", ["application/zip"]],
+    [".odt", ["application/zip"]],
+    [".xls", ["application/vnd.ms-excel", "application/octet-stream"]],
+    [".doc", ["application/msword", "application/octet-stream"]]
+  ];
+  const entry = extensionMimes.find(([extension]) => normalizedName.endsWith(extension));
+  if (!entry) return false;
+  const [, allowedDetectedMimes] = entry;
+  if (!allowedDetectedMimes.includes(detectedMime)) return false;
+  return !normalizedMime || allowedDetectedMimes.includes(normalizedMime) || normalizedMime === "application/octet-stream";
+}
+
+function isSafeUploadFileName(fileName = "") {
+  const normalizedName = String(fileName || "");
+  return Boolean(normalizedName.trim()) && !normalizedName.includes("..") && !/[\\/]/.test(normalizedName);
+}
+
+export function detectDocumentMime(content = Buffer.alloc(0)) {
+  const buffer = Buffer.isBuffer(content) ? content : Buffer.from(content || "");
+  if (buffer.length < 2) return "";
+  if (buffer.subarray(0, 4).equals(Buffer.from("%PDF"))) return "application/pdf";
+  if (buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return "image/png";
+  if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return "image/jpeg";
+  if (buffer.subarray(0, 2).toString("latin1") === "MZ") return "application/x-msdownload";
+  if (buffer.subarray(0, 2).toString("latin1") === "PK") return "application/zip";
+  if (isMostlyText(buffer)) return "text/plain";
+  return "application/octet-stream";
+}
+
+function isMostlyText(buffer) {
+  const sample = buffer.subarray(0, Math.min(buffer.length, 2048));
+  if (!sample.length) return false;
+  let textBytes = 0;
+  for (const byte of sample) {
+    if (byte === 9 || byte === 10 || byte === 13 || (byte >= 32 && byte <= 126) || byte >= 160) textBytes += 1;
+  }
+  return textBytes / sample.length > 0.9;
+}
+
 export function canAttachDocument(processo = {}, documentKey = "") {
   return Boolean(processo && !processo.inativo && processo.status !== "Anulado" && documentKey);
 }
@@ -90,15 +147,8 @@ export function isPublicConsultation(method = "", pathname = "") {
     /^\/api\/dashboard$/,
     /^\/api\/dashboard\/execucao-mensal$/,
     /^\/api\/dashboard\/distribuicao-status$/,
-    /^\/api\/settings$/,
-    /^\/api\/emails\/status$/,
     /^\/api\/processes$/,
-    /^\/api\/processes\/export\/?$/,
-    /^\/api\/processes\/download\/?$/,
-    /^\/api\/processes\/[^/]+\/observations$/,
-    /^\/api\/processes\/[^/]+\/download$/,
-    /^\/api\/suppliers$/,
-    /^\/api\/audit$/
+    /^\/api\/processes\/export\/?$/
   ].some((pattern) => pattern.test(pathname));
 }
 

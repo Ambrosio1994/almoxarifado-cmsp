@@ -6,6 +6,7 @@ import {
   calculateElapsedDays,
   canCancelProcess,
   deadlineBand,
+  detectDocumentMime,
   enrichProcess,
   filterProcesses,
   isAllowedDocument,
@@ -15,7 +16,8 @@ import {
   mutationRequiresAuthenticatedUser,
   normalizeMaterials,
   processHasRequiredDocuments,
-  summarizeMaterials
+  summarizeMaterials,
+  validateDocumentUpload
 } from "../src/domain/processos.js";
 
 describe("regras de processo", () => {
@@ -138,6 +140,14 @@ describe("regras de processo", () => {
     assert.equal(isAllowedDocument("arquivo.exe", ""), false);
   });
 
+  it("valida documentos pelo conteudo e rejeita executavel disfarçado", () => {
+    assert.equal(detectDocumentMime(Buffer.from("%PDF-1.4\n")), "application/pdf");
+    assert.equal(validateDocumentUpload("nota.pdf", "application/pdf", Buffer.from("%PDF-1.4\n")), true);
+    assert.equal(validateDocumentUpload("nota.pdf", "application/pdf", Buffer.from([0x4d, 0x5a, 0x90, 0x00])), false);
+    assert.equal(validateDocumentUpload("../../etc/passwd.pdf", "application/pdf", Buffer.from("%PDF-1.4\n")), false);
+    assert.equal(validateDocumentUpload("imagem.png", "image/png", Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])), true);
+  });
+
   it("identifica quando todos os documentos obrigatorios estao anexados", () => {
     assert.equal(processHasRequiredDocuments({
       documentos: {
@@ -167,6 +177,9 @@ describe("regras de processo", () => {
     assert.equal(isPublicConsultation("GET", "/api/processes"), true);
     assert.equal(isPublicConsultation("GET", "/api/dashboard"), true);
     assert.equal(isPublicConsultation("GET", "/health"), true);
+    assert.equal(isPublicConsultation("GET", "/api/settings"), false);
+    assert.equal(isPublicConsultation("GET", "/api/audit"), false);
+    assert.equal(isPublicConsultation("GET", "/api/processes/abc/download"), false);
     assert.equal(isPublicConsultation("POST", "/api/processes"), false);
     assert.equal(mutationRequiresAuthenticatedUser("GET"), false);
     assert.equal(mutationRequiresAuthenticatedUser("POST"), true);
