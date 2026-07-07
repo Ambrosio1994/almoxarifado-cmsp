@@ -18,14 +18,14 @@ import {
   dashboardStatusDistribution,
   enrichProcess,
   filterProcesses,
-  isAllowedDocument,
   isPdfDocument,
   isPublicConsultation,
   mutationRequiresAuthenticatedUser,
   processDeadlineDate,
   QUICK_FILTERS,
   summarizeMaterials,
-  STATUS
+  STATUS,
+  validateDocumentUpload
 } from "./domain/processos.js";
 import { readStore, writeStore } from "./storage.js";
 
@@ -45,7 +45,13 @@ const GMAIL_USER = normalizeEmail(process.env.GMAIL_USER || process.env.SMTP_USE
 const GMAIL_APP_PASSWORD = process.env.GMAIL_APP_PASSWORD || process.env.SMTP_PASS || "";
 const EMAIL_FROM_NAME = process.env.EMAIL_FROM_NAME || "Almoxarifado CMSP";
 const EMAIL_CHECK_INTERVAL_MS = Number(process.env.EMAIL_CHECK_INTERVAL_MS || 60 * 60 * 1000);
+const SESSION_TIMEOUT_MS = Number(process.env.SESSION_TIMEOUT_MS || 30 * 60 * 1000);
+const LOGIN_RATE_LIMIT_WINDOW_MS = Number(process.env.LOGIN_RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000);
+const LOGIN_RATE_LIMIT_MAX = Number(process.env.LOGIN_RATE_LIMIT_MAX || 5);
+const MAX_JSON_BODY_BYTES = Number(process.env.MAX_JSON_BODY_BYTES || 16 * 1024 * 1024);
+const MAX_UPLOAD_BYTES = Number(process.env.MAX_UPLOAD_BYTES || 15 * 1024 * 1024);
 const sessions = new Map();
+const loginAttempts = new Map();
 let googleKeysCache = { expiresAt: 0, keys: [] };
 let emailSchedulerRunning = false;
 
@@ -71,6 +77,7 @@ const DEFAULT_SETTINGS = {
 
 const server = createServer(async (req, res) => {
   try {
+    applySecurityHeaders(res);
     const url = new URL(req.url, `http://${req.headers.host}`);
 
     if (url.pathname.startsWith("/auth/")) {
@@ -96,7 +103,10 @@ const server = createServer(async (req, res) => {
     await serveStatic(res, url.pathname);
   } catch (error) {
     logError("request_error", { message: error.message, stack: error.stack });
-    sendJson(res, 500, { error: "Erro interno do servidor", details: error.message });
+    sendJson(res, error.statusCode || 500, {
+      error: error.statusCode ? error.message : "Erro interno do servidor",
+      details: error.statusCode ? undefined : error.message
+    });
   }
 });
 
@@ -130,11 +140,17 @@ async function handleAuth(req, res, url) {
   if (req.method === "POST" && url.pathname === "/auth/login") {
     const body = await readJson(req);
     const email = normalizeEmail(body.email);
+    if (isLoginRateLimited(req, email)) {
+      sendJson(res, 429, { error: "Muitas tentativas de login. Tente novamente em alguns minutos." });
+      return;
+    }
     const user = store.usuarios.find((item) => item.email === email && item.ativo !== false);
     if (!user || !user.senhaHash || !verifyPassword(body.senha || "", user.senhaHash)) {
+      recordFailedLogin(req, email);
       sendJson(res, 401, { error: "E-mail ou senha invalidos." });
       return;
     }
+    clearFailedLogin(req, email);
     const token = createSession(user);
     sendJson(res, 200, { token, user: publicUser(user) });
     return;
@@ -315,7 +331,8 @@ async function handleApi(req, res, url) {
       return;
     }
 
-    if (!isAllowedDocument(body.fileName, body.mimeType)) {
+    const content = decodeUploadContent(body.contentBase64);
+    if (!validateDocumentUpload(body.fileName, body.mimeType, content)) {
       sendJson(res, 400, { error: "Formato de documento nao aceito. Use PDF, Excel, CSV, Word, texto ou imagem." });
       return;
     }
@@ -325,7 +342,7 @@ async function handleApi(req, res, url) {
     const safeFileName = `${attachmentId}-${safeName(body.fileName)}`;
     const dir = join(UPLOAD_ROOT, "email-templates", safeTemplateKey);
     await mkdir(dir, { recursive: true });
-    await writeFile(join(dir, safeFileName), Buffer.from(body.contentBase64, "base64"));
+    await writeFile(join(dir, safeFileName), content);
 
     const attachment = {
       id: attachmentId,
@@ -692,7 +709,8 @@ async function handleApi(req, res, url) {
     }
 
     const current = store.processos[index];
-    if (!isAllowedDocument(body.fileName, body.mimeType)) {
+    const content = decodeUploadContent(body.contentBase64);
+    if (!validateDocumentUpload(body.fileName, body.mimeType, content)) {
       sendJson(res, 400, { error: "Formato de documento nao aceito. Use PDF, Excel, CSV, Word, texto ou imagem." });
       return;
     }
@@ -706,7 +724,7 @@ async function handleApi(req, res, url) {
     const safeFileName = `${safeName(body.documentKey)}-${safeName(body.fileName)}`;
     const dir = join(UPLOAD_ROOT, safeProcessId);
     await mkdir(dir, { recursive: true });
-    await writeFile(join(dir, safeFileName), Buffer.from(body.contentBase64, "base64"));
+    await writeFile(join(dir, safeFileName), content);
 
     const documentInfo = {
       fileName: body.fileName,
@@ -901,6 +919,40 @@ function currentUser(req, store) {
   };
 }
 
+function isLoginRateLimited(req, email = "") {
+  const attempt = loginAttempts.get(loginAttemptKey(req, email));
+  if (!attempt) return false;
+  if (Date.now() - attempt.firstAttemptAt > LOGIN_RATE_LIMIT_WINDOW_MS) {
+    loginAttempts.delete(loginAttemptKey(req, email));
+    return false;
+  }
+  return attempt.count >= LOGIN_RATE_LIMIT_MAX;
+}
+
+function recordFailedLogin(req, email = "") {
+  const key = loginAttemptKey(req, email);
+  const now = Date.now();
+  const attempt = loginAttempts.get(key);
+  if (!attempt || now - attempt.firstAttemptAt > LOGIN_RATE_LIMIT_WINDOW_MS) {
+    loginAttempts.set(key, { count: 1, firstAttemptAt: now });
+    return;
+  }
+  attempt.count += 1;
+}
+
+function clearFailedLogin(req, email = "") {
+  loginAttempts.delete(loginAttemptKey(req, email));
+}
+
+function loginAttemptKey(req, email = "") {
+  return `${clientIp(req)}:${normalizeEmail(email) || "unknown"}`;
+}
+
+function clientIp(req) {
+  const forwardedFor = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
+  return forwardedFor || req.socket?.remoteAddress || "unknown";
+}
+
 function ensureUsers(store) {
   if (!Array.isArray(store.usuarios)) store.usuarios = [];
   if (LOCAL_ADMIN_EMAIL && LOCAL_ADMIN_PASSWORD && !store.usuarios.some((user) => user.email === LOCAL_ADMIN_EMAIL)) {
@@ -919,7 +971,7 @@ function ensureUsers(store) {
 
 function createSession(user) {
   const token = randomBytes(32).toString("hex");
-  sessions.set(token, { userId: user.id, createdAt: Date.now() });
+  sessions.set(token, { userId: user.id, createdAt: Date.now(), lastActivity: Date.now() });
   return token;
 }
 
@@ -927,6 +979,11 @@ function sessionUser(req, store) {
   const token = bearerToken(req);
   const session = token ? sessions.get(token) : null;
   if (!session) return null;
+  if (Date.now() - Number(session.lastActivity || session.createdAt || 0) > SESSION_TIMEOUT_MS) {
+    sessions.delete(token);
+    return null;
+  }
+  session.lastActivity = Date.now();
   return store.usuarios.find((user) => user.id === session.userId && user.ativo !== false) || null;
 }
 
@@ -1035,7 +1092,7 @@ async function serveStatic(res, pathname) {
     "content-type": contentType,
     "cache-control": "no-store",
     "cross-origin-opener-policy": "same-origin-allow-popups",
-    "referrer-policy": "no-referrer-when-downgrade"
+    "referrer-policy": "strict-origin-when-cross-origin"
   });
   res.end(content);
 }
@@ -1073,7 +1130,16 @@ function contentTypeForPath(pathname = "") {
 
 async function readJson(req) {
   const chunks = [];
-  for await (const chunk of req) chunks.push(chunk);
+  let total = 0;
+  for await (const chunk of req) {
+    total += chunk.length;
+    if (total > MAX_JSON_BODY_BYTES) {
+      const error = new Error("Payload muito grande.");
+      error.statusCode = 413;
+      throw error;
+    }
+    chunks.push(chunk);
+  }
   if (!chunks.length) return {};
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
@@ -1086,6 +1152,25 @@ function sendJson(res, statusCode, payload) {
 function sendText(res, statusCode, payload) {
   res.writeHead(statusCode, { "content-type": "text/plain; charset=utf-8" });
   res.end(payload);
+}
+
+function applySecurityHeaders(res) {
+  res.setHeader("x-content-type-options", "nosniff");
+  res.setHeader("x-frame-options", "DENY");
+  res.setHeader("strict-transport-security", "max-age=31536000; includeSubDomains");
+  res.setHeader("content-security-policy", "default-src 'self'; script-src 'self' https://accounts.google.com/gsi/client; frame-src https://accounts.google.com; connect-src 'self' https://www.googleapis.com; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'");
+  res.setHeader("referrer-policy", "strict-origin-when-cross-origin");
+  res.setHeader("permissions-policy", "camera=(), microphone=(), geolocation=()");
+}
+
+function decodeUploadContent(contentBase64 = "") {
+  const content = Buffer.from(String(contentBase64 || ""), "base64");
+  if (content.length > MAX_UPLOAD_BYTES) {
+    const error = new Error("Arquivo acima do limite permitido.");
+    error.statusCode = 413;
+    throw error;
+  }
+  return content;
 }
 
 async function handleHealth(res) {
@@ -1394,6 +1479,7 @@ function ensureEmailHistory(store) {
 }
 
 async function sendSmtpMail(message) {
+  validateEmailMessage(message);
   const client = await SmtpClient.connect({
     host: SMTP_HOST,
     port: SMTP_PORT,
@@ -1406,6 +1492,18 @@ async function sendSmtpMail(message) {
     await client.quit().catch(() => null);
   }
 }
+
+function validateEmailMessage(message = {}) {
+  if (!isSafeEmailAddress(message.from)) {
+    throw new ValueError("Remetente de e-mail invalido.");
+  }
+  const recipients = Array.isArray(message.to) ? message.to : [];
+  if (!recipients.length || recipients.some((recipient) => !isSafeEmailAddress(recipient))) {
+    throw new ValueError("Destinatario de e-mail invalido.");
+  }
+}
+
+class ValueError extends Error {}
 
 async function sendSmtpMailWithRetry(message, maxAttempts = 3) {
   let lastError;
@@ -1593,6 +1691,12 @@ function dotStuff(message = "") {
 
 function smtpAddress(value = "") {
   return String(value).replace(/[<>\r\n]/g, "").trim();
+}
+
+function isSafeEmailAddress(value = "") {
+  const text = String(value || "").trim();
+  if (!text || /[\r\n<>]/.test(text)) return false;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(text);
 }
 
 function smtpLocalName() {
