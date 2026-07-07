@@ -28,6 +28,7 @@ import {
   validateDocumentUpload
 } from "./domain/processos.js";
 import { readStore, writeStore } from "./storage.js";
+import { createSession as createSessionRecord, resolveSession, revokeSession } from "./repositories/sessions.js";
 
 loadLocalEnv();
 
@@ -50,7 +51,6 @@ const LOGIN_RATE_LIMIT_WINDOW_MS = Number(process.env.LOGIN_RATE_LIMIT_WINDOW_MS
 const LOGIN_RATE_LIMIT_MAX = Number(process.env.LOGIN_RATE_LIMIT_MAX || 5);
 const MAX_JSON_BODY_BYTES = Number(process.env.MAX_JSON_BODY_BYTES || 16 * 1024 * 1024);
 const MAX_UPLOAD_BYTES = Number(process.env.MAX_UPLOAD_BYTES || 15 * 1024 * 1024);
-const sessions = new Map();
 const loginAttempts = new Map();
 let googleKeysCache = { expiresAt: 0, keys: [] };
 let emailSchedulerRunning = false;
@@ -120,7 +120,7 @@ async function handleAuth(req, res, url) {
   ensureUsers(store);
 
   if (req.method === "GET" && url.pathname === "/auth/session") {
-    const user = sessionUser(req, store);
+    const user = await sessionUser(req, store);
     if (!user) {
       sendJson(res, 401, { error: "Sessao nao encontrada" });
       return;
@@ -151,7 +151,7 @@ async function handleAuth(req, res, url) {
       return;
     }
     clearFailedLogin(req, email);
-    const token = createSession(user);
+    const token = await createSession(user);
     sendJson(res, 200, { token, user: publicUser(user) });
     return;
   }
@@ -191,7 +191,7 @@ async function handleAuth(req, res, url) {
       user.atualizadoEm = new Date().toISOString();
     }
     await writeStore(store);
-    const token = createSession(user);
+    const token = await createSession(user);
     sendJson(res, 200, { token, user: publicUser(user) });
     return;
   }
@@ -240,14 +240,14 @@ async function handleAuth(req, res, url) {
     user.precisaDefinirSenha = false;
     user.atualizadoEm = new Date().toISOString();
     await writeStore(store);
-    const token = createSession(user);
+    const token = await createSession(user);
     sendJson(res, 200, { token, user: publicUser(user) });
     return;
   }
 
   if (req.method === "POST" && url.pathname === "/auth/logout") {
     const token = bearerToken(req);
-    if (token) sessions.delete(token);
+    if (token) await revokeSession(token);
     sendJson(res, 200, { ok: true });
     return;
   }
@@ -258,7 +258,7 @@ async function handleAuth(req, res, url) {
 async function handleApi(req, res, url) {
   const store = await readStore();
   ensureUsers(store);
-  const authenticatedUser = sessionUser(req, store);
+  const authenticatedUser = await sessionUser(req, store);
   if (mutationRequiresAuthenticatedUser(req.method) && !authenticatedUser) {
     sendJson(res, 401, { error: "Faca login para continuar." });
     return;
@@ -267,7 +267,7 @@ async function handleApi(req, res, url) {
     sendJson(res, 401, { error: "Faca login para continuar." });
     return;
   }
-  const user = currentUser(req, store);
+  const user = await currentUser(req, store);
   const role = user.role;
   const usuario = user.name;
 
@@ -901,8 +901,8 @@ async function handleApi(req, res, url) {
   sendJson(res, 404, { error: "Rota nao encontrada" });
 }
 
-function currentUser(req, store) {
-  const authenticated = sessionUser(req, store);
+async function currentUser(req, store) {
+  const authenticated = await sessionUser(req, store);
   if (authenticated) {
     return {
       email: authenticated.email,
@@ -970,21 +970,15 @@ function ensureUsers(store) {
 }
 
 function createSession(user) {
-  const token = randomBytes(32).toString("hex");
-  sessions.set(token, { userId: user.id, createdAt: Date.now(), lastActivity: Date.now() });
-  return token;
+  return createSessionRecord(user.id, SESSION_TIMEOUT_MS);
 }
 
-function sessionUser(req, store) {
+async function sessionUser(req, store) {
   const token = bearerToken(req);
-  const session = token ? sessions.get(token) : null;
-  if (!session) return null;
-  if (Date.now() - Number(session.lastActivity || session.createdAt || 0) > SESSION_TIMEOUT_MS) {
-    sessions.delete(token);
-    return null;
-  }
-  session.lastActivity = Date.now();
-  return store.usuarios.find((user) => user.id === session.userId && user.ativo !== false) || null;
+  if (!token) return null;
+  const userId = await resolveSession(token, SESSION_TIMEOUT_MS);
+  if (!userId) return null;
+  return store.usuarios.find((user) => user.id === userId && user.ativo !== false) || null;
 }
 
 function bearerToken(req) {

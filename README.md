@@ -40,6 +40,8 @@ Itens ja aplicados:
 
 - `.env` protegido por `.gitignore`; use `.env.example` como referencia sem segredos reais.
 - Escrita do `data/store.json` serializada e atomica, reduzindo risco de corrupcao enquanto a migracao para banco nao acontece.
+- Estrutura inicial de banco PostgreSQL em `db/migrations/001_initial_schema.sql` para usuarios, sessoes e configuracoes.
+- Importador do `data/store.json` para usuarios e configuracoes.
 - Endpoint `/health` com checagem de storage, configuracao de e-mail e scheduler.
 - Logs estruturados em JSON para falhas de request e rotina de e-mail.
 - Historico de e-mail com chave de idempotencia, tentativas, erro e data de envio.
@@ -47,7 +49,8 @@ Itens ja aplicados:
 
 Pendencias antes de producao real:
 
-- Migrar `data/store.json` para PostgreSQL gerenciado.
+- Persistir sessoes em PostgreSQL.
+- Validar a migracao em staging para usuarios e configuracoes.
 - Mover uploads para storage persistente/externo.
 - Substituir Gmail SMTP por provedor transacional ou documentar monitoramento/rotacao da senha de app.
 - Endurecer sessoes, expirar tokens e ampliar RBAC.
@@ -77,13 +80,20 @@ almoxarifado-cmsp/
     store.json
   docs/
     requisitos-resumidos.md
+  db/
+    migrations/
+      001_initial_schema.sql
   public/
     app.js
     index.html
     styles.css
   src/
+    db/
+      postgres.js
     domain/
       processos.js
+    repositories/
+      sessions.js
     server.js
     storage.js
   test/

@@ -19,6 +19,7 @@ import {
   summarizeMaterials,
   validateDocumentUpload
 } from "../src/domain/processos.js";
+import { createSession, resolveSession, revokeSession } from "../src/repositories/sessions.js";
 
 describe("regras de processo", () => {
   it("bloqueia processo pago permanentemente para edicao", () => {
@@ -184,5 +185,12 @@ describe("regras de processo", () => {
     assert.equal(mutationRequiresAuthenticatedUser("GET"), false);
     assert.equal(mutationRequiresAuthenticatedUser("POST"), true);
     assert.equal(mutationRequiresAuthenticatedUser("DELETE"), true);
+  });
+
+  it("persiste e invalida sessoes no fallback em memoria", async () => {
+    const token = await createSession("user-1", 30 * 60 * 1000);
+    assert.equal(await resolveSession(token, 30 * 60 * 1000), "user-1");
+    await revokeSession(token);
+    assert.equal(await resolveSession(token, 30 * 60 * 1000), null);
   });
 });
