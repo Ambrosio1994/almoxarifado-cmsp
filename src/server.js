@@ -103,17 +103,16 @@ const server = createServer(async (req, res) => {
     await serveStatic(res, url.pathname);
   } catch (error) {
     logError("request_error", { message: error.message, stack: error.stack });
-    sendJson(res, error.statusCode || 500, {
-      error: error.statusCode ? error.message : "Erro interno do servidor",
-      details: error.statusCode ? undefined : error.message
-    });
+    sendJson(res, error.statusCode || 500, errorResponsePayload(error));
   }
 });
 
-server.listen(PORT, () => {
-  console.log(`Almoxarifado CMSP em http://localhost:${PORT}`);
-  startEmailScheduler();
-});
+if (isMainModule()) {
+  server.listen(PORT, () => {
+    console.log(`Almoxarifado CMSP em http://localhost:${PORT}`);
+    startEmailScheduler();
+  });
+}
 
 async function handleAuth(req, res, url) {
   const store = await readStore();
@@ -1193,6 +1192,17 @@ function logInfo(event, data = {}) {
 
 function logError(event, data = {}) {
   console.error(JSON.stringify({ level: "error", event, at: new Date().toISOString(), ...data }));
+}
+
+export function errorResponsePayload(error) {
+  if (error.statusCode) {
+    return { error: error.message };
+  }
+  return { error: "Erro interno do servidor" };
+}
+
+function isMainModule() {
+  return process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
 }
 
 function emailStatusPayload() {
@@ -2295,7 +2305,8 @@ const CRC_TABLE = Array.from({ length: 256 }, (_, index) => {
 
 function loadLocalEnv() {
   try {
-    const envPath = fileURLToPath(new URL("../.env", import.meta.url));
+    const envFile = process.env.NODE_ENV === "production" ? "../.env.production" : "../.env";
+    const envPath = fileURLToPath(new URL(envFile, import.meta.url));
     const content = readFileSync(envPath, "utf8");
     for (const line of content.split(/\r?\n/)) {
       const trimmed = line.trim();
