@@ -65,9 +65,7 @@ export function createPoolConfig() {
 
 function buildSslConfig() {
   const caCertPath = process.env.DB_CA_CERT_PATH;
-  if (!caCertPath) {
-    throw new Error("DB_CA_CERT_PATH e obrigatorio quando DB_SSL=true.");
-  }
+  if (!caCertPath) return undefined;
 
   return {
     ca: readFileSync(caCertPath, "utf8"),
@@ -90,7 +88,8 @@ function envInteger(name, fallback, minValue) {
 
 function loadLocalEnv() {
   try {
-    const envPath = fileURLToPath(new URL("../../.env", import.meta.url));
+    const envFile = process.env.NODE_ENV === "production" ? "../../.env.production" : "../../.env";
+    const envPath = fileURLToPath(new URL(envFile, import.meta.url));
     const content = readFileSync(envPath, "utf8");
     for (const line of content.split(/\r?\n/)) {
       const trimmed = line.trim();

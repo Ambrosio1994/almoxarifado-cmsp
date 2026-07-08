@@ -199,23 +199,23 @@ npm run db:import-store
 
 ## Banco existente ou producao
 
-Para um banco ja existente, configure `DATABASE_URL`, `DB_SSL` e `DB_CA_CERT_PATH` no ambiente real e rode `npm run db:migrate`. Em producao, use o certificado CA do provedor e valide antes em staging.
+Para um banco ja existente, configure `DATABASE_URL`, `DB_SSL` e, quando necessario, `DB_CA_CERT_PATH` no ambiente real e rode `npm run db:migrate`. Para provedores com CA publica confiavel, como Neon, `sslmode=verify-full` na `DATABASE_URL` pode ser suficiente sem CA local.
 
 ## SSL/TLS em producao
 
-Em producao, a aplicacao exige `DB_SSL=true`. Quando SSL esta habilitado, tambem e obrigatorio informar `DB_CA_CERT_PATH` apontando para o certificado CA usado para validar o certificado do servidor PostgreSQL.
+Em producao, a aplicacao exige `DB_SSL=true`. Quando SSL esta habilitado, `DB_CA_CERT_PATH` e opcional: use-o apenas se o provedor exigir uma CA especifica ou se voce quiser fixar a cadeia de confianca localmente. Se a `DATABASE_URL` ja usa `sslmode=verify-full`, a validacao de hostname e cadeia fica a cargo do proprio `pg`.
 
 Passos recomendados:
 
 1. Identifique o provedor do PostgreSQL em uso (RDS, Supabase, Neon, servidor proprio, etc.).
 2. Baixe o certificado CA publico/generico na documentacao ou painel do provedor.
-3. Salve o arquivo em um caminho seguro, por exemplo `certs/ca.crt`.
-4. Configure `DB_CA_CERT_PATH=./certs/ca.crt` ou um caminho absoluto equivalente no `.env` real do ambiente.
-5. Teste primeiro em staging. Se o certificado estiver incorreto, a conexao deve falhar.
+3. Salve o arquivo em um caminho seguro, por exemplo `certs/ca.crt`, se o provedor exigir CA manual.
+4. Configure `DB_CA_CERT_PATH=./certs/ca.crt` ou um caminho absoluto equivalente no `.env` real do ambiente, quando aplicavel.
+5. Teste primeiro em staging. Se o certificado ou o hostname estiverem incorretos, a conexao deve falhar.
 
 Arquivos `certs/*.crt`, `certs/*.pem` e `certs/*.cer` ficam fora do Git por padrao porque podem ser especificos do ambiente. Se o certificado for publico e generico conforme a politica do provedor, ele pode ser versionado intencionalmente com `git add -f`.
 
-As migracoes tambem respeitam essa configuracao: com `DB_SSL=true`, o script `npm run db:migrate` usa o certificado de `DB_CA_CERT_PATH` e valida o certificado do servidor.
+As migracoes tambem respeitam essa configuracao: com `DB_SSL=true`, o script `npm run db:migrate` usa a mesma `DATABASE_URL` ou `DATABASE_URL_MIGRATION` e herda a validacao TLS definida na connection string. Se `DB_CA_CERT_PATH` estiver presente, ele continua sendo usado.
 
 O runner consulta `SELECT version FROM app_schema_migrations` antes de aplicar os arquivos SQL e ignora migracoes ja registradas. A tabela pode nao existir em um banco novo; nesse caso, todas as migracoes versionadas sao consideradas pendentes.
 

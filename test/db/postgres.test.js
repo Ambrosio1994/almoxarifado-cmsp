@@ -17,14 +17,15 @@ describe("configuracao PostgreSQL", () => {
     });
   });
 
-  it("exige CA quando SSL esta habilitado", () => {
+  it("nao exige CA quando SSL esta habilitado e a URL ja define verify-full", () => {
     withEnv({
-      DATABASE_URL: "postgres://user:pass@db.example.com:5432/app",
+      DATABASE_URL: "postgresql://user:pass@db.example.com:5432/app?sslmode=verify-full&channel_binding=require",
       NODE_ENV: "production",
       DB_SSL: "true",
       DB_CA_CERT_PATH: ""
     }, () => {
-      assert.throws(() => createPoolConfig(), /DB_CA_CERT_PATH/);
+      const config = createPoolConfig();
+      assert.equal(config.ssl, undefined);
     });
   });
 
@@ -35,10 +36,10 @@ describe("configuracao PostgreSQL", () => {
 
     try {
       withEnv({
-        DATABASE_URL: "postgres://user:pass@db.example.com:5432/app",
-        NODE_ENV: "production",
-        DB_SSL: "true",
-        DB_CA_CERT_PATH: caPath,
+      DATABASE_URL: "postgres://user:pass@db.example.com:5432/app",
+      NODE_ENV: "production",
+      DB_SSL: "true",
+      DB_CA_CERT_PATH: caPath,
         DB_POOL_MIN: "1",
         DB_POOL_MAX: "4",
         DB_CONNECTION_TIMEOUT_MS: "2000",
@@ -61,15 +62,25 @@ describe("configuracao PostgreSQL", () => {
     }
   });
 
-  it("falha explicitamente quando o caminho do CA nao existe", () => {
-    withEnv({
-      DATABASE_URL: "postgres://user:pass@db.example.com:5432/app",
-      NODE_ENV: "production",
-      DB_SSL: "true",
-      DB_CA_CERT_PATH: "/tmp/almoxarifado-ca-inexistente.crt"
-    }, () => {
-      assert.throws(() => createPoolConfig(), /ENOENT/);
-    });
+  it("continua carregando CA quando o caminho e informado", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "almoxarifado-db-"));
+    const caPath = join(tempDir, "ca.crt");
+    writeFileSync(caPath, "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n");
+
+    try {
+      withEnv({
+        DATABASE_URL: "postgresql://user:pass@db.example.com:5432/app?sslmode=verify-full&channel_binding=require",
+        NODE_ENV: "production",
+        DB_SSL: "true",
+        DB_CA_CERT_PATH: caPath
+      }, () => {
+        const config = createPoolConfig();
+        assert.equal(config.ssl?.rejectUnauthorized, true);
+        assert.equal(config.ssl?.ca.includes("BEGIN CERTIFICATE"), true);
+      });
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 
   it("rejeita limites invalidos de pool e timeout", () => {
