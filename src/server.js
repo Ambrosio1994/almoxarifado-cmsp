@@ -27,14 +27,17 @@ import {
   STATUS,
   validateDocumentUpload
 } from "./domain/processos.js";
-import { readStore, writeStore } from "./storage.js";
+import { detectStoreBackend, readStore, writeStore } from "./storage.js";
 import { createSession as createSessionRecord, resolveSession, revokeSession } from "./repositories/sessions.js";
 
 loadLocalEnv();
 
 const PORT = Number(process.env.PORT || 3000);
 const ROOT = fileURLToPath(new URL("../public/", import.meta.url));
-const UPLOAD_ROOT = fileURLToPath(new URL("../uploads/", import.meta.url));
+const FAVICON_FILE = fileURLToPath(new URL("../my-fav.webp", import.meta.url));
+const UPLOAD_ROOT = process.env.UPLOAD_STORAGE_ROOT
+  ? resolveUploadRoot(process.env.UPLOAD_STORAGE_ROOT)
+  : fileURLToPath(new URL("../uploads/", import.meta.url));
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "";
 const ADMIN_EMAILS = new Set(parseList(process.env.ADMIN_EMAILS));
 const LOCAL_ADMIN_EMAIL = normalizeEmail(process.env.LOCAL_ADMIN_EMAIL);
@@ -75,7 +78,7 @@ const DEFAULT_SETTINGS = {
   responsaveis: []
 };
 
-const server = createServer(async (req, res) => {
+export async function requestHandler(req, res) {
   try {
     applySecurityHeaders(res);
     const url = new URL(req.url, `http://${req.headers.host}`);
@@ -100,14 +103,24 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    if (url.pathname === "/favicon.svg" || url.pathname === "/favicon.ico" || url.pathname === "/my-fav.webp") {
+      await serveFavicon(res);
+      return;
+    }
+
     await serveStatic(res, url.pathname);
   } catch (error) {
     logError("request_error", { message: error.message, stack: error.stack });
     sendJson(res, error.statusCode || 500, errorResponsePayload(error));
   }
-});
+}
+
+const server = createServer(requestHandler);
 
 if (isMainModule()) {
+  const storeBackend = await detectStoreBackend();
+  console.log(`Storage backend ativo: ${storeBackend}`);
+  console.log(`Upload root ativo: ${UPLOAD_ROOT}`);
   server.listen(PORT, () => {
     console.log(`Almoxarifado CMSP em http://localhost:${PORT}`);
     startEmailScheduler();
@@ -116,7 +129,7 @@ if (isMainModule()) {
 
 async function handleAuth(req, res, url) {
   const store = await readStore();
-  ensureUsers(store);
+  await ensureUsers(store);
 
   if (req.method === "GET" && url.pathname === "/auth/session") {
     const user = await sessionUser(req, store);
@@ -180,6 +193,7 @@ async function handleAuth(req, res, url) {
         senhaHash: "",
         precisaDefinirSenha: false,
         ativo: true,
+        role: resolveRole({ email: profile.email }),
         criadoEm: new Date().toISOString()
       };
       store.usuarios.push(user);
@@ -216,6 +230,7 @@ async function handleAuth(req, res, url) {
       senhaHash: "",
       precisaDefinirSenha: true,
       ativo: true,
+      role: resolveRole({ email }),
       criadoEm: new Date().toISOString()
     };
     store.usuarios.push(user);
@@ -256,7 +271,7 @@ async function handleAuth(req, res, url) {
 
 async function handleApi(req, res, url) {
   const store = await readStore();
-  ensureUsers(store);
+  await ensureUsers(store);
   const authenticatedUser = await sessionUser(req, store);
   if (mutationRequiresAuthenticatedUser(req.method) && !authenticatedUser) {
     sendJson(res, 401, { error: "Faca login para continuar." });
@@ -906,7 +921,7 @@ async function currentUser(req, store) {
     return {
       email: authenticated.email,
       name: authenticated.nome,
-      role: ADMIN_EMAILS.has(authenticated.email) ? "admin" : "almoxarifado"
+      role: resolveRole(authenticated)
     };
   }
   const email = String(req.headers["x-user-email"] || "admin@cmsp.local").toLowerCase();
@@ -914,7 +929,7 @@ async function currentUser(req, store) {
   return {
     email,
     name,
-    role: ADMIN_EMAILS.has(email) ? "admin" : "almoxarifado"
+    role: resolveRole({ email })
   };
 }
 
@@ -952,8 +967,9 @@ function clientIp(req) {
   return forwardedFor || req.socket?.remoteAddress || "unknown";
 }
 
-function ensureUsers(store) {
+async function ensureUsers(store) {
   if (!Array.isArray(store.usuarios)) store.usuarios = [];
+  // Bootstrap local-only admin account from explicit environment variables.
   if (LOCAL_ADMIN_EMAIL && LOCAL_ADMIN_PASSWORD && !store.usuarios.some((user) => user.email === LOCAL_ADMIN_EMAIL)) {
     store.usuarios.push({
       id: `admin-${crypto.randomUUID()}`,
@@ -963,8 +979,10 @@ function ensureUsers(store) {
       senhaHash: hashPassword(LOCAL_ADMIN_PASSWORD),
       precisaDefinirSenha: false,
       ativo: true,
+      role: "admin",
       criadoEm: new Date().toISOString()
     });
+    await writeStore(store);
   }
 }
 
@@ -990,12 +1008,18 @@ function publicUser(user) {
     nome: user.nome,
     email: user.email,
     foto: user.foto || "",
-    role: ADMIN_EMAILS.has(user.email) ? "admin" : "almoxarifado"
+    role: resolveRole(user)
   };
 }
 
 function normalizeEmail(email = "") {
   return String(email).trim().toLowerCase();
+}
+
+function resolveRole(user = {}) {
+  const explicit = String(user.role || "").trim().toLowerCase();
+  if (["admin", "almoxarifado", "auditor"].includes(explicit)) return explicit;
+  return ADMIN_EMAILS.has(normalizeEmail(user.email || "")) ? "admin" : "almoxarifado";
 }
 
 function parseList(value = "") {
@@ -1073,21 +1097,11 @@ async function serveStatic(res, pathname) {
     return;
   }
 
-  const content = await readFile(fullPath);
-  const contentType = {
-    ".html": "text/html; charset=utf-8",
-    ".css": "text/css; charset=utf-8",
-    ".js": "text/javascript; charset=utf-8",
-    ".json": "application/json; charset=utf-8"
-  }[extname(fullPath)] || "application/octet-stream";
-
-  res.writeHead(200, {
-    "content-type": contentType,
+  await serveFile(res, fullPath, {
     "cache-control": "no-store",
     "cross-origin-opener-policy": "same-origin-allow-popups",
     "referrer-policy": "strict-origin-when-cross-origin"
   });
-  res.end(content);
 }
 
 async function serveUpload(res, pathname) {
@@ -1099,13 +1113,37 @@ async function serveUpload(res, pathname) {
     return;
   }
 
-  const content = await readFile(fullPath);
-  res.writeHead(200, { "content-type": contentTypeForPath(fullPath) });
-  res.end(content);
+  await serveFile(res, fullPath);
 }
 
-function contentTypeForPath(pathname = "") {
+async function serveFavicon(res) {
+  await serveFile(res, FAVICON_FILE, {
+    "cache-control": "public, max-age=86400"
+  });
+}
+
+async function serveFile(res, filePath, extraHeaders = {}) {
+  try {
+    const content = await readFile(filePath);
+    res.writeHead(200, {
+      "content-type": contentTypeForPath(filePath),
+      ...extraHeaders
+    });
+    res.end(content);
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      sendText(res, 404, "Arquivo nao encontrado");
+      return;
+    }
+    throw error;
+  }
+}
+
+export function contentTypeForPath(pathname = "") {
   return {
+    ".html": "text/html; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
     ".pdf": "application/pdf",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     ".xls": "application/vnd.ms-excel",
@@ -1117,7 +1155,8 @@ function contentTypeForPath(pathname = "") {
     ".txt": "text/plain; charset=utf-8",
     ".png": "image/png",
     ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg"
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp"
   }[extname(pathname).toLowerCase()] || "application/octet-stream";
 }
 
@@ -1167,8 +1206,10 @@ function decodeUploadContent(contentBase64 = "") {
 }
 
 async function handleHealth(res) {
+  const storageBackend = await detectStoreBackend();
   const checks = {
     storage: false,
+    storageBackend,
     emailConfigured: Boolean(GMAIL_USER && GMAIL_APP_PASSWORD),
     schedulerRunning: emailSchedulerRunning
   };
@@ -1203,6 +1244,12 @@ export function errorResponsePayload(error) {
 
 function isMainModule() {
   return process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
+}
+
+function resolveUploadRoot(pathText) {
+  if (!pathText) return fileURLToPath(new URL("../uploads/", import.meta.url));
+  if (pathText.startsWith("/")) return pathText;
+  return fileURLToPath(new URL(pathText, `file://${process.cwd()}/`));
 }
 
 function emailStatusPayload() {
@@ -1718,7 +1765,7 @@ function settingsPayload(store) {
       nome: user.nome,
       email: user.email,
       ativo: user.ativo !== false,
-      role: ADMIN_EMAILS.has(user.email) ? "admin" : "almoxarifado",
+      role: resolveRole(user),
       origemCadastro: user.origemCadastro || "local",
       precisaDefinirSenha: Boolean(user.precisaDefinirSenha)
     }))
