@@ -34,6 +34,7 @@ loadLocalEnv();
 
 const PORT = Number(process.env.PORT || 3000);
 const ROOT = fileURLToPath(new URL("../public/", import.meta.url));
+const FAVICON_FILE = fileURLToPath(new URL("../my-fav.webp", import.meta.url));
 const UPLOAD_ROOT = process.env.UPLOAD_STORAGE_ROOT
   ? resolveUploadRoot(process.env.UPLOAD_STORAGE_ROOT)
   : fileURLToPath(new URL("../uploads/", import.meta.url));
@@ -77,7 +78,7 @@ const DEFAULT_SETTINGS = {
   responsaveis: []
 };
 
-const server = createServer(async (req, res) => {
+export async function requestHandler(req, res) {
   try {
     applySecurityHeaders(res);
     const url = new URL(req.url, `http://${req.headers.host}`);
@@ -102,7 +103,7 @@ const server = createServer(async (req, res) => {
       return;
     }
 
-    if (url.pathname === "/favicon.svg") {
+    if (url.pathname === "/favicon.svg" || url.pathname === "/favicon.ico" || url.pathname === "/my-fav.webp") {
       await serveFavicon(res);
       return;
     }
@@ -112,7 +113,9 @@ const server = createServer(async (req, res) => {
     logError("request_error", { message: error.message, stack: error.stack });
     sendJson(res, error.statusCode || 500, errorResponsePayload(error));
   }
-});
+}
+
+const server = createServer(requestHandler);
 
 if (isMainModule()) {
   const storeBackend = await detectStoreBackend();
@@ -1094,21 +1097,11 @@ async function serveStatic(res, pathname) {
     return;
   }
 
-  const content = await readFile(fullPath);
-  const contentType = {
-    ".html": "text/html; charset=utf-8",
-    ".css": "text/css; charset=utf-8",
-    ".js": "text/javascript; charset=utf-8",
-    ".json": "application/json; charset=utf-8"
-  }[extname(fullPath)] || "application/octet-stream";
-
-  res.writeHead(200, {
-    "content-type": contentType,
+  await serveFile(res, fullPath, {
     "cache-control": "no-store",
     "cross-origin-opener-policy": "same-origin-allow-popups",
     "referrer-policy": "strict-origin-when-cross-origin"
   });
-  res.end(content);
 }
 
 async function serveUpload(res, pathname) {
@@ -1120,22 +1113,37 @@ async function serveUpload(res, pathname) {
     return;
   }
 
-  const content = await readFile(fullPath);
-  res.writeHead(200, { "content-type": contentTypeForPath(fullPath) });
-  res.end(content);
+  await serveFile(res, fullPath);
 }
 
 async function serveFavicon(res) {
-  const content = await readFile(fileURLToPath(new URL("../favcon.svg", import.meta.url)));
-  res.writeHead(200, {
-    "content-type": "image/svg+xml",
+  await serveFile(res, FAVICON_FILE, {
     "cache-control": "public, max-age=86400"
   });
-  res.end(content);
 }
 
-function contentTypeForPath(pathname = "") {
+async function serveFile(res, filePath, extraHeaders = {}) {
+  try {
+    const content = await readFile(filePath);
+    res.writeHead(200, {
+      "content-type": contentTypeForPath(filePath),
+      ...extraHeaders
+    });
+    res.end(content);
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      sendText(res, 404, "Arquivo nao encontrado");
+      return;
+    }
+    throw error;
+  }
+}
+
+export function contentTypeForPath(pathname = "") {
   return {
+    ".html": "text/html; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
     ".pdf": "application/pdf",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     ".xls": "application/vnd.ms-excel",
@@ -1147,7 +1155,8 @@ function contentTypeForPath(pathname = "") {
     ".txt": "text/plain; charset=utf-8",
     ".png": "image/png",
     ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg"
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp"
   }[extname(pathname).toLowerCase()] || "application/octet-stream";
 }
 
