@@ -11,6 +11,7 @@ if (!databaseConfigured()) {
 }
 
 try {
+  console.log(formatDatabaseTarget(process.env.DATABASE_URL));
   const raw = await readFile(storePath, "utf8");
   const store = JSON.parse(raw);
   await importStore(store);
@@ -158,4 +159,28 @@ function timestamp(value = "") {
 
 function storageKey(path = "", fileName = "") {
   return text(path) || `${crypto.randomUUID()}-${text(fileName || "arquivo")}`;
+}
+
+function formatDatabaseTarget(databaseUrl) {
+  try {
+    const url = new URL(databaseUrl);
+    const database = url.pathname.replace(/^\//, "") || "<sem database>";
+    const sslmode = url.searchParams.get("sslmode") || "<nao informado>";
+    return [
+      "Banco alvo do import:",
+      `NODE_ENV=${process.env.NODE_ENV || "<nao definido>"}`,
+      "source=DATABASE_URL",
+      `user=${decodeURIComponent(url.username || "<sem usuario>")}`,
+      `host=${url.host}`,
+      `database=${database}`,
+      `sslmode=${sslmode}`
+    ].join(" ");
+  } catch {
+    return [
+      "Banco alvo do import:",
+      `NODE_ENV=${process.env.NODE_ENV || "<nao definido>"}`,
+      "source=DATABASE_URL",
+      "host=<url invalida>"
+    ].join(" ");
+  }
 }

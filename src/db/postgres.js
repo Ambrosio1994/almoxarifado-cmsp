@@ -45,14 +45,14 @@ export async function closePool() {
   pool = undefined;
 }
 
-export function createPoolConfig() {
+export function createPoolConfig(connectionString = process.env.DATABASE_URL) {
   const sslEnabled = process.env.DB_SSL === "true";
   if (process.env.NODE_ENV === "production" && !sslEnabled) {
     throw new Error("DB_SSL=true e obrigatorio em producao.");
   }
 
   return {
-    connectionString: process.env.DATABASE_URL,
+    connectionString,
     ssl: sslEnabled ? buildSslConfig() : undefined,
     min: envInteger("DB_POOL_MIN", 0, 0),
     max: envInteger("DB_POOL_MAX", 10, 1),

@@ -8,8 +8,12 @@ const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const MIGRATIONS_DIR = join(ROOT, "db", "migrations");
 
 export async function runMigrations(options = {}) {
+  const resolvedDatabaseUrl = options.databaseUrl
+    ? { databaseUrl: options.databaseUrl, source: "options.databaseUrl" }
+    : resolveDatabaseUrl();
   const {
-    databaseUrl = process.env.DATABASE_URL_MIGRATION || process.env.DATABASE_URL,
+    databaseUrl = resolvedDatabaseUrl.databaseUrl,
+    databaseUrlSource = resolvedDatabaseUrl.source,
     migrationsDir = MIGRATIONS_DIR,
     createClient = defaultCreateClient,
     logger = console
@@ -28,6 +32,7 @@ export async function runMigrations(options = {}) {
     return { applied: [], skipped: [] };
   }
 
+  logger.log(formatDatabaseTarget(databaseUrl, databaseUrlSource));
   const client = createClient(databaseUrl);
   await client.connect();
   try {
@@ -78,8 +83,43 @@ async function recordAppliedMigration(client, version) {
   );
 }
 
-function defaultCreateClient() {
-  return new pg.Client(createPoolConfig());
+function defaultCreateClient(databaseUrl) {
+  return new pg.Client(createPoolConfig(databaseUrl));
+}
+
+function resolveDatabaseUrl() {
+  if (process.env.DATABASE_URL_MIGRATION) {
+    return {
+      databaseUrl: process.env.DATABASE_URL_MIGRATION,
+      source: "DATABASE_URL_MIGRATION"
+    };
+  }
+
+  return {
+    databaseUrl: process.env.DATABASE_URL,
+    source: "DATABASE_URL"
+  };
+}
+
+function formatDatabaseTarget(databaseUrl, source) {
+  try {
+    const url = new URL(databaseUrl);
+    const database = url.pathname.replace(/^\//, "") || "<sem database>";
+    const sslmode = url.searchParams.get("sslmode") || "<nao informado>";
+    return [
+      `Banco alvo da migracao: source=${source}`,
+      `NODE_ENV=${process.env.NODE_ENV || "<nao definido>"}`,
+      `host=${url.host}`,
+      `database=${database}`,
+      `sslmode=${sslmode}`
+    ].join(" ");
+  } catch {
+    return [
+      `Banco alvo da migracao: source=${source}`,
+      `NODE_ENV=${process.env.NODE_ENV || "<nao definido>"}`,
+      "host=<url invalida>"
+    ].join(" ");
+  }
 }
 
 function loadLocalEnv() {
