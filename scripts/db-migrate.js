@@ -13,6 +13,14 @@ if (!databaseUrl) {
   console.error("DATABASE_URL nao configurada.");
   process.exit(1);
 }
+if (process.env.NODE_ENV === "production" && process.env.DB_SSL !== "true") {
+  console.error("DB_SSL=true e obrigatorio em producao.");
+  process.exit(1);
+}
+if (process.env.DB_SSL === "true" && !process.env.DB_CA_CERT_PATH) {
+  console.error("DB_CA_CERT_PATH e obrigatorio quando DB_SSL=true.");
+  process.exit(1);
+}
 
 const migrations = readdirSync(MIGRATIONS_DIR)
   .filter((fileName) => /^\d+_.+\.sql$/.test(fileName))
@@ -35,7 +43,7 @@ for (const migration of migrations) {
   ], {
     cwd: ROOT,
     stdio: "inherit",
-    env: process.env
+    env: buildPsqlEnv()
   });
 
   if (result.error) {
@@ -46,6 +54,15 @@ for (const migration of migrations) {
 }
 
 console.log("Migracoes aplicadas com sucesso.");
+
+function buildPsqlEnv() {
+  if (process.env.DB_SSL !== "true") return process.env;
+  return {
+    ...process.env,
+    PGSSLMODE: "verify-full",
+    PGSSLROOTCERT: process.env.DB_CA_CERT_PATH
+  };
+}
 
 function loadLocalEnv() {
   const envPath = join(ROOT, ".env");

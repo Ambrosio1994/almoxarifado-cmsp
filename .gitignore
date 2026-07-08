@@ -12,5 +12,10 @@ data/*
 uploads/
 *.log
 
+certs/*.crt
+certs/*.pem
+certs/*.cer
+!certs/.gitkeep
+
 .DS_Store
 Thumbs.db
