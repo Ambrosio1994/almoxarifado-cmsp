@@ -40,6 +40,8 @@ Arquivos `certs/*.crt`, `certs/*.pem` e `certs/*.cer` ficam fora do Git por padr
 
 As migracoes tambem respeitam essa configuracao: com `DB_SSL=true`, o script `npm run db:migrate` executa `psql` com `PGSSLMODE=verify-full` e `PGSSLROOTCERT` apontando para `DB_CA_CERT_PATH`.
 
+O runner consulta `SELECT version FROM app_schema_migrations` antes de aplicar os arquivos SQL e ignora migracoes ja registradas. A tabela pode nao existir em um banco novo; nesse caso, todas as migracoes versionadas sao consideradas pendentes.
+
 Perguntas pendentes para a administracao da infraestrutura:
 
 - Qual e o provedor do PostgreSQL de producao?
