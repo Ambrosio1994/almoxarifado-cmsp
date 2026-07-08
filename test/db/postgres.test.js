@@ -29,6 +29,17 @@ describe("configuracao PostgreSQL", () => {
     });
   });
 
+  it("aceita connection string explicita para migracoes", () => {
+    withEnv({
+      DATABASE_URL: "postgres://user:pass@app.example.com:5432/app",
+      NODE_ENV: "production",
+      DB_SSL: "true"
+    }, () => {
+      const config = createPoolConfig("postgres://user:pass@migration.example.com:5432/app");
+      assert.equal(config.connectionString, "postgres://user:pass@migration.example.com:5432/app");
+    });
+  });
+
   it("valida certificado do servidor e aplica limites do pool", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "almoxarifado-db-"));
     const caPath = join(tempDir, "ca.crt");
@@ -175,6 +186,36 @@ describe("runner de migracoes PostgreSQL", () => {
 
       assert.deepEqual(result.applied, ["001_first", "002_second", "003_third"]);
       assert.deepEqual(fakeDatabase.appliedSql, ["SELECT 1;", "SELECT 2;", "SELECT 3;"]);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("registra o alvo da migracao sem expor credenciais", async () => {
+    const tempDir = createMigrationsDir({
+      "001_initial_schema.sql": "SELECT 1;"
+    });
+    const fakeDatabase = createFakeDatabase();
+    const logs = [];
+
+    try {
+      await runMigrations({
+        databaseUrl: "postgres://user:secret@localhost:5432/app?sslmode=verify-full",
+        databaseUrlSource: "DATABASE_URL_MIGRATION",
+        migrationsDir: tempDir,
+        createClient: fakeDatabase.createClient,
+        logger: {
+          log(message) {
+            logs.push(message);
+          }
+        }
+      });
+
+      const targetLog = logs.find((message) => message.includes("Banco alvo da migracao"));
+      assert.match(targetLog, /source=DATABASE_URL_MIGRATION/);
+      assert.match(targetLog, /host=localhost:5432/);
+      assert.match(targetLog, /sslmode=verify-full/);
+      assert.doesNotMatch(targetLog, /secret/);
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
