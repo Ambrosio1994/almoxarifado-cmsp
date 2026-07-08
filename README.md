@@ -39,22 +39,28 @@ O remetente usa `GMAIL_USER`. O destinatario dos oficios e o e-mail cadastrado n
 Itens ja aplicados:
 
 - `.env` protegido por `.gitignore`; use `.env.example` como referencia sem segredos reais.
-- Escrita do `data/store.json` serializada e atomica, reduzindo risco de corrupcao enquanto a migracao para banco nao acontece.
-- Estrutura inicial de banco PostgreSQL em `db/migrations/001_initial_schema.sql` para usuarios, sessoes e configuracoes.
-- Importador do `data/store.json` para usuarios e configuracoes.
+- Escrita do `data/store.json` serializada e atomica, reduzindo risco de corrupcao no armazenamento local restante.
+- Schema PostgreSQL aplicado no Neon em `db/migrations/001_initial_schema.sql` para usuarios, sessoes e configuracoes.
+- Importador do `data/store.json` para usuarios e configuracoes, validado em producao.
 - Endpoint `/health` com checagem de storage, configuracao de e-mail e scheduler.
 - Logs estruturados em JSON para falhas de request e rotina de e-mail.
 - Historico de e-mail com chave de idempotencia, tentativas, erro e data de envio.
 - Retry simples para falhas transientes de SMTP.
+- Bootstrap de admin local apenas quando `LOCAL_ADMIN_EMAIL` e `LOCAL_ADMIN_PASSWORD` sao definidos explicitamente; nao ha senha padrao.
 
-Pendencias antes de producao real:
+Validacoes ja concluidas em 2026-07-08:
 
-- Persistir sessoes em PostgreSQL.
-- Validar a migracao em staging para usuarios e configuracoes.
-- Mover uploads para storage persistente/externo.
+- `NODE_ENV=production npm run db:migrate` apontou para o Neon correto e ficou idempotente.
+- `NODE_ENV=production npm run db:import-store` gravou o estado completo do aplicativo no Neon.
+- `POST /auth/login` em producao retornou `200` com token.
+- `GET /auth/session` em producao retornou `200`.
+- `GET /api/processes` em producao retornou `200` lendo do Postgres.
+
+Pendencias atuais:
+
 - Substituir Gmail SMTP por provedor transacional ou documentar monitoramento/rotacao da senha de app.
 - Endurecer sessoes, expirar tokens e ampliar RBAC.
-- Criar Dockerfile/CI/CD e monitor externo para `/health`.
+- Revisar a estrategia de retenção/limpeza dos uploads do volume montado.
 
 ## O que este início já cobre
 

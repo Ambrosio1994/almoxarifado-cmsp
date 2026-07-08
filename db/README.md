@@ -199,7 +199,20 @@ npm run db:import-store
 
 ## Banco existente ou producao
 
-Para um banco ja existente, configure `DATABASE_URL`, `DB_SSL` e, quando necessario, `DB_CA_CERT_PATH` no ambiente real e rode `npm run db:migrate`. Para provedores com CA publica confiavel, como Neon, `sslmode=verify-full` na `DATABASE_URL` pode ser suficiente sem CA local.
+Para um banco ja existente, configure o ambiente real e rode `npm run db:migrate:production` ou `NODE_ENV=production npm run db:migrate`. O carregamento de `.env.production` acontece no proprio processo, mas so depois que `NODE_ENV=production` ja esta definido antes do start.
+
+Regras confirmadas no codigo:
+
+- `src/db/postgres.js` e `scripts/db-migrate.js` carregam `.env.production` quando `NODE_ENV=production`; caso contrario, usam `.env`.
+- O loader nao sobrescreve variaveis que ja existam no ambiente.
+- `db:migrate` usa `DATABASE_URL_MIGRATION` quando ela estiver presente; senao cai em `DATABASE_URL`.
+- `db:import-store` usa `DATABASE_URL` porque ele grava os dados da aplicacao, nao o destino da migracao inicial.
+
+Para o Neon validado neste projeto:
+
+- `DATABASE_URL` aponta para o usuario de runtime da aplicacao.
+- `DATABASE_URL_MIGRATION` aponta para `neondb_owner`, em conexao direta.
+- As duas strings usam `sslmode=verify-full` e `channel_binding=require`.
 
 ## SSL/TLS em producao
 
@@ -250,7 +263,15 @@ Depois de aplicar as migracoes:
 npm run db:import-store
 ```
 
-Esse comando le `data/store.json` e grava no PostgreSQL apenas os dados de usuario e configuracao. Os dados de processo continuam fora do banco neste estagio.
+Esse comando le `data/store.json` e grava no PostgreSQL o estado inteiro do aplicativo: usuarios, configuracoes, processos, fornecedores, observacoes, auditoria e historico de e-mails. Quando o schema novo existe, o Postgres vira a fonte de verdade.
+
+Validacao real executada em 2026-07-08:
+
+- `NODE_ENV=production npm run db:import-store` foi executado contra o Neon.
+- O log do import mostrou apenas `NODE_ENV`, `source`, `user`, `host`, `database` e `sslmode`.
+- A migration `002_process_data.sql` criou `app_processes`, `app_suppliers`, `app_process_observations`, `app_process_audit` e `app_email_history`.
+- O import gravou o estado completo do aplicativo no banco.
+- `NODE_ENV=production` com a app apontando para o Neon retornou `200` em `POST /auth/login`, `GET /auth/session` e `GET /api/processes`.
 
 ## Modelo inicial
 
@@ -264,6 +285,6 @@ O schema separa os principais objetos que hoje ficam dentro do JSON:
 
 ## Proximas etapas
 
-1. Persistir sessoes em `user_sessions`.
-2. Adicionar testes de integracao para login, logout e renovacao de sessao.
-3. Mover uploads para storage externo quando as rotas de processo forem migradas.
+1. Adicionar testes de integracao para login, logout e renovacao de sessao.
+2. Evoluir o schema de processos se novos campos estruturados passarem a justificar tabelas proprias.
+3. Revisar a limpeza e a retencao dos uploads montados em volume.
