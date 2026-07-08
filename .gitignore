@@ -15,6 +15,9 @@ uploads/
 certs/*.crt
 certs/*.pem
 certs/*.cer
+certs/*.key
+certs/*.csr
+certs/*.srl
 !certs/.gitkeep
 
 .DS_Store

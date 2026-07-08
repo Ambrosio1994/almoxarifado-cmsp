@@ -19,6 +19,7 @@ import {
   summarizeMaterials,
   validateDocumentUpload
 } from "../src/domain/processos.js";
+import { closePool } from "../src/db/postgres.js";
 import { createSession, resolveSession, revokeSession } from "../src/repositories/sessions.js";
 
 describe("regras de processo", () => {
@@ -188,9 +189,36 @@ describe("regras de processo", () => {
   });
 
   it("persiste e invalida sessoes no fallback em memoria", async () => {
-    const token = await createSession("user-1", 30 * 60 * 1000);
-    assert.equal(await resolveSession(token, 30 * 60 * 1000), "user-1");
-    await revokeSession(token);
-    assert.equal(await resolveSession(token, 30 * 60 * 1000), null);
+    await withEnv({ DATABASE_URL: undefined }, async () => {
+      const token = await createSession("user-1", 30 * 60 * 1000);
+      assert.equal(await resolveSession(token, 30 * 60 * 1000), "user-1");
+      await revokeSession(token);
+      assert.equal(await resolveSession(token, 30 * 60 * 1000), null);
+    });
   });
 });
+
+async function withEnv(values, callback) {
+  const previous = {};
+  for (const key of Object.keys(values)) {
+    previous[key] = process.env[key];
+    if (values[key] === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = values[key];
+    }
+  }
+
+  try {
+    return await callback();
+  } finally {
+    await closePool();
+    for (const key of Object.keys(values)) {
+      if (previous[key] === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = previous[key];
+      }
+    }
+  }
+}
