@@ -34,7 +34,9 @@ loadLocalEnv();
 
 const PORT = Number(process.env.PORT || 3000);
 const ROOT = fileURLToPath(new URL("../public/", import.meta.url));
-const UPLOAD_ROOT = fileURLToPath(new URL("../uploads/", import.meta.url));
+const UPLOAD_ROOT = process.env.UPLOAD_STORAGE_ROOT
+  ? resolveUploadRoot(process.env.UPLOAD_STORAGE_ROOT)
+  : fileURLToPath(new URL("../uploads/", import.meta.url));
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "";
 const ADMIN_EMAILS = new Set(parseList(process.env.ADMIN_EMAILS));
 const LOCAL_ADMIN_EMAIL = normalizeEmail(process.env.LOCAL_ADMIN_EMAIL);
@@ -100,6 +102,11 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    if (url.pathname === "/favicon.svg") {
+      await serveFavicon(res);
+      return;
+    }
+
     await serveStatic(res, url.pathname);
   } catch (error) {
     logError("request_error", { message: error.message, stack: error.stack });
@@ -110,6 +117,7 @@ const server = createServer(async (req, res) => {
 if (isMainModule()) {
   const storeBackend = await detectStoreBackend();
   console.log(`Storage backend ativo: ${storeBackend}`);
+  console.log(`Upload root ativo: ${UPLOAD_ROOT}`);
   server.listen(PORT, () => {
     console.log(`Almoxarifado CMSP em http://localhost:${PORT}`);
     startEmailScheduler();
@@ -182,6 +190,7 @@ async function handleAuth(req, res, url) {
         senhaHash: "",
         precisaDefinirSenha: false,
         ativo: true,
+        role: resolveRole({ email: profile.email }),
         criadoEm: new Date().toISOString()
       };
       store.usuarios.push(user);
@@ -218,6 +227,7 @@ async function handleAuth(req, res, url) {
       senhaHash: "",
       precisaDefinirSenha: true,
       ativo: true,
+      role: resolveRole({ email }),
       criadoEm: new Date().toISOString()
     };
     store.usuarios.push(user);
@@ -908,7 +918,7 @@ async function currentUser(req, store) {
     return {
       email: authenticated.email,
       name: authenticated.nome,
-      role: ADMIN_EMAILS.has(authenticated.email) ? "admin" : "almoxarifado"
+      role: resolveRole(authenticated)
     };
   }
   const email = String(req.headers["x-user-email"] || "admin@cmsp.local").toLowerCase();
@@ -916,7 +926,7 @@ async function currentUser(req, store) {
   return {
     email,
     name,
-    role: ADMIN_EMAILS.has(email) ? "admin" : "almoxarifado"
+    role: resolveRole({ email })
   };
 }
 
@@ -966,6 +976,7 @@ async function ensureUsers(store) {
       senhaHash: hashPassword(LOCAL_ADMIN_PASSWORD),
       precisaDefinirSenha: false,
       ativo: true,
+      role: "admin",
       criadoEm: new Date().toISOString()
     });
     await writeStore(store);
@@ -994,12 +1005,18 @@ function publicUser(user) {
     nome: user.nome,
     email: user.email,
     foto: user.foto || "",
-    role: ADMIN_EMAILS.has(user.email) ? "admin" : "almoxarifado"
+    role: resolveRole(user)
   };
 }
 
 function normalizeEmail(email = "") {
   return String(email).trim().toLowerCase();
+}
+
+function resolveRole(user = {}) {
+  const explicit = String(user.role || "").trim().toLowerCase();
+  if (["admin", "almoxarifado", "auditor"].includes(explicit)) return explicit;
+  return ADMIN_EMAILS.has(normalizeEmail(user.email || "")) ? "admin" : "almoxarifado";
 }
 
 function parseList(value = "") {
@@ -1108,6 +1125,15 @@ async function serveUpload(res, pathname) {
   res.end(content);
 }
 
+async function serveFavicon(res) {
+  const content = await readFile(fileURLToPath(new URL("../favcon.svg", import.meta.url)));
+  res.writeHead(200, {
+    "content-type": "image/svg+xml",
+    "cache-control": "public, max-age=86400"
+  });
+  res.end(content);
+}
+
 function contentTypeForPath(pathname = "") {
   return {
     ".pdf": "application/pdf",
@@ -1171,8 +1197,10 @@ function decodeUploadContent(contentBase64 = "") {
 }
 
 async function handleHealth(res) {
+  const storageBackend = await detectStoreBackend();
   const checks = {
     storage: false,
+    storageBackend,
     emailConfigured: Boolean(GMAIL_USER && GMAIL_APP_PASSWORD),
     schedulerRunning: emailSchedulerRunning
   };
@@ -1207,6 +1235,12 @@ export function errorResponsePayload(error) {
 
 function isMainModule() {
   return process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
+}
+
+function resolveUploadRoot(pathText) {
+  if (!pathText) return fileURLToPath(new URL("../uploads/", import.meta.url));
+  if (pathText.startsWith("/")) return pathText;
+  return fileURLToPath(new URL(pathText, `file://${process.cwd()}/`));
 }
 
 function emailStatusPayload() {
@@ -1722,7 +1756,7 @@ function settingsPayload(store) {
       nome: user.nome,
       email: user.email,
       ativo: user.ativo !== false,
-      role: ADMIN_EMAILS.has(user.email) ? "admin" : "almoxarifado",
+      role: resolveRole(user),
       origemCadastro: user.origemCadastro || "local",
       precisaDefinirSenha: Boolean(user.precisaDefinirSenha)
     }))

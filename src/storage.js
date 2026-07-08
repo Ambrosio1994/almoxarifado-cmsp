@@ -136,9 +136,9 @@ async function upsertUsers(client, users) {
     await client.query(`
       INSERT INTO app_users (
         id, nome, email, foto_url, google_sub, origem_cadastro, senha_hash,
-        precisa_definir_senha, ativo, criado_em, atualizado_em
+        precisa_definir_senha, ativo, role, criado_em, atualizado_em
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, COALESCE($10::timestamptz, now()), COALESCE($11::timestamptz, now()))
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11::timestamptz, now()), COALESCE($12::timestamptz, now()))
       ON CONFLICT (id) DO UPDATE SET
         nome = EXCLUDED.nome,
         email = EXCLUDED.email,
@@ -148,6 +148,7 @@ async function upsertUsers(client, users) {
         senha_hash = EXCLUDED.senha_hash,
         precisa_definir_senha = EXCLUDED.precisa_definir_senha,
         ativo = EXCLUDED.ativo,
+        role = EXCLUDED.role,
         atualizado_em = EXCLUDED.atualizado_em
     `, [
       textId(user.id),
@@ -159,6 +160,7 @@ async function upsertUsers(client, users) {
       text(user.senhaHash),
       Boolean(user.precisaDefinirSenha),
       user.ativo !== false,
+      normalizeRole(user.role, user.email),
       timestamp(user.criadoEm),
       timestamp(user.atualizadoEm)
     ]);
@@ -253,6 +255,7 @@ function deserializeUser(row = {}) {
     senhaHash: row.senha_hash || "",
     precisaDefinirSenha: Boolean(row.precisa_definir_senha),
     ativo: row.ativo !== false,
+    role: row.role || "",
     criadoEm: toIsoString(row.criado_em),
     atualizadoEm: toIsoString(row.atualizado_em)
   };
@@ -311,4 +314,10 @@ function timestamp(value = "") {
   if (!result) return null;
   const parsed = new Date(result);
   return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+}
+
+function normalizeRole(role, email = "") {
+  const value = String(role || "").trim().toLowerCase();
+  if (["admin", "almoxarifado", "auditor"].includes(value)) return value;
+  return normalizeEmail(email) === normalizeEmail(process.env.LOCAL_ADMIN_EMAIL || "") ? "admin" : "almoxarifado";
 }

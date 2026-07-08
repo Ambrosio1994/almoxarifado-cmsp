@@ -58,10 +58,9 @@ Validacoes ja concluidas em 2026-07-08:
 
 Pendencias atuais:
 
-- Mover uploads para storage persistente/externo.
 - Substituir Gmail SMTP por provedor transacional ou documentar monitoramento/rotacao da senha de app.
 - Endurecer sessoes, expirar tokens e ampliar RBAC.
-- Criar Dockerfile/CI/CD e monitor externo para `/health`.
+- Revisar a estrategia de retenção/limpeza dos uploads do volume montado.
 
 ## O que este início já cobre
 

@@ -285,6 +285,6 @@ O schema separa os principais objetos que hoje ficam dentro do JSON:
 
 ## Proximas etapas
 
-1. Persistir uploads em storage externo quando as rotas de processo forem ampliadas.
-2. Adicionar testes de integracao para login, logout e renovacao de sessao.
-3. Evoluir o schema de processos se novos campos estruturados passarem a justificar tabelas proprias.
+1. Adicionar testes de integracao para login, logout e renovacao de sessao.
+2. Evoluir o schema de processos se novos campos estruturados passarem a justificar tabelas proprias.
+3. Revisar a limpeza e a retencao dos uploads montados em volume.
