@@ -4,7 +4,7 @@ import { Readable } from "node:stream";
 import { requestHandler, contentTypeForPath, errorResponsePayload } from "../src/server.js";
 import { createSession } from "../src/repositories/sessions.js";
 import { closePool } from "../src/db/postgres.js";
-import { readStore } from "../src/storage.js";
+import { readStore, writeStore } from "../src/storage.js";
 
 describe("respostas de erro do servidor", () => {
   it("nao expoe detalhes internos em erro 500", () => {
@@ -76,7 +76,28 @@ describe("rotas http", () => {
     await withEnv({ DATABASE_URL: undefined }, async () => {
       await closePool();
       const store = await readStore();
-      const token = await createSession(store.usuarios[0].id);
+
+      if (!Array.isArray(store.usuarios)) {
+        store.usuarios = [];
+      }
+
+      const user = store.usuarios[0] || {
+        id: "test-user",
+        nome: "Usuario Teste",
+        email: "teste@cmsp.local",
+        senhaHash: "",
+        precisaDefinirSenha: false,
+        ativo: true,
+        role: "admin",
+        criadoEm: new Date().toISOString()
+      };
+
+      if (!store.usuarios.some((item) => item.id === user.id)) {
+        store.usuarios.push(user);
+        await writeStore(store);
+      }
+
+      const token = await createSession(user.id);
       const response = await invokeRequest({
         method: "GET",
         path: "/api/processes/download?format=csv",
