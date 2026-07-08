@@ -27,7 +27,7 @@ import {
   STATUS,
   validateDocumentUpload
 } from "./domain/processos.js";
-import { readStore, writeStore } from "./storage.js";
+import { detectStoreBackend, readStore, writeStore } from "./storage.js";
 import { createSession as createSessionRecord, resolveSession, revokeSession } from "./repositories/sessions.js";
 
 loadLocalEnv();
@@ -108,6 +108,8 @@ const server = createServer(async (req, res) => {
 });
 
 if (isMainModule()) {
+  const storeBackend = await detectStoreBackend();
+  console.log(`Storage backend ativo: ${storeBackend}`);
   server.listen(PORT, () => {
     console.log(`Almoxarifado CMSP em http://localhost:${PORT}`);
     startEmailScheduler();
@@ -116,7 +118,7 @@ if (isMainModule()) {
 
 async function handleAuth(req, res, url) {
   const store = await readStore();
-  ensureUsers(store);
+  await ensureUsers(store);
 
   if (req.method === "GET" && url.pathname === "/auth/session") {
     const user = await sessionUser(req, store);
@@ -256,7 +258,7 @@ async function handleAuth(req, res, url) {
 
 async function handleApi(req, res, url) {
   const store = await readStore();
-  ensureUsers(store);
+  await ensureUsers(store);
   const authenticatedUser = await sessionUser(req, store);
   if (mutationRequiresAuthenticatedUser(req.method) && !authenticatedUser) {
     sendJson(res, 401, { error: "Faca login para continuar." });
@@ -952,8 +954,9 @@ function clientIp(req) {
   return forwardedFor || req.socket?.remoteAddress || "unknown";
 }
 
-function ensureUsers(store) {
+async function ensureUsers(store) {
   if (!Array.isArray(store.usuarios)) store.usuarios = [];
+  // Bootstrap local-only admin account from explicit environment variables.
   if (LOCAL_ADMIN_EMAIL && LOCAL_ADMIN_PASSWORD && !store.usuarios.some((user) => user.email === LOCAL_ADMIN_EMAIL)) {
     store.usuarios.push({
       id: `admin-${crypto.randomUUID()}`,
@@ -965,6 +968,7 @@ function ensureUsers(store) {
       ativo: true,
       criadoEm: new Date().toISOString()
     });
+    await writeStore(store);
   }
 }
 
