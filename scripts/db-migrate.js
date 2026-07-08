@@ -9,7 +9,7 @@ const MIGRATIONS_DIR = join(ROOT, "db", "migrations");
 
 export async function runMigrations(options = {}) {
   const {
-    databaseUrl = process.env.DATABASE_URL,
+    databaseUrl = process.env.DATABASE_URL_MIGRATION || process.env.DATABASE_URL,
     migrationsDir = MIGRATIONS_DIR,
     createClient = defaultCreateClient,
     logger = console
@@ -83,7 +83,8 @@ function defaultCreateClient() {
 }
 
 function loadLocalEnv() {
-  const envPath = join(ROOT, ".env");
+  const envFile = process.env.NODE_ENV === "production" ? ".env.production" : ".env";
+  const envPath = join(ROOT, envFile);
   if (!existsSync(envPath)) return;
   const content = readFileSync(envPath, "utf8");
   for (const line of content.split(/\r?\n/)) {

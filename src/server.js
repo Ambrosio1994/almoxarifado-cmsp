@@ -2305,7 +2305,8 @@ const CRC_TABLE = Array.from({ length: 256 }, (_, index) => {
 
 function loadLocalEnv() {
   try {
-    const envPath = fileURLToPath(new URL("../.env", import.meta.url));
+    const envFile = process.env.NODE_ENV === "production" ? "../.env.production" : "../.env";
+    const envPath = fileURLToPath(new URL(envFile, import.meta.url));
     const content = readFileSync(envPath, "utf8");
     for (const line of content.split(/\r?\n/)) {
       const trimmed = line.trim();
