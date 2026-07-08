@@ -6,61 +6,139 @@ import { fileURLToPath } from "node:url";
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const MIGRATIONS_DIR = join(ROOT, "db", "migrations");
 
-loadLocalEnv();
+export function runMigrations(options = {}) {
+  const {
+    databaseUrl = process.env.DATABASE_URL,
+    migrationsDir = MIGRATIONS_DIR,
+    env = process.env,
+    cwd = ROOT,
+    executePsql = defaultExecutePsql,
+    logger = console
+  } = options;
 
-const databaseUrl = process.env.DATABASE_URL;
-if (!databaseUrl) {
-  console.error("DATABASE_URL nao configurada.");
-  process.exit(1);
-}
-if (process.env.NODE_ENV === "production" && process.env.DB_SSL !== "true") {
-  console.error("DB_SSL=true e obrigatorio em producao.");
-  process.exit(1);
-}
-if (process.env.DB_SSL === "true" && !process.env.DB_CA_CERT_PATH) {
-  console.error("DB_CA_CERT_PATH e obrigatorio quando DB_SSL=true.");
-  process.exit(1);
+  validateDatabaseEnv(databaseUrl, env);
+
+  const migrations = readdirSync(migrationsDir)
+    .filter((fileName) => /^\d+_.+\.sql$/.test(fileName))
+    .sort();
+
+  if (!migrations.length) {
+    logger.log("Nenhuma migracao encontrada.");
+    return { applied: [], skipped: [] };
+  }
+
+  const context = { databaseUrl, env, cwd, executePsql };
+  const appliedMigrations = loadAppliedMigrations(context);
+  const result = { applied: [], skipped: [] };
+
+  for (const migration of migrations) {
+    const migrationVersion = migration.replace(/\.sql$/, "");
+    if (appliedMigrations.has(migrationVersion)) {
+      logger.log(`Ignorando ${migration}: ja aplicada.`);
+      result.skipped.push(migrationVersion);
+      continue;
+    }
+
+    const fullPath = join(migrationsDir, migration);
+    logger.log(`Aplicando ${migration}`);
+    const migrationResult = runPsql([
+      databaseUrl,
+      "-v",
+      "ON_ERROR_STOP=1",
+      "-f",
+      fullPath
+    ], "inherit", context);
+
+    ensurePsqlSuccess(migrationResult, "Falha ao executar psql");
+    recordAppliedMigration(migrationVersion, context);
+    appliedMigrations.add(migrationVersion);
+    result.applied.push(migrationVersion);
+  }
+
+  logger.log("Migracoes aplicadas com sucesso.");
+  return result;
 }
 
-const migrations = readdirSync(MIGRATIONS_DIR)
-  .filter((fileName) => /^\d+_.+\.sql$/.test(fileName))
-  .sort();
-
-if (!migrations.length) {
-  console.log("Nenhuma migracao encontrada.");
-  process.exit(0);
+function validateDatabaseEnv(databaseUrl, env) {
+  if (!databaseUrl) {
+    throw new Error("DATABASE_URL nao configurada.");
+  }
+  if (env.NODE_ENV === "production" && env.DB_SSL !== "true") {
+    throw new Error("DB_SSL=true e obrigatorio em producao.");
+  }
+  if (env.DB_SSL === "true" && !env.DB_CA_CERT_PATH) {
+    throw new Error("DB_CA_CERT_PATH e obrigatorio quando DB_SSL=true.");
+  }
 }
 
-for (const migration of migrations) {
-  const fullPath = join(MIGRATIONS_DIR, migration);
-  console.log(`Aplicando ${migration}`);
-  const result = spawnSync("psql", [
-    databaseUrl,
-    "-v",
-    "ON_ERROR_STOP=1",
-    "-f",
-    fullPath
-  ], {
-    cwd: ROOT,
-    stdio: "inherit",
-    env: buildPsqlEnv()
-  });
+function loadAppliedMigrations(context) {
+  const result = runPsql([
+    context.databaseUrl,
+    "-t",
+    "-A",
+    "-c",
+    "SELECT version FROM app_schema_migrations"
+  ], "pipe", context);
 
   if (result.error) {
-    console.error(`Falha ao executar psql: ${result.error.message}`);
-    process.exit(1);
+    throw new Error(`Falha ao executar psql: ${result.error.message}`);
   }
-  if (result.status !== 0) process.exit(result.status || 1);
+
+  if (result.status === 0) {
+    return new Set(result.stdout.split(/\r?\n/).filter(Boolean));
+  }
+
+  const errorOutput = `${result.stderr || ""}${result.stdout || ""}`;
+  if (/app_schema_migrations.*does not exist|relation .*app_schema_migrations.* does not exist/i.test(errorOutput)) {
+    return new Set();
+  }
+
+  throw new Error(errorOutput || "Falha ao consultar migracoes aplicadas.");
 }
 
-console.log("Migracoes aplicadas com sucesso.");
+function recordAppliedMigration(version, context) {
+  const sql = "INSERT INTO app_schema_migrations (version) VALUES (:'migration_version') ON CONFLICT (version) DO NOTHING";
+  const result = runPsql([
+    context.databaseUrl,
+    "-v",
+    "ON_ERROR_STOP=1",
+    "-v",
+    `migration_version=${version}`,
+    "-c",
+    sql
+  ], "inherit", context);
 
-function buildPsqlEnv() {
-  if (process.env.DB_SSL !== "true") return process.env;
+  ensurePsqlSuccess(result, "Falha ao registrar migracao");
+}
+
+function ensurePsqlSuccess(result, message) {
+  if (result.error) {
+    throw new Error(`${message}: ${result.error.message}`);
+  }
+  if (result.status !== 0) {
+    throw new Error(`${message}: psql encerrou com status ${result.status || 1}`);
+  }
+}
+
+function runPsql(args, stdio, context) {
+  return context.executePsql(args, {
+    cwd: context.cwd,
+    stdio,
+    encoding: stdio === "pipe" ? "utf8" : undefined,
+    env: buildPsqlEnv(context.env)
+  });
+}
+
+function defaultExecutePsql(args, options) {
+  return spawnSync("psql", args, options);
+}
+
+function buildPsqlEnv(env) {
+  if (env.DB_SSL !== "true") return env;
   return {
-    ...process.env,
+    ...env,
     PGSSLMODE: "verify-full",
-    PGSSLROOTCERT: process.env.DB_CA_CERT_PATH
+    PGSSLROOTCERT: env.DB_CA_CERT_PATH
   };
 }
 
@@ -74,5 +152,19 @@ function loadLocalEnv() {
     const [key, ...valueParts] = trimmed.split("=");
     if (!key || process.env[key]) continue;
     process.env[key] = valueParts.join("=").trim();
+  }
+}
+
+function isMainModule() {
+  return process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
+}
+
+if (isMainModule()) {
+  loadLocalEnv();
+  try {
+    runMigrations();
+  } catch (error) {
+    console.error(error.message);
+    process.exit(1);
   }
 }
