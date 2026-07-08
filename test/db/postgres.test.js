@@ -61,6 +61,17 @@ describe("configuracao PostgreSQL", () => {
     }
   });
 
+  it("falha explicitamente quando o caminho do CA nao existe", () => {
+    withEnv({
+      DATABASE_URL: "postgres://user:pass@db.example.com:5432/app",
+      NODE_ENV: "production",
+      DB_SSL: "true",
+      DB_CA_CERT_PATH: "/tmp/almoxarifado-ca-inexistente.crt"
+    }, () => {
+      assert.throws(() => createPoolConfig(), /ENOENT/);
+    });
+  });
+
   it("rejeita limites invalidos de pool e timeout", () => {
     withEnv({
       DATABASE_URL: "postgres://user:pass@localhost:5432/app",
@@ -132,6 +143,53 @@ describe("runner de migracoes PostgreSQL", () => {
       }), /Falha ao executar psql/);
 
       assert.equal(fakePsql.appliedFiles.length, 1);
+      assert.equal(fakePsql.appliedVersions.size, 0);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("aplica migracoes em ordem deterministica", () => {
+    const tempDir = createMigrationsDir({
+      "003_third.sql": "SELECT 3;",
+      "001_first.sql": "SELECT 1;",
+      "002_second.sql": "SELECT 2;"
+    });
+    const fakePsql = createFakePsql();
+
+    try {
+      const result = runMigrations({
+        databaseUrl: "postgres://user:pass@localhost:5432/app",
+        migrationsDir: tempDir,
+        env: { DB_SSL: "false" },
+        executePsql: fakePsql.execute,
+        logger: silentLogger
+      });
+
+      assert.deepEqual(result.applied, ["001_first", "002_second", "003_third"]);
+      assert.deepEqual(fakePsql.appliedFiles, ["001_first.sql", "002_second.sql", "003_third.sql"]);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("para na primeira migracao com erro e nao aplica posteriores", () => {
+    const tempDir = createMigrationsDir({
+      "001_first.sql": "SELECT invalid;",
+      "002_second.sql": "SELECT 2;"
+    });
+    const fakePsql = createFakePsql({ failFiles: new Set(["001_first.sql"]) });
+
+    try {
+      assert.throws(() => runMigrations({
+        databaseUrl: "postgres://user:pass@localhost:5432/app",
+        migrationsDir: tempDir,
+        env: { DB_SSL: "false" },
+        executePsql: fakePsql.execute,
+        logger: silentLogger
+      }), /Falha ao executar psql/);
+
+      assert.deepEqual(fakePsql.appliedFiles, ["001_first.sql"]);
       assert.equal(fakePsql.appliedVersions.size, 0);
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
