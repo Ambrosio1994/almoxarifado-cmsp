@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import { createPoolConfig } from "../../src/db/postgres.js";
 import { runMigrations } from "../../scripts/db-migrate.js";
 
@@ -94,25 +94,23 @@ describe("configuracao PostgreSQL", () => {
 });
 
 describe("runner de migracoes PostgreSQL", () => {
-  it("nao reaplica migracoes ja registradas", () => {
+  it("nao reaplica migracoes ja registradas", async () => {
     const tempDir = createMigrationsDir({
       "001_initial_schema.sql": "CREATE TABLE example (id text PRIMARY KEY);"
     });
-    const fakePsql = createFakePsql();
+    const fakeDatabase = createFakeDatabase();
 
     try {
-      const firstRun = runMigrations({
+      const firstRun = await runMigrations({
         databaseUrl: "postgres://user:pass@localhost:5432/app",
         migrationsDir: tempDir,
-        env: { DB_SSL: "false" },
-        executePsql: fakePsql.execute,
+        createClient: fakeDatabase.createClient,
         logger: silentLogger
       });
-      const secondRun = runMigrations({
+      const secondRun = await runMigrations({
         databaseUrl: "postgres://user:pass@localhost:5432/app",
         migrationsDir: tempDir,
-        env: { DB_SSL: "false" },
-        executePsql: fakePsql.execute,
+        createClient: fakeDatabase.createClient,
         logger: silentLogger
       });
 
@@ -120,77 +118,74 @@ describe("runner de migracoes PostgreSQL", () => {
       assert.deepEqual(firstRun.skipped, []);
       assert.deepEqual(secondRun.applied, []);
       assert.deepEqual(secondRun.skipped, ["001_initial_schema"]);
-      assert.equal(fakePsql.appliedFiles.length, 1);
-      assert.deepEqual([...fakePsql.appliedVersions], ["001_initial_schema"]);
+      assert.equal(fakeDatabase.appliedSql.length, 1);
+      assert.deepEqual([...fakeDatabase.appliedVersions], ["001_initial_schema"]);
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
   });
 
-  it("nao registra migracao que falha", () => {
+  it("nao registra migracao que falha", async () => {
     const tempDir = createMigrationsDir({
       "001_initial_schema.sql": "CREATE TABLE example (id text PRIMARY KEY);"
     });
-    const fakePsql = createFakePsql({ failFiles: new Set(["001_initial_schema.sql"]) });
+    const fakeDatabase = createFakeDatabase({ failOnSql: /CREATE TABLE example/ });
 
     try {
-      assert.throws(() => runMigrations({
+      await assert.rejects(() => runMigrations({
         databaseUrl: "postgres://user:pass@localhost:5432/app",
         migrationsDir: tempDir,
-        env: { DB_SSL: "false" },
-        executePsql: fakePsql.execute,
+        createClient: fakeDatabase.createClient,
         logger: silentLogger
-      }), /Falha ao executar psql/);
+      }), /Falha ao aplicar 001_initial_schema.sql/);
 
-      assert.equal(fakePsql.appliedFiles.length, 1);
-      assert.equal(fakePsql.appliedVersions.size, 0);
+      assert.equal(fakeDatabase.appliedSql.length, 1);
+      assert.equal(fakeDatabase.appliedVersions.size, 0);
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
   });
 
-  it("aplica migracoes em ordem deterministica", () => {
+  it("aplica migracoes em ordem deterministica", async () => {
     const tempDir = createMigrationsDir({
       "003_third.sql": "SELECT 3;",
       "001_first.sql": "SELECT 1;",
       "002_second.sql": "SELECT 2;"
     });
-    const fakePsql = createFakePsql();
+    const fakeDatabase = createFakeDatabase();
 
     try {
-      const result = runMigrations({
+      const result = await runMigrations({
         databaseUrl: "postgres://user:pass@localhost:5432/app",
         migrationsDir: tempDir,
-        env: { DB_SSL: "false" },
-        executePsql: fakePsql.execute,
+        createClient: fakeDatabase.createClient,
         logger: silentLogger
       });
 
       assert.deepEqual(result.applied, ["001_first", "002_second", "003_third"]);
-      assert.deepEqual(fakePsql.appliedFiles, ["001_first.sql", "002_second.sql", "003_third.sql"]);
+      assert.deepEqual(fakeDatabase.appliedSql, ["SELECT 1;", "SELECT 2;", "SELECT 3;"]);
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
   });
 
-  it("para na primeira migracao com erro e nao aplica posteriores", () => {
+  it("para na primeira migracao com erro e nao aplica posteriores", async () => {
     const tempDir = createMigrationsDir({
       "001_first.sql": "SELECT invalid;",
       "002_second.sql": "SELECT 2;"
     });
-    const fakePsql = createFakePsql({ failFiles: new Set(["001_first.sql"]) });
+    const fakeDatabase = createFakeDatabase({ failOnSql: /SELECT invalid/ });
 
     try {
-      assert.throws(() => runMigrations({
+      await assert.rejects(() => runMigrations({
         databaseUrl: "postgres://user:pass@localhost:5432/app",
         migrationsDir: tempDir,
-        env: { DB_SSL: "false" },
-        executePsql: fakePsql.execute,
+        createClient: fakeDatabase.createClient,
         logger: silentLogger
-      }), /Falha ao executar psql/);
+      }), /Falha ao aplicar 001_first.sql/);
 
-      assert.deepEqual(fakePsql.appliedFiles, ["001_first.sql"]);
-      assert.equal(fakePsql.appliedVersions.size, 0);
+      assert.deepEqual(fakeDatabase.appliedSql, ["SELECT invalid;"]);
+      assert.equal(fakeDatabase.appliedVersions.size, 0);
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
@@ -209,42 +204,33 @@ function createMigrationsDir(files) {
   return tempDir;
 }
 
-function createFakePsql(options = {}) {
+function createFakeDatabase(options = {}) {
   const appliedVersions = new Set();
-  const appliedFiles = [];
-  const failFiles = options.failFiles || new Set();
+  const appliedSql = [];
+  const failOnSql = options.failOnSql;
 
   return {
     appliedVersions,
-    appliedFiles,
-    execute(args) {
-      const command = args.includes("-c") ? args[args.indexOf("-c") + 1] : "";
-
-      if (/SELECT version FROM app_schema_migrations/.test(command)) {
-        return {
-          status: 0,
-          stdout: [...appliedVersions].join("\n"),
-          stderr: ""
-        };
-      }
-
-      if (args.includes("-f")) {
-        const filePath = args[args.indexOf("-f") + 1];
-        const fileName = basename(filePath);
-        appliedFiles.push(fileName);
-        if (failFiles.has(fileName)) {
-          return { status: 1, stdout: "", stderr: "migration failed" };
+    appliedSql,
+    createClient() {
+      return {
+        async connect() {},
+        async end() {},
+        async query(sql, params = []) {
+          if (/SELECT version FROM app_schema_migrations/.test(sql)) {
+            return { rows: [...appliedVersions].map((version) => ({ version })) };
+          }
+          if (/INSERT INTO app_schema_migrations/.test(sql)) {
+            appliedVersions.add(params[0]);
+            return { rows: [] };
+          }
+          appliedSql.push(sql);
+          if (failOnSql?.test(sql)) {
+            throw new Error("migration failed");
+          }
+          return { rows: [] };
         }
-        return { status: 0, stdout: "", stderr: "" };
       }
-
-      if (/INSERT INTO app_schema_migrations/.test(command)) {
-        const versionArg = args.find((arg) => arg.startsWith("migration_version="));
-        appliedVersions.add(versionArg.replace("migration_version=", ""));
-        return { status: 0, stdout: "", stderr: "" };
-      }
-
-      throw new Error(`Comando psql inesperado: ${args.join(" ")}`);
     }
   };
 }

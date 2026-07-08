@@ -1,22 +1,23 @@
-import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import pg from "pg";
+import { createPoolConfig } from "../src/db/postgres.js";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const MIGRATIONS_DIR = join(ROOT, "db", "migrations");
 
-export function runMigrations(options = {}) {
+export async function runMigrations(options = {}) {
   const {
     databaseUrl = process.env.DATABASE_URL,
     migrationsDir = MIGRATIONS_DIR,
-    env = process.env,
-    cwd = ROOT,
-    executePsql = defaultExecutePsql,
+    createClient = defaultCreateClient,
     logger = console
   } = options;
 
-  validateDatabaseEnv(databaseUrl, env);
+  if (!databaseUrl) {
+    throw new Error("DATABASE_URL nao configurada.");
+  }
 
   const migrations = readdirSync(migrationsDir)
     .filter((fileName) => /^\d+_.+\.sql$/.test(fileName))
@@ -27,119 +28,58 @@ export function runMigrations(options = {}) {
     return { applied: [], skipped: [] };
   }
 
-  const context = { databaseUrl, env, cwd, executePsql };
-  const appliedMigrations = loadAppliedMigrations(context);
-  const result = { applied: [], skipped: [] };
+  const client = createClient(databaseUrl);
+  await client.connect();
+  try {
+    const appliedMigrations = await loadAppliedMigrations(client);
+    const result = { applied: [], skipped: [] };
 
-  for (const migration of migrations) {
-    const migrationVersion = migration.replace(/\.sql$/, "");
-    if (appliedMigrations.has(migrationVersion)) {
-      logger.log(`Ignorando ${migration}: ja aplicada.`);
-      result.skipped.push(migrationVersion);
-      continue;
+    for (const migration of migrations) {
+      const migrationVersion = migration.replace(/\.sql$/, "");
+      if (appliedMigrations.has(migrationVersion)) {
+        logger.log(`Ignorando ${migration}: ja aplicada.`);
+        result.skipped.push(migrationVersion);
+        continue;
+      }
+
+      const fullPath = join(migrationsDir, migration);
+      logger.log(`Aplicando ${migration}`);
+      try {
+        await client.query(readFileSync(fullPath, "utf8"));
+      } catch (error) {
+        throw new Error(`Falha ao aplicar ${migration}: ${error.message}`);
+      }
+      await recordAppliedMigration(client, migrationVersion);
+      appliedMigrations.add(migrationVersion);
+      result.applied.push(migrationVersion);
     }
 
-    const fullPath = join(migrationsDir, migration);
-    logger.log(`Aplicando ${migration}`);
-    const migrationResult = runPsql([
-      databaseUrl,
-      "-v",
-      "ON_ERROR_STOP=1",
-      "-f",
-      fullPath
-    ], "inherit", context);
-
-    ensurePsqlSuccess(migrationResult, "Falha ao executar psql");
-    recordAppliedMigration(migrationVersion, context);
-    appliedMigrations.add(migrationVersion);
-    result.applied.push(migrationVersion);
-  }
-
-  logger.log("Migracoes aplicadas com sucesso.");
-  return result;
-}
-
-function validateDatabaseEnv(databaseUrl, env) {
-  if (!databaseUrl) {
-    throw new Error("DATABASE_URL nao configurada.");
-  }
-  if (env.NODE_ENV === "production" && env.DB_SSL !== "true") {
-    throw new Error("DB_SSL=true e obrigatorio em producao.");
-  }
-  if (env.DB_SSL === "true" && !env.DB_CA_CERT_PATH) {
-    throw new Error("DB_CA_CERT_PATH e obrigatorio quando DB_SSL=true.");
+    logger.log("Migracoes aplicadas com sucesso.");
+    return result;
+  } finally {
+    await client.end();
   }
 }
 
-function loadAppliedMigrations(context) {
-  const result = runPsql([
-    context.databaseUrl,
-    "-t",
-    "-A",
-    "-c",
-    "SELECT version FROM app_schema_migrations"
-  ], "pipe", context);
-
-  if (result.error) {
-    throw new Error(`Falha ao executar psql: ${result.error.message}`);
-  }
-
-  if (result.status === 0) {
-    return new Set(result.stdout.split(/\r?\n/).filter(Boolean));
-  }
-
-  const errorOutput = `${result.stderr || ""}${result.stdout || ""}`;
-  if (/app_schema_migrations.*does not exist|relation .*app_schema_migrations.* does not exist/i.test(errorOutput)) {
-    return new Set();
-  }
-
-  throw new Error(errorOutput || "Falha ao consultar migracoes aplicadas.");
-}
-
-function recordAppliedMigration(version, context) {
-  const sql = "INSERT INTO app_schema_migrations (version) VALUES (:'migration_version') ON CONFLICT (version) DO NOTHING";
-  const result = runPsql([
-    context.databaseUrl,
-    "-v",
-    "ON_ERROR_STOP=1",
-    "-v",
-    `migration_version=${version}`,
-    "-c",
-    sql
-  ], "inherit", context);
-
-  ensurePsqlSuccess(result, "Falha ao registrar migracao");
-}
-
-function ensurePsqlSuccess(result, message) {
-  if (result.error) {
-    throw new Error(`${message}: ${result.error.message}`);
-  }
-  if (result.status !== 0) {
-    throw new Error(`${message}: psql encerrou com status ${result.status || 1}`);
+async function loadAppliedMigrations(client) {
+  try {
+    const result = await client.query("SELECT version FROM app_schema_migrations");
+    return new Set(result.rows.map((row) => row.version));
+  } catch (error) {
+    if (error.code === "42P01") return new Set();
+    throw error;
   }
 }
 
-function runPsql(args, stdio, context) {
-  return context.executePsql(args, {
-    cwd: context.cwd,
-    stdio,
-    encoding: stdio === "pipe" ? "utf8" : undefined,
-    env: buildPsqlEnv(context.env)
-  });
+async function recordAppliedMigration(client, version) {
+  await client.query(
+    "INSERT INTO app_schema_migrations (version) VALUES ($1) ON CONFLICT (version) DO NOTHING",
+    [version]
+  );
 }
 
-function defaultExecutePsql(args, options) {
-  return spawnSync("psql", args, options);
-}
-
-function buildPsqlEnv(env) {
-  if (env.DB_SSL !== "true") return env;
-  return {
-    ...env,
-    PGSSLMODE: "verify-full",
-    PGSSLROOTCERT: env.DB_CA_CERT_PATH
-  };
+function defaultCreateClient() {
+  return new pg.Client(createPoolConfig());
 }
 
 function loadLocalEnv() {
@@ -162,7 +102,7 @@ function isMainModule() {
 if (isMainModule()) {
   loadLocalEnv();
   try {
-    runMigrations();
+    await runMigrations();
   } catch (error) {
     console.error(error.message);
     process.exit(1);

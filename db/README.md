@@ -8,21 +8,198 @@ Este diretorio inicia a migracao do armazenamento atual em `data/store.json` par
 - Extensoes usadas: `pgcrypto` e `citext`
 - Primeira migracao: `db/migrations/001_initial_schema.sql`
 
-## Como aplicar localmente
+## Ambiente local com Docker
 
-Com um banco ja criado:
+Decisao: o ambiente local usa Docker. A escolha evita instalar PostgreSQL diretamente no sistema operacional, deixa o banco isolado em volume proprio e facilita recriar tudo do zero quando houver erro de configuracao. A instalacao nativa fica como alternativa para testes rapidos, mas nao e a recomendacao do projeto.
+
+Configurado em: 2026-07-08
+
+Versao validada localmente:
+
+```text
+PostgreSQL 15.18
+```
+
+O container publica a porta somente em localhost:
+
+```text
+127.0.0.1:5432->5432/tcp
+```
+
+Nunca exponha o banco local em `0.0.0.0`.
+
+### Certificados locais de desenvolvimento
+
+Gere uma CA e um certificado de servidor exclusivos para desenvolvimento:
+
+```bash
+mkdir -p certs
+openssl genrsa -out certs/local-dev-ca.key 4096
+openssl req -x509 -new -nodes -key certs/local-dev-ca.key -sha256 -days 365 \
+  -subj '/CN=Almoxarifado CMSP Local Dev CA' \
+  -out certs/local-dev-ca.crt
+openssl genrsa -out certs/local-dev-server.key 2048
+openssl req -new -key certs/local-dev-server.key \
+  -subj '/CN=localhost' \
+  -out certs/local-dev-server.csr \
+  -addext 'subjectAltName=DNS:localhost,IP:127.0.0.1'
+openssl x509 -req -in certs/local-dev-server.csr \
+  -CA certs/local-dev-ca.crt \
+  -CAkey certs/local-dev-ca.key \
+  -CAcreateserial \
+  -out certs/local-dev-server.crt \
+  -days 365 \
+  -sha256 \
+  -copy_extensions copy
+chmod 600 certs/local-dev-ca.key certs/local-dev-server.key
+```
+
+Esses arquivos ficam fora do Git. Nunca use certificados de producao no ambiente local.
+
+### Variaveis locais
+
+Copie `.env.example` para `.env` se ainda nao existir e preencha senhas fortes, unicas e locais:
+
+```text
+LOCAL_POSTGRES_ADMIN_PASSWORD=<senha-forte-admin-local>
+LOCAL_POSTGRES_APP_PASSWORD=<senha-forte-app-local>
+DATABASE_URL=postgres://almoxarifado_app:<senha-url-encoded>@localhost:5432/almoxarifado_cmsp
+DB_SSL=true
+DB_CA_CERT_PATH=./certs/local-dev-ca.crt
+DB_POOL_MIN=0
+DB_POOL_MAX=4
+DB_CONNECTION_TIMEOUT_MS=3000
+DB_IDLE_TIMEOUT_MS=10000
+DB_QUERY_TIMEOUT_MS=10000
+DB_STATEMENT_TIMEOUT_MS=10000
+```
+
+`LOCAL_POSTGRES_ADMIN_PASSWORD` e `LOCAL_POSTGRES_APP_PASSWORD` sao usados apenas no ambiente local e nao devem ser versionados. Guarde as senhas em um local seguro.
+
+### Subir o PostgreSQL local
+
+```bash
+npm run db:local:up
+```
+
+Verifique a saude do container:
+
+```bash
+docker compose ps
+```
+
+Resultado esperado:
+
+```text
+almoxarifado-cmsp-postgres ... Up ... (healthy) ... 127.0.0.1:5432->5432/tcp
+```
+
+### Criar banco e usuario da aplicacao
+
+Conecte como usuario administrador do container e crie o banco dedicado e a role de aplicacao. A aplicacao deve usar `almoxarifado_app`, nunca o usuario `postgres`.
+
+```sql
+CREATE ROLE almoxarifado_app
+  WITH LOGIN PASSWORD '<senha-forte-app-local>'
+  NOSUPERUSER NOCREATEDB NOCREATEROLE;
+
+CREATE DATABASE almoxarifado_cmsp OWNER almoxarifado_app;
+```
+
+Se a role ou o banco ja existirem, atualize a senha da role e confirme o owner do banco:
+
+```sql
+ALTER ROLE almoxarifado_app
+  WITH LOGIN PASSWORD '<senha-forte-app-local>'
+  NOSUPERUSER NOCREATEDB NOCREATEROLE;
+
+ALTER DATABASE almoxarifado_cmsp OWNER TO almoxarifado_app;
+```
+
+Extensoes exigidas pelo schema:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+CREATE EXTENSION IF NOT EXISTS citext;
+```
+
+Verificacoes recomendadas:
+
+```sql
+SELECT rolname, rolsuper, rolcreatedb, rolcreaterole
+FROM pg_roles
+WHERE rolname = 'almoxarifado_app';
+
+SELECT extname
+FROM pg_extension
+WHERE extname IN ('pgcrypto', 'citext')
+ORDER BY extname;
+```
+
+Resultado esperado para a role:
+
+```text
+almoxarifado_app | f | f | f
+```
+
+### Rodar migracoes locais
+
+Com o Postgres local ativo e `.env` preenchido:
 
 ```bash
 npm run db:migrate
 ```
 
-Exemplo de URL local:
+O comando usa o cliente `pg` do Node.js e a mesma configuracao TLS da aplicacao (`DB_SSL=true`, `DB_CA_CERT_PATH` e `rejectUnauthorized=true`).
 
-```text
-postgres://almoxarifado:almoxarifado@localhost:5432/almoxarifado_cmsp
+Rode uma segunda vez para confirmar idempotencia:
+
+```bash
+npm run db:migrate
 ```
 
-O comando usa `DATABASE_URL` do ambiente ou do arquivo `.env` e requer o binario `psql` instalado.
+Resultado esperado na segunda execucao:
+
+```text
+Ignorando 001_initial_schema.sql: ja aplicada.
+Migracoes aplicadas com sucesso.
+```
+
+Tabelas esperadas:
+
+```text
+app_schema_migrations
+app_settings
+app_users
+email_template_attachments
+email_templates
+notification_recipients
+notification_rules
+user_sessions
+```
+
+Importe os dados locais do JSON, quando necessario:
+
+```bash
+npm run db:import-store
+```
+
+### Validacoes executadas em 2026-07-08
+
+- Container saudavel com PostgreSQL 15.18 e SSL ligado.
+- Porta publicada apenas em `127.0.0.1:5432`.
+- Usuario `almoxarifado_app` sem `rolsuper`, `rolcreatedb` ou `rolcreaterole`.
+- Extensoes `citext` e `pgcrypto` habilitadas.
+- Conexao Node.js com TLS validado pela CA local retornou `ssl=true`.
+- CA incorreta falhou com erro de certificado (`SELF_SIGNED_CERT_IN_CHAIN`).
+- Pool com `max=1` falhou de forma controlada em 500 ms ao tentar obter conexao extra.
+- Query lenta `SELECT pg_sleep(2)` foi cancelada por timeout em cerca de 500 ms.
+- Com o banco parado, a aplicacao respondeu erro generico sem vazar detalhe interno.
+- Apos religar o banco, o login voltou a funcionar.
+
+## Banco existente ou producao
+
+Para um banco ja existente, configure `DATABASE_URL`, `DB_SSL` e `DB_CA_CERT_PATH` no ambiente real e rode `npm run db:migrate`. Em producao, use o certificado CA do provedor e valide antes em staging.
 
 ## SSL/TLS em producao
 
@@ -38,7 +215,7 @@ Passos recomendados:
 
 Arquivos `certs/*.crt`, `certs/*.pem` e `certs/*.cer` ficam fora do Git por padrao porque podem ser especificos do ambiente. Se o certificado for publico e generico conforme a politica do provedor, ele pode ser versionado intencionalmente com `git add -f`.
 
-As migracoes tambem respeitam essa configuracao: com `DB_SSL=true`, o script `npm run db:migrate` executa `psql` com `PGSSLMODE=verify-full` e `PGSSLROOTCERT` apontando para `DB_CA_CERT_PATH`.
+As migracoes tambem respeitam essa configuracao: com `DB_SSL=true`, o script `npm run db:migrate` usa o certificado de `DB_CA_CERT_PATH` e valida o certificado do servidor.
 
 O runner consulta `SELECT version FROM app_schema_migrations` antes de aplicar os arquivos SQL e ignora migracoes ja registradas. A tabela pode nao existir em um banco novo; nesse caso, todas as migracoes versionadas sao consideradas pendentes.
 
