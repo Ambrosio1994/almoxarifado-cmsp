@@ -22,29 +22,31 @@ Depois acesse:
 http://localhost:3000
 ```
 
-## Envio de e-mails pelo Gmail
+## Envio de e-mails
 
-Configure o arquivo `.env` com uma conta Gmail e uma senha de app:
+Configure um servidor SMTP transacional ou uma conta Gmail com senha de app:
 
 ```text
 GMAIL_USER=seu-email@gmail.com
 GMAIL_APP_PASSWORD=sua-senha-de-app
-EMAIL_TEST_RECIPIENT=destino-de-teste@example.com
+EMAIL_TEST_RECIPIENT=seu-email-de-teste@example.com
 ```
 
-O remetente usa `GMAIL_USER`. O destinatario dos oficios e o e-mail cadastrado no fornecedor do empenho; `EMAIL_TEST_RECIPIENT` fica apenas como referencia de simulacao/configuracao local. A rotina automatica verifica os prazos configurados e evita reenviar o mesmo e-mail no mesmo dia.
+O destinatario dos oficios e o e-mail cadastrado no fornecedor. Testes manuais sao sempre redirecionados a `EMAIL_TEST_RECIPIENT`, com chave de idempotencia separada da producao. Reservas persistidas no PostgreSQL impedem disparos duplicados entre replicas.
 
 ## Prontidao para producao
+
+Producao oficial: [https://sapgestao.dpdns.org](https://sapgestao.dpdns.org), usando Neon como PostgreSQL persistente.
 
 Itens ja aplicados:
 
 - `.env` protegido por `.gitignore`; use `.env.example` como referencia sem segredos reais.
 - Escrita do `data/store.json` serializada e atomica, reduzindo risco de corrupcao no armazenamento local restante.
-- Schema PostgreSQL aplicado no Neon em `db/migrations/001_initial_schema.sql` para usuarios, sessoes e configuracoes.
+- Schema PostgreSQL versionado para usuarios, sessoes, processos, auditoria e operacao.
 - Importador do `data/store.json` para usuarios e configuracoes, validado em producao.
 - Endpoint `/health` com checagem de storage, configuracao de e-mail e scheduler.
 - Logs estruturados em JSON para falhas de request e rotina de e-mail.
-- Historico de e-mail com chave de idempotencia, tentativas, erro e data de envio.
+- Historico de e-mail com reserva distribuida, chave de idempotencia, tentativas, erro e data de envio.
 - Retry simples para falhas transientes de SMTP.
 - Bootstrap de admin local apenas quando `LOCAL_ADMIN_EMAIL` e `LOCAL_ADMIN_PASSWORD` sao definidos explicitamente; nao ha senha padrao.
 
@@ -59,8 +61,8 @@ Validacoes ja concluidas em 2026-07-08:
 Pendencias atuais:
 
 - Substituir Gmail SMTP por provedor transacional ou documentar monitoramento/rotacao da senha de app.
-- Endurecer sessoes, expirar tokens e ampliar RBAC.
-- Revisar a estrategia de retenção/limpeza dos uploads do volume montado.
+- Definir o provedor definitivo para arquivos e a politica institucional de retencao.
+- Instalar/configurar o proxy TLS no host definitivo e cadastrar o monitoramento externo.
 
 ## O que este início já cobre
 
@@ -76,7 +78,7 @@ Pendencias atuais:
   - `Pago`: edição bloqueada permanentemente.
 - Registro de auditoria das alterações feitas pela API.
 - Observações por processo em ordem cronológica.
-- Estrutura para fornecedores, documentos, notificações reais por Gmail e relatórios.
+- Fornecedores, documentos protegidos, notificacoes SMTP, entregas por material, auditoria e relatorios PDF/Excel/CSV.
 
 ## Estrutura
 
@@ -88,7 +90,6 @@ almoxarifado-cmsp/
     requisitos-resumidos.md
   db/
     migrations/
-      001_initial_schema.sql
   public/
     app.js
     index.html
@@ -100,16 +101,33 @@ almoxarifado-cmsp/
       processos.js
     repositories/
       sessions.js
+      email-dispatches.js
+      rate-limits.js
+      security-audit.js
     server.js
     storage.js
   test/
-    processos.test.js
 ```
 
-## Próximos passos recomendados
+Validacao local:
 
-1. Validar os campos exibidos na tabela de processos.
-2. Trocar o armazenamento em JSON por um banco relacional.
-3. Implementar autenticação com perfis reais.
-4. Implementar anexos PDF com validação de tipo de arquivo.
-5. Evoluir historico e acompanhamento visual dos envios de e-mail.
+```bash
+npm ci
+npm test
+npm run check
+```
+
+## Implantacao
+
+O Neon e a fonte de verdade PostgreSQL em producao; a aplicacao falha explicitamente se o schema nao estiver pronto. Crie `.env.production` a partir do modelo sem segredos e use o fluxo seguro:
+
+```bash
+cp .env.production.example .env.production
+chmod 600 .env.production
+bash scripts/deploy-production.sh check
+npm run deploy:production
+```
+
+Use `GET /health/live` para liveness e `GET /health/ready` para readiness. O compose publica a aplicacao apenas em `127.0.0.1`; o exemplo `deploy/Caddyfile.example` termina TLS para `sapgestao.dpdns.org`.
+
+Consulte `docs/deployment-checklist.md` para o checklist completo e `docs/operations.md` para operacao, backup, restauracao e rollback.

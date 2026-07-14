@@ -3,7 +3,7 @@ import { databaseConfigured, query, transaction } from "../db/postgres.js";
 
 const MEMORY_SESSIONS = new Map();
 
-export async function createSession(userId, ttlMs) {
+export async function createSession(userId, ttlMs = 30 * 60 * 1000) {
   const token = crypto.randomBytes(32).toString("hex");
   const now = Date.now();
   const session = {
@@ -32,7 +32,7 @@ export async function createSession(userId, ttlMs) {
   return token;
 }
 
-export async function resolveSession(token, ttlMs) {
+export async function resolveSession(token, ttlMs = 30 * 60 * 1000) {
   if (!token) return null;
   if (!databaseConfigured()) {
     const session = MEMORY_SESSIONS.get(hashToken(token));
@@ -85,6 +85,35 @@ export async function revokeSession(token) {
     "UPDATE user_sessions SET revoked_at = now() WHERE token_hash = $1",
     [hashToken(token)]
   );
+}
+
+export async function revokeUserSessions(userId) {
+  if (!userId) return;
+  if (!databaseConfigured()) {
+    for (const [tokenHash, session] of MEMORY_SESSIONS.entries()) {
+      if (session.userId === userId) MEMORY_SESSIONS.delete(tokenHash);
+    }
+    return;
+  }
+  await query(
+    "UPDATE user_sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL",
+    [userId]
+  );
+}
+
+export async function cleanupExpiredSessions(retentionDays = 7) {
+  if (!databaseConfigured()) {
+    const now = Date.now();
+    for (const [tokenHash, session] of MEMORY_SESSIONS.entries()) {
+      if (session.expiresAt <= now) MEMORY_SESSIONS.delete(tokenHash);
+    }
+    return;
+  }
+  await query(`
+    DELETE FROM user_sessions
+    WHERE expires_at < now() - ($1::integer * interval '1 day')
+       OR revoked_at < now() - ($1::integer * interval '1 day')
+  `, [Math.max(1, Number(retentionDays) || 7)]);
 }
 
 function hashToken(token) {

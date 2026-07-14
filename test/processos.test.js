@@ -17,7 +17,8 @@ import {
   normalizeMaterials,
   processHasRequiredDocuments,
   summarizeMaterials,
-  validateDocumentUpload
+  validateDocumentUpload,
+  validateProcessDocumentUpload
 } from "../src/domain/processos.js";
 import { closePool } from "../src/db/postgres.js";
 import { createSession, resolveSession, revokeSession } from "../src/repositories/sessions.js";
@@ -167,12 +168,21 @@ describe("regras de processo", () => {
     }), false);
   });
 
-  it("permite anexar nota fiscal e demais documentos na aba de documentos", () => {
-    assert.equal(canAttachDocument({ dataEntrega: "" }, "notaFiscal"), true);
-    assert.equal(canAttachDocument({ dataEntrega: "2026-07-03" }, "notaFiscal"), true);
-    assert.equal(canAttachDocument({ dataEntrega: "" }, "notaEmpenho"), true);
-    assert.equal(canAttachDocument({ status: "Pago" }, "processoSped"), true);
+  it("restringe nota fiscal ao recebimento e bloqueia documentos apos pagamento", () => {
+    assert.equal(canAttachDocument({ status: "Aguardando entrega" }, "notaFiscal"), false);
+    assert.equal(canAttachDocument({ status: "Entrega parcial" }, "notaFiscal"), true);
+    assert.equal(canAttachDocument({ status: "Entregue" }, "notaFiscal"), true);
+    assert.equal(canAttachDocument({ status: "Aguardando entrega" }, "notaEmpenho"), true);
+    assert.equal(canAttachDocument({ status: "Pago" }, "processoSped"), false);
     assert.equal(canAttachDocument({ status: "Anulado" }, "processoSped"), false);
+  });
+
+  it("exige PDF nos documentos obrigatorios e aceita formatos adicionais somente nos complementares", () => {
+    const pdf = Buffer.from("%PDF-1.4\n");
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    assert.equal(validateProcessDocumentUpload("notaEmpenho", "nota.pdf", "application/pdf", pdf), true);
+    assert.equal(validateProcessDocumentUpload("notaEmpenho", "nota.png", "image/png", png), false);
+    assert.equal(validateProcessDocumentUpload("complementares", "foto.png", "image/png", png), true);
   });
 
   it("libera consultas publicas e exige autenticacao em alteracoes", () => {

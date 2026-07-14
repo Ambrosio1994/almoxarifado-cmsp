@@ -197,9 +197,9 @@ npm run db:import-store
 - Com o banco parado, a aplicacao respondeu erro generico sem vazar detalhe interno.
 - Apos religar o banco, o login voltou a funcionar.
 
-## Banco existente ou producao
+## Neon em producao
 
-Para um banco ja existente, configure o ambiente real e rode `npm run db:migrate:production` ou `NODE_ENV=production npm run db:migrate`. O carregamento de `.env.production` acontece no proprio processo, mas so depois que `NODE_ENV=production` ja esta definido antes do start.
+O PostgreSQL oficial de producao e o Neon usado por `https://sapgestao.dpdns.org`. Configure o ambiente real a partir de `.env.production.example` e rode `npm run db:migrate:production` ou `NODE_ENV=production npm run db:migrate`. O carregamento de `.env.production` acontece no proprio processo, mas so depois que `NODE_ENV=production` ja esta definido antes do start.
 
 Regras confirmadas no codigo:
 
@@ -218,10 +218,10 @@ Para o Neon validado neste projeto:
 
 Em producao, a aplicacao exige `DB_SSL=true`. Quando SSL esta habilitado, `DB_CA_CERT_PATH` e opcional: use-o apenas se o provedor exigir uma CA especifica ou se voce quiser fixar a cadeia de confianca localmente. Se a `DATABASE_URL` ja usa `sslmode=verify-full`, a validacao de hostname e cadeia fica a cargo do proprio `pg`.
 
-Passos recomendados:
+Passos recomendados para o Neon:
 
-1. Identifique o provedor do PostgreSQL em uso (RDS, Supabase, Neon, servidor proprio, etc.).
-2. Baixe o certificado CA publico/generico na documentacao ou painel do provedor.
+1. Obtenha no painel do Neon as URLs pooled (runtime) e direta (migracao/backup).
+2. Confirme `sslmode=require` ou `sslmode=verify-full` e mantenha `channel_binding=require` quando fornecido.
 3. Salve o arquivo em um caminho seguro, por exemplo `certs/ca.crt`, se o provedor exigir CA manual.
 4. Configure `DB_CA_CERT_PATH=./certs/ca.crt` ou um caminho absoluto equivalente no `.env` real do ambiente, quando aplicavel.
 5. Teste primeiro em staging. Se o certificado ou o hostname estiverem incorretos, a conexao deve falhar.
@@ -232,11 +232,10 @@ As migracoes tambem respeitam essa configuracao: com `DB_SSL=true`, o script `np
 
 O runner consulta `SELECT version FROM app_schema_migrations` antes de aplicar os arquivos SQL e ignora migracoes ja registradas. A tabela pode nao existir em um banco novo; nesse caso, todas as migracoes versionadas sao consideradas pendentes.
 
-Perguntas pendentes para a administracao da infraestrutura:
+Decisoes ainda exigidas pela administracao da infraestrutura:
 
-- Qual e o provedor do PostgreSQL de producao?
-- O certificado CA e publico/generico do provedor ou especifico do ambiente?
-- Quem tem acesso ao `DATABASE_URL` de producao e onde esse segredo e gerenciado?
+- Definir quem tem acesso às URLs do Neon e em qual cofre elas sao gerenciadas.
+- Definir retencao, criptografia e teste periodico dos backups.
 
 ## Pool e timeouts
 

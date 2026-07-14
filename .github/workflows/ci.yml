@@ -20,7 +20,42 @@ jobs:
           cache: "npm"
       - run: npm ci
       - run: npm test
-      - run: node --check src/server.js
-      - run: node --check src/storage.js
-      - run: node --check scripts/db-migrate.js
+      - run: npm run check
       - run: docker build -t almoxarifado-cmsp:ci .
+
+  migration-smoke:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: almoxarifado
+          POSTGRES_PASSWORD: test-only-password
+          POSTGRES_DB: almoxarifado_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U almoxarifado -d almoxarifado_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://almoxarifado:test-only-password@localhost:5432/almoxarifado_test
+      DB_SSL: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+      - run: npm ci
+      - run: npm run db:migrate
+      - run: npm run db:migrate
+      - name: PostgreSQL integration tests
+        run: RUN_DB_INTEGRATION=true node --test test/db/integration.test.js
+      - name: Verify required schema
+        run: >-
+          PGPASSWORD=test-only-password psql -h localhost -U almoxarifado -d almoxarifado_test
+          -v ON_ERROR_STOP=1 -c
+          "SELECT revision FROM app_state_revision WHERE id = true;
+          SELECT count(*) FROM app_process_audit;"

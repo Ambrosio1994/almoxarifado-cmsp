@@ -5,7 +5,7 @@ import { createPublicKey, randomBytes, scryptSync, timingSafeEqual, verify } fro
 import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { extname, join, normalize } from "node:path";
+import { extname, join, normalize, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   applyQuickFilter,
@@ -22,13 +22,19 @@ import {
   isPublicConsultation,
   mutationRequiresAuthenticatedUser,
   processDeadlineDate,
+  processHasRequiredDocuments,
   QUICK_FILTERS,
   summarizeMaterials,
   STATUS,
-  validateDocumentUpload
+  validateDocumentUpload,
+  validateProcessDocumentUpload
 } from "./domain/processos.js";
 import { detectStoreBackend, readStore, writeStore } from "./storage.js";
-import { createSession as createSessionRecord, resolveSession, revokeSession } from "./repositories/sessions.js";
+import { cleanupExpiredSessions, createSession as createSessionRecord, resolveSession, revokeSession, revokeUserSessions } from "./repositories/sessions.js";
+import { claimEmailDispatch, completeEmailDispatch, failEmailDispatch } from "./repositories/email-dispatches.js";
+import { closePool } from "./db/postgres.js";
+import { cleanupRateLimits, clearRateLimit, isRateLimited, recordRateLimitFailure } from "./repositories/rate-limits.js";
+import { listSecurityEvents, recordSecurityEvent } from "./repositories/security-audit.js";
 
 loadLocalEnv();
 
@@ -39,24 +45,28 @@ const UPLOAD_ROOT = process.env.UPLOAD_STORAGE_ROOT
   ? resolveUploadRoot(process.env.UPLOAD_STORAGE_ROOT)
   : fileURLToPath(new URL("../uploads/", import.meta.url));
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "";
+const GOOGLE_ALLOWED_DOMAINS = new Set(parseList(process.env.GOOGLE_ALLOWED_DOMAINS));
 const ADMIN_EMAILS = new Set(parseList(process.env.ADMIN_EMAILS));
 const LOCAL_ADMIN_EMAIL = normalizeEmail(process.env.LOCAL_ADMIN_EMAIL);
 const LOCAL_ADMIN_PASSWORD = process.env.LOCAL_ADMIN_PASSWORD || "";
 const SMTP_HOST = process.env.SMTP_HOST || "smtp.gmail.com";
 const SMTP_PORT = Number(process.env.SMTP_PORT || 465);
-const EMAIL_TEST_RECIPIENT = normalizeEmail(process.env.EMAIL_TEST_RECIPIENT || "seu-email-de-teste@example.com");
-const GMAIL_USER = normalizeEmail(process.env.GMAIL_USER || process.env.SMTP_USER || EMAIL_TEST_RECIPIENT);
+const EMAIL_TEST_RECIPIENT = normalizeEmail(process.env.EMAIL_TEST_RECIPIENT || "");
+const GMAIL_USER = normalizeEmail(process.env.GMAIL_USER || process.env.SMTP_USER || "");
 const GMAIL_APP_PASSWORD = process.env.GMAIL_APP_PASSWORD || process.env.SMTP_PASS || "";
 const EMAIL_FROM_NAME = process.env.EMAIL_FROM_NAME || "Almoxarifado CMSP";
 const EMAIL_CHECK_INTERVAL_MS = Number(process.env.EMAIL_CHECK_INTERVAL_MS || 60 * 60 * 1000);
 const SESSION_TIMEOUT_MS = Number(process.env.SESSION_TIMEOUT_MS || 30 * 60 * 1000);
 const LOGIN_RATE_LIMIT_WINDOW_MS = Number(process.env.LOGIN_RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000);
 const LOGIN_RATE_LIMIT_MAX = Number(process.env.LOGIN_RATE_LIMIT_MAX || 5);
-const MAX_JSON_BODY_BYTES = Number(process.env.MAX_JSON_BODY_BYTES || 16 * 1024 * 1024);
+const TRUST_PROXY = process.env.TRUST_PROXY === "true";
+const MAX_JSON_BODY_BYTES = Number(process.env.MAX_JSON_BODY_BYTES || 24 * 1024 * 1024);
 const MAX_UPLOAD_BYTES = Number(process.env.MAX_UPLOAD_BYTES || 15 * 1024 * 1024);
-const loginAttempts = new Map();
 let googleKeysCache = { expiresAt: 0, keys: [] };
 let emailSchedulerRunning = false;
+let emailSchedulerTimeout;
+let emailSchedulerInterval;
+let maintenanceInterval;
 
 const DEFAULT_SETTINGS = {
   emailTemplates: {
@@ -72,15 +82,18 @@ const DEFAULT_SETTINGS = {
     }
   },
   notificationRules: {
-    diasAvisoInterno: [14, 21, 28],
-    diaOficioFornecedor: 31
+    diasAvisoInterno: [7, 14, 21, 31],
+    diaOficioFornecedor: 30
   },
   responsaveis: []
 };
 
 export async function requestHandler(req, res) {
+  const startedAt = Date.now();
+  const requestId = randomBytes(8).toString("hex");
   try {
     applySecurityHeaders(res);
+    res.setHeader("x-request-id", requestId);
     const url = new URL(req.url, `http://${req.headers.host}`);
 
     if (url.pathname.startsWith("/auth/")) {
@@ -93,13 +106,13 @@ export async function requestHandler(req, res) {
       return;
     }
 
-    if (url.pathname === "/health") {
-      await handleHealth(res);
+    if (["/health", "/health/live", "/health/ready"].includes(url.pathname)) {
+      await handleHealth(res, url.pathname);
       return;
     }
 
     if (url.pathname.startsWith("/uploads/")) {
-      await serveUpload(res, url.pathname);
+      await serveUpload(req, res, url.pathname);
       return;
     }
 
@@ -110,8 +123,18 @@ export async function requestHandler(req, res) {
 
     await serveStatic(res, url.pathname);
   } catch (error) {
-    logError("request_error", { message: error.message, stack: error.stack });
+    logError("request_error", { requestId, method: req.method, path: req.url, message: error.message, stack: error.stack });
     sendJson(res, error.statusCode || 500, errorResponsePayload(error));
+  } finally {
+    if (req.url !== "/health/live") {
+      logInfo("request_completed", {
+        requestId,
+        method: req.method,
+        path: String(req.url || "").split("?")[0],
+        statusCode: res.statusCode,
+        durationMs: Date.now() - startedAt
+      });
+    }
   }
 }
 
@@ -119,12 +142,19 @@ const server = createServer(requestHandler);
 
 if (isMainModule()) {
   const storeBackend = await detectStoreBackend();
+  if (process.env.NODE_ENV === "production" && storeBackend !== "postgres") {
+    throw new Error("A aplicacao exige PostgreSQL migrado em producao.");
+  }
   console.log(`Storage backend ativo: ${storeBackend}`);
   console.log(`Upload root ativo: ${UPLOAD_ROOT}`);
   server.listen(PORT, () => {
     console.log(`Almoxarifado CMSP em http://localhost:${PORT}`);
     startEmailScheduler();
+    startMaintenance();
   });
+  for (const signal of ["SIGTERM", "SIGINT"]) {
+    process.once(signal, () => gracefulShutdown(signal));
+  }
 }
 
 async function handleAuth(req, res, url) {
@@ -152,17 +182,19 @@ async function handleAuth(req, res, url) {
   if (req.method === "POST" && url.pathname === "/auth/login") {
     const body = await readJson(req);
     const email = normalizeEmail(body.email);
-    if (isLoginRateLimited(req, email)) {
+    if (await isLoginRateLimited(req, email)) {
       sendJson(res, 429, { error: "Muitas tentativas de login. Tente novamente em alguns minutos." });
       return;
     }
     const user = store.usuarios.find((item) => item.email === email && item.ativo !== false);
     if (!user || !user.senhaHash || !verifyPassword(body.senha || "", user.senhaHash)) {
-      recordFailedLogin(req, email);
+      await recordFailedLogin(req, email);
+      await recordSecurityEvent("login_failed", { actorEmail: email, metadata: { ip: clientIp(req) } });
       sendJson(res, 401, { error: "E-mail ou senha invalidos." });
       return;
     }
-    clearFailedLogin(req, email);
+    await clearFailedLogin(req, email);
+    await recordSecurityEvent("login_succeeded", { actorUserId: user.id, actorEmail: user.email, metadata: { ip: clientIp(req) } });
     const token = await createSession(user);
     sendJson(res, 200, { token, user: publicUser(user) });
     return;
@@ -181,7 +213,11 @@ async function handleAuth(req, res, url) {
       sendJson(res, 401, { error: error.message || "Credencial Google invalida." });
       return;
     }
-    let user = store.usuarios.find((item) => item.email === profile.email && item.ativo !== false);
+    let user = store.usuarios.find((item) => item.email === profile.email);
+    if (user?.ativo === false) {
+      sendJson(res, 403, { error: "Seu acesso ainda nao foi aprovado pelo administrador." });
+      return;
+    }
     if (!user) {
       user = {
         id: crypto.randomUUID(),
@@ -198,62 +234,79 @@ async function handleAuth(req, res, url) {
       };
       store.usuarios.push(user);
     } else {
+      if (user.googleSub && user.googleSub !== profile.sub) {
+        sendJson(res, 409, { error: "Esta conta ja esta vinculada a outra identidade Google." });
+        return;
+      }
       user.nome = user.nome || profile.name || user.email.split("@")[0];
       user.foto = profile.picture || user.foto || "";
       user.googleSub = profile.sub || user.googleSub || "";
       user.atualizadoEm = new Date().toISOString();
     }
     await writeStore(store);
+    await recordSecurityEvent("google_login_succeeded", { actorUserId: user.id, actorEmail: user.email, targetUserId: user.id });
     const token = await createSession(user);
     sendJson(res, 200, { token, user: publicUser(user) });
     return;
   }
 
-  if (req.method === "POST" && url.pathname === "/auth/google/signup-local") {
-    const body = await readJson(req);
-    const email = normalizeEmail(body.email);
-    if (!email || !body.nome) {
-      sendJson(res, 400, { error: "Nome e e-mail do Google sao obrigatorios." });
-      return;
-    }
-    if (store.usuarios.some((item) => item.email === email)) {
-      sendJson(res, 409, { error: "Este e-mail ja possui cadastro. Faca login com sua senha." });
-      return;
-    }
-    const user = {
-      id: crypto.randomUUID(),
-      nome: String(body.nome).trim(),
-      email,
-      foto: body.foto || "",
-      googleSub: body.googleSub || `local-${crypto.randomUUID()}`,
-      origemCadastro: "google",
-      senhaHash: "",
-      precisaDefinirSenha: true,
-      ativo: true,
-      role: resolveRole({ email }),
-      criadoEm: new Date().toISOString()
-    };
-    store.usuarios.push(user);
-    await writeStore(store);
-    sendJson(res, 201, { pendingUserId: user.id, email: user.email, nome: user.nome });
+  if (["/auth/google/signup-local", "/auth/set-password"].includes(url.pathname)) {
+    sendJson(res, 410, { error: "Fluxo inseguro removido. Use login Google verificado ou uma conta criada pelo administrador." });
     return;
   }
 
-  if (req.method === "POST" && url.pathname === "/auth/set-password") {
+  if (req.method === "POST" && url.pathname === "/auth/request-access") {
     const body = await readJson(req);
-    const user = store.usuarios.find((item) => item.id === body.pendingUserId && item.precisaDefinirSenha);
+    const email = normalizeEmail(body.email);
+    const nome = String(body.nome || "").trim();
+    if (!nome || !isSafeEmailAddress(email)) {
+      sendJson(res, 400, { error: "Informe nome e e-mail validos." });
+      return;
+    }
+    if (await isLoginRateLimited(req, `access:${email}`)) {
+      sendJson(res, 429, { error: "Muitas solicitacoes. Tente novamente mais tarde." });
+      return;
+    }
+    await recordFailedLogin(req, `access:${email}`);
+    let requestedUser = store.usuarios.find((item) => normalizeEmail(item.email) === email);
+    if (!requestedUser) {
+      const requestedAt = new Date().toISOString();
+      requestedUser = {
+        id: crypto.randomUUID(), nome, email, origemCadastro: "solicitacao",
+        senhaHash: "", precisaDefinirSenha: false, ativo: false, role: "almoxarifado",
+        justificativaAcesso: String(body.justificativa || "").trim().slice(0, 1000),
+        solicitadoEm: requestedAt, criadoEm: requestedAt
+      };
+      store.usuarios.push(requestedUser);
+      await writeStore(store);
+    }
+    await recordSecurityEvent("access_requested", { actorEmail: email, targetUserId: requestedUser.id, metadata: { ip: clientIp(req) } });
+    sendJson(res, 202, { ok: true, message: "Solicitacao recebida. Aguarde a aprovacao do administrador." });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/auth/change-password") {
+    const user = await sessionUser(req, store);
     if (!user) {
-      sendJson(res, 404, { error: "Cadastro pendente nao encontrado." });
+      sendJson(res, 401, { error: "Faca login para alterar a senha." });
       return;
     }
-    if (!body.senha || String(body.senha).length < 6 || body.senha !== body.confirmacao) {
-      sendJson(res, 400, { error: "Informe uma senha com ao menos 6 caracteres e confirme corretamente." });
+    const body = await readJson(req);
+    const newPassword = String(body.novaSenha || "");
+    if (!user.senhaHash || !verifyPassword(body.senhaAtual || "", user.senhaHash)) {
+      sendJson(res, 401, { error: "Senha atual invalida." });
       return;
     }
-    user.senhaHash = hashPassword(body.senha);
+    if (newPassword.length < 12 || newPassword !== body.confirmacao) {
+      sendJson(res, 400, { error: "A nova senha deve ter ao menos 12 caracteres e confirmacao identica." });
+      return;
+    }
+    user.senhaHash = hashPassword(newPassword);
     user.precisaDefinirSenha = false;
     user.atualizadoEm = new Date().toISOString();
     await writeStore(store);
+    await revokeUserSessions(user.id);
+    await recordSecurityEvent("password_changed", { actorUserId: user.id, actorEmail: user.email, targetUserId: user.id });
     const token = await createSession(user);
     sendJson(res, 200, { token, user: publicUser(user) });
     return;
@@ -261,7 +314,9 @@ async function handleAuth(req, res, url) {
 
   if (req.method === "POST" && url.pathname === "/auth/logout") {
     const token = bearerToken(req);
+    const user = token ? await sessionUser(req, store) : null;
     if (token) await revokeSession(token);
+    if (user) await recordSecurityEvent("logout", { actorUserId: user.id, actorEmail: user.email, targetUserId: user.id });
     sendJson(res, 200, { ok: true });
     return;
   }
@@ -285,8 +340,80 @@ async function handleApi(req, res, url) {
   const role = user.role;
   const usuario = user.name;
 
+  if (requiresAdmin(req.method, url.pathname) && role !== "admin") {
+    sendJson(res, 403, { error: "Esta operacao exige perfil de administrador." });
+    return;
+  }
+  if (requiresAuditAccess(req.method, url.pathname) && !["admin", "auditor"].includes(role)) {
+    sendJson(res, 403, { error: "Esta operacao exige perfil de auditor ou administrador." });
+    return;
+  }
+
   if (req.method === "GET" && url.pathname === "/api/meta") {
     sendJson(res, 200, { status: STATUS, filtrosRapidos: QUICK_FILTERS });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/security-audit") {
+    sendJson(res, 200, await listSecurityEvents(url.searchParams.get("limit")));
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/admin/users") {
+    const body = await readJson(req);
+    const email = normalizeEmail(body.email);
+    const nome = String(body.nome || "").trim();
+    const password = String(body.senhaTemporaria || "");
+    const newRole = normalizeManagedRole(body.role);
+    if (!nome || !isSafeEmailAddress(email) || password.length < 12 || !newRole) {
+      sendJson(res, 400, { error: "Informe nome, e-mail valido, perfil e senha temporaria com ao menos 12 caracteres." });
+      return;
+    }
+    if (store.usuarios.some((item) => normalizeEmail(item.email) === email)) {
+      sendJson(res, 409, { error: "Ja existe um usuario com este e-mail." });
+      return;
+    }
+    const managedUser = {
+      id: crypto.randomUUID(), nome, email, role: newRole, ativo: true,
+      origemCadastro: "admin", senhaHash: hashPassword(password), precisaDefinirSenha: false,
+      criadoEm: new Date().toISOString()
+    };
+    store.usuarios.push(managedUser);
+    await writeStore(store);
+    await recordSecurityEvent("user_created", { actorUserId: authenticatedUser.id, actorEmail: authenticatedUser.email, targetUserId: managedUser.id, metadata: { role: newRole } });
+    sendJson(res, 201, publicUser(managedUser));
+    return;
+  }
+
+  const adminUserMatch = url.pathname.match(/^\/api\/admin\/users\/([^/]+)$/);
+  if (adminUserMatch && req.method === "PATCH") {
+    const body = await readJson(req);
+    const managedUser = store.usuarios.find((item) => item.id === adminUserMatch[1]);
+    if (!managedUser) {
+      sendJson(res, 404, { error: "Usuario nao encontrado." });
+      return;
+    }
+    if (managedUser.id === authenticatedUser.id && body.ativo === false) {
+      sendJson(res, 400, { error: "O administrador nao pode desativar a propria conta." });
+      return;
+    }
+    if (Object.prototype.hasOwnProperty.call(body, "role")) {
+      const newRole = normalizeManagedRole(body.role);
+      if (!newRole) {
+        sendJson(res, 400, { error: "Perfil invalido." });
+        return;
+      }
+      managedUser.role = newRole;
+    }
+    if (Object.prototype.hasOwnProperty.call(body, "ativo")) managedUser.ativo = body.ativo === true;
+    managedUser.atualizadoEm = new Date().toISOString();
+    await writeStore(store);
+    if (managedUser.ativo === false || body.revogarSessoes === true) await revokeUserSessions(managedUser.id);
+    await recordSecurityEvent("user_updated", {
+      actorUserId: authenticatedUser.id, actorEmail: authenticatedUser.email, targetUserId: managedUser.id,
+      metadata: { role: managedUser.role, ativo: managedUser.ativo, sessoesRevogadas: body.revogarSessoes === true }
+    });
+    sendJson(res, 200, publicUser(managedUser));
     return;
   }
 
@@ -307,14 +434,17 @@ async function handleApi(req, res, url) {
 
   if (req.method === "POST" && url.pathname === "/api/emails/run-due") {
     const body = await readJson(req);
+    const forcedTestRecipient = normalizeEmail(body.testRecipient || EMAIL_TEST_RECIPIENT);
+    if (body.force && !forcedTestRecipient) {
+      sendJson(res, 400, { error: "Configure EMAIL_TEST_RECIPIENT para executar um envio de teste." });
+      return;
+    }
     const result = await runDueEmailNotifications({
       manual: true,
       force: Boolean(body.force),
       processId: String(body.processId || ""),
       tipo: String(body.tipo || ""),
-      testRecipient: Object.prototype.hasOwnProperty.call(body, "testRecipient")
-        ? normalizeEmail(body.testRecipient)
-        : ""
+      testRecipient: body.force ? forcedTestRecipient : ""
     });
     sendJson(res, 200, result);
     return;
@@ -383,6 +513,8 @@ async function handleApi(req, res, url) {
       return;
     }
     const before = Array.isArray(template.anexos) ? template.anexos.length : 0;
+    const removedAttachment = (Array.isArray(template.anexos) ? template.anexos : [])
+      .find((attachment) => attachment.id === attachmentId);
     template.anexos = (Array.isArray(template.anexos) ? template.anexos : [])
       .filter((attachment) => attachment.id !== attachmentId);
     if (template.anexos.length === before) {
@@ -390,6 +522,7 @@ async function handleApi(req, res, url) {
       return;
     }
     await writeStore(store);
+    await removeUploadedFile(removedAttachment?.path);
     sendJson(res, 200, settingsPayload(store));
     return;
   }
@@ -478,30 +611,35 @@ async function handleApi(req, res, url) {
   if (req.method === "GET" && url.pathname === "/api/processes") {
     const filtered = filterProcesses(store.processos, Object.fromEntries(url.searchParams));
     const enriched = filtered.map((processo) => enrichProcess(processo));
-    sendJson(res, 200, applyQuickFilter(enriched, url.searchParams.get("filtroRapido")));
+    const result = applyQuickFilter(enriched, url.searchParams.get("filtroRapido"));
+    sendJson(res, 200, authenticatedUser ? result : result.map(publicProcess));
     return;
   }
 
   if (req.method === "POST" && url.pathname === "/api/processes") {
     const body = await readJson(req);
+    const validationError = validateProcessBody(body);
+    if (validationError) {
+      sendJson(res, 400, { error: validationError });
+      return;
+    }
+    if (body.status && body.status !== STATUS[0]) {
+      sendJson(res, 400, { error: `Um processo novo deve iniciar em ${STATUS[0]}.` });
+      return;
+    }
     const duplicate = duplicateProcessFields(store.processos, body);
     if (duplicate) {
       sendJson(res, 409, { error: duplicate });
       return;
     }
 
+    const input = sanitizeProcessInput(body);
+    input.dataEnvioFornecedor = input.dataEnvioFornecedor || input.dataEnvioEmpenho;
     const processo = {
       id: crypto.randomUUID(),
-      numeroProcesso: body.numeroProcesso || "",
-      numeroEmpenho: body.numeroEmpenho || "",
-      fornecedor: body.fornecedor || "",
-      materiais: sanitizeMaterials(body.materiais),
-      dataEnvioEmpenho: body.dataEnvioEmpenho || "",
-      dataEnvioFornecedor: body.dataEnvioFornecedor || body.dataEnvioEmpenho || "",
-      dataEntrega: body.dataEntrega || "",
-      dataEnvioLiquidacao: body.dataEnvioLiquidacao || "",
-      status: body.status || "Enviado para SALC",
-      documentos: body.documentos || {},
+      ...input,
+      status: STATUS[0],
+      documentos: {},
       criadoEm: new Date().toISOString(),
       atualizadoEm: new Date().toISOString(),
       criadoPor: usuario,
@@ -525,6 +663,11 @@ async function handleApi(req, res, url) {
   const processMatch = url.pathname.match(/^\/api\/processes\/([^/]+)$/);
   if (processMatch && req.method === "PUT") {
     const body = await readJson(req);
+    const validationError = validateProcessBody(body);
+    if (validationError) {
+      sendJson(res, 400, { error: validationError });
+      return;
+    }
     const index = store.processos.findIndex((processo) => processo.id === processMatch[1]);
     if (index === -1) {
       sendJson(res, 404, { error: "Processo nao encontrado" });
@@ -542,6 +685,11 @@ async function handleApi(req, res, url) {
       return;
     }
 
+    if (body.status && !isValidStatusTransition(current.status, body.status)) {
+      sendJson(res, 400, { error: "Transicao de status invalida. Avance o processo pela proxima etapa prevista." });
+      return;
+    }
+
     const duplicate = duplicateProcessFields(store.processos, body, current.id);
     if (duplicate) {
       sendJson(res, 409, { error: duplicate });
@@ -550,7 +698,7 @@ async function handleApi(req, res, url) {
 
     const updated = {
       ...current,
-      ...body,
+      ...sanitizeProcessInput(body, current),
       id: current.id,
       materiais: sanitizeMaterials(body.materiais || current.materiais || current),
       numeroNotaFiscal: current.numeroNotaFiscal,
@@ -558,12 +706,23 @@ async function handleApi(req, res, url) {
       atualizadoEm: new Date().toISOString()
     };
 
+    const statusError = validateProcessForStatus(updated);
+    if (statusError) {
+      sendJson(res, 400, { error: statusError });
+      return;
+    }
+    if (deliveryExceedsOrdered(updated.entregas || [], [], updated.materiais || [])) {
+      sendJson(res, 400, { error: "Os materiais nao podem ficar abaixo das quantidades ja recebidas." });
+      return;
+    }
+
     store.processos[index] = updated;
     store.auditoria.unshift(createAuditEntry({
       processoId: updated.id,
       usuario,
       acao: "Alteracao de processo",
-      detalhes: `Status atual: ${updated.status}.`
+      detalhes: `Status atual: ${updated.status}.`,
+      alteracoes: processChanges(current, updated)
     }));
     await writeStore(store);
     sendJson(res, 200, enrichProcess(updated));
@@ -607,6 +766,80 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  const deliveryMatch = url.pathname.match(/^\/api\/processes\/([^/]+)\/deliveries$/);
+  if (deliveryMatch && req.method === "POST") {
+    const body = await readJson(req);
+    const processo = store.processos.find((item) => item.id === deliveryMatch[1]);
+    if (!processo) {
+      sendJson(res, 404, { error: "Processo nao encontrado" });
+      return;
+    }
+    if (!canEditProcess(processo, role)) {
+      sendJson(res, 403, { error: "Este processo nao pode receber entregas neste status." });
+      return;
+    }
+    if (!["Empenho enviado ao fornecedor", "Aguardando entrega", "Entrega parcial"].includes(processo.status)) {
+      sendJson(res, 400, { error: "A entrega so pode ser registrada depois do envio do empenho ao fornecedor." });
+      return;
+    }
+    if (!processDeadlineDate(processo)) {
+      sendJson(res, 400, { error: "Informe a data de envio do empenho ao fornecedor antes de registrar entrega." });
+      return;
+    }
+    const data = safeDate(body.data);
+    const items = sanitizeDeliveryItems(body.itens, processo.materiais || []);
+    if (!data || !items.length) {
+      sendJson(res, 400, { error: "Informe data valida e ao menos uma quantidade entregue." });
+      return;
+    }
+    const previousDeliveries = Array.isArray(processo.entregas) ? processo.entregas : [];
+    if (deliveryExceedsOrdered(previousDeliveries, items, processo.materiais || [])) {
+      sendJson(res, 400, { error: "A quantidade entregue nao pode superar a quantidade empenhada." });
+      return;
+    }
+    const entrega = {
+      id: crypto.randomUUID(), data, itens: items, observacao: String(body.observacao || "").trim(),
+      recebidoPor: usuario, recebidoPorEmail: user.email, criadoEm: new Date().toISOString()
+    };
+    processo.entregas = [...previousDeliveries, entrega];
+    const complete = deliveryIsComplete(processo.entregas, processo.materiais || []);
+    processo.status = complete ? "Entregue" : "Entrega parcial";
+    processo.dataEntrega = data;
+    processo.versao = Number(processo.versao || 0) + 1;
+    processo.atualizadoEm = new Date().toISOString();
+    store.auditoria.unshift(createAuditEntry({
+      processoId: processo.id, usuario, acao: "Registro de entrega",
+      detalhes: complete ? "Entrega integral registrada." : "Entrega parcial registrada.",
+      alteracoes: { entregaId: entrega.id, itens: entrega.itens }
+    }));
+    await writeStore(store);
+    sendJson(res, 201, enrichProcess(processo));
+    return;
+  }
+
+  const inactivateMatch = url.pathname.match(/^\/api\/processes\/([^/]+)\/inactivate$/);
+  if (inactivateMatch && req.method === "POST") {
+    if (role !== "admin") {
+      sendJson(res, 403, { error: "Somente administradores podem inativar processos." });
+      return;
+    }
+    const processo = store.processos.find((item) => item.id === inactivateMatch[1]);
+    if (!processo) {
+      sendJson(res, 404, { error: "Processo nao encontrado" });
+      return;
+    }
+    processo.inativo = true;
+    processo.inativadoEm = new Date().toISOString();
+    processo.inativadoPor = usuario;
+    processo.versao = Number(processo.versao || 0) + 1;
+    store.auditoria.unshift(createAuditEntry({
+      processoId: processo.id, usuario, acao: "Inativacao de processo", detalhes: "Processo marcado como inativo."
+    }));
+    await writeStore(store);
+    sendJson(res, 200, enrichProcess(processo));
+    return;
+  }
+
   const obsMatch = url.pathname.match(/^\/api\/processes\/([^/]+)\/observations$/);
   if (obsMatch && req.method === "GET") {
     const observacoes = store.observacoes
@@ -618,6 +851,11 @@ async function handleApi(req, res, url) {
 
   if (obsMatch && req.method === "POST") {
     const body = await readJson(req);
+    const content = String(body.conteudo || "").trim();
+    if (!content || content.length > 5000) {
+      sendJson(res, 400, { error: "A observacao deve ter entre 1 e 5000 caracteres." });
+      return;
+    }
     const processo = store.processos.find((item) => item.id === obsMatch[1]);
     if (!processo) {
       sendJson(res, 404, { error: "Processo nao encontrado" });
@@ -631,7 +869,8 @@ async function handleApi(req, res, url) {
       id: crypto.randomUUID(),
       processoId: obsMatch[1],
       usuario,
-      conteudo: body.conteudo || "",
+      usuarioEmail: user.email,
+      conteudo: content,
       criadoEm: new Date().toISOString()
     };
     store.observacoes.unshift(observacao);
@@ -649,6 +888,11 @@ async function handleApi(req, res, url) {
   const obsItemMatch = url.pathname.match(/^\/api\/processes\/([^/]+)\/observations\/([^/]+)$/);
   if (obsItemMatch && req.method === "PUT") {
     const body = await readJson(req);
+    const content = String(body.conteudo || "").trim();
+    if (!content || content.length > 5000) {
+      sendJson(res, 400, { error: "A observacao deve ter entre 1 e 5000 caracteres." });
+      return;
+    }
     const processo = store.processos.find((item) => item.id === obsItemMatch[1]);
     if (!processo) {
       sendJson(res, 404, { error: "Processo nao encontrado" });
@@ -663,7 +907,11 @@ async function handleApi(req, res, url) {
       sendJson(res, 404, { error: "Observacao nao encontrada" });
       return;
     }
-    observacao.conteudo = body.conteudo || observacao.conteudo;
+    if (role !== "admin" && observacao.usuarioEmail !== user.email) {
+      sendJson(res, 403, { error: "Somente o autor ou administrador pode alterar esta observacao." });
+      return;
+    }
+    observacao.conteudo = content;
     observacao.atualizadoEm = new Date().toISOString();
     store.auditoria.unshift(createAuditEntry({
       processoId: obsItemMatch[1],
@@ -684,6 +932,15 @@ async function handleApi(req, res, url) {
     }
     if (!canEditProcess(processo, role)) {
       sendJson(res, 403, { error: "Este processo nao pode ser alterado neste status." });
+      return;
+    }
+    const targetObservation = store.observacoes.find((item) => item.processoId === obsItemMatch[1] && item.id === obsItemMatch[2]);
+    if (!targetObservation) {
+      sendJson(res, 404, { error: "Observacao nao encontrada" });
+      return;
+    }
+    if (role !== "admin" && targetObservation.usuarioEmail !== user.email) {
+      sendJson(res, 403, { error: "Somente o autor ou administrador pode remover esta observacao." });
       return;
     }
     const before = store.observacoes.length;
@@ -723,9 +980,13 @@ async function handleApi(req, res, url) {
     }
 
     const current = store.processos[index];
+    if (!canEditProcess(current, role)) {
+      sendJson(res, 403, { error: "Seu perfil nao pode alterar documentos deste processo." });
+      return;
+    }
     const content = decodeUploadContent(body.contentBase64);
-    if (!validateDocumentUpload(body.fileName, body.mimeType, content)) {
-      sendJson(res, 400, { error: "Formato de documento nao aceito. Use PDF, Excel, CSV, Word, texto ou imagem." });
+    if (!validateProcessDocumentUpload(body.documentKey, body.fileName, body.mimeType, content)) {
+      sendJson(res, 400, { error: "Documento invalido. Processo SPED, Nota de Empenho e Nota Fiscal devem ser PDF valido." });
       return;
     }
 
@@ -793,6 +1054,10 @@ async function handleApi(req, res, url) {
     }
 
     const current = store.processos[index];
+    if (!canEditProcess(current, role)) {
+      sendJson(res, 403, { error: "Seu perfil nao pode remover documentos deste processo." });
+      return;
+    }
     const documentKey = decodeURIComponent(documentItemMatch[2]);
     if (!canAttachDocument(current, documentKey)) {
       sendJson(res, 400, { error: "Este documento nao pode ser removido neste momento." });
@@ -801,6 +1066,7 @@ async function handleApi(req, res, url) {
 
     const documentos = { ...(current.documentos || {}) };
     const complementaryMatch = documentKey.match(/^complementares:(\d+)$/);
+    let removedDocument;
     if (complementaryMatch) {
       const items = Array.isArray(documentos.complementares)
         ? [...documentos.complementares]
@@ -810,6 +1076,7 @@ async function handleApi(req, res, url) {
         sendJson(res, 404, { error: "Documento nao encontrado" });
         return;
       }
+      removedDocument = items[itemIndex];
       items.splice(itemIndex, 1);
       if (items.length) documentos.complementares = items;
       else delete documentos.complementares;
@@ -817,6 +1084,7 @@ async function handleApi(req, res, url) {
       sendJson(res, 404, { error: "Documento nao encontrado" });
       return;
     } else {
+      removedDocument = documentos[documentKey];
       delete documentos[documentKey];
     }
 
@@ -833,6 +1101,7 @@ async function handleApi(req, res, url) {
       detalhes: `Documento ${documentKey} removido.`
     }));
     await writeStore(store);
+    await removeUploadedFile(removedDocument?.path);
     sendJson(res, 200, enrichProcess(store.processos[index]));
     return;
   }
@@ -879,6 +1148,10 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === "POST" && url.pathname === "/api/suppliers") {
+    if (!["admin", "almoxarifado"].includes(role)) {
+      sendJson(res, 403, { error: "Seu perfil possui acesso somente para consulta." });
+      return;
+    }
     const body = await readJson(req);
     const razaoSocial = String(body.razaoSocial || "").trim();
     if (!razaoSocial) {
@@ -924,8 +1197,8 @@ async function currentUser(req, store) {
       role: resolveRole(authenticated)
     };
   }
-  const email = String(req.headers["x-user-email"] || "admin@cmsp.local").toLowerCase();
-  const name = String(req.headers["x-user-name"] || email.split("@")[0] || "Usuario local");
+  const email = "publico@consulta.local";
+  const name = "Consulta publica";
   return {
     email,
     name,
@@ -933,29 +1206,33 @@ async function currentUser(req, store) {
   };
 }
 
+function requiresAdmin(method = "", pathname = "") {
+  if (pathname === "/api/emails/run-due") return true;
+  if (pathname === "/api/emails/status") return true;
+  if (pathname.startsWith("/api/settings")) return true;
+  if (pathname.startsWith("/api/admin/")) return true;
+  return false;
+}
+
+function normalizeManagedRole(role = "") {
+  const value = String(role).trim().toLowerCase();
+  return ["admin", "almoxarifado", "auditor"].includes(value) ? value : "";
+}
+
+function requiresAuditAccess(method = "", pathname = "") {
+  return String(method).toUpperCase() === "GET" && ["/api/audit", "/api/emails/history", "/api/security-audit"].includes(pathname);
+}
+
 function isLoginRateLimited(req, email = "") {
-  const attempt = loginAttempts.get(loginAttemptKey(req, email));
-  if (!attempt) return false;
-  if (Date.now() - attempt.firstAttemptAt > LOGIN_RATE_LIMIT_WINDOW_MS) {
-    loginAttempts.delete(loginAttemptKey(req, email));
-    return false;
-  }
-  return attempt.count >= LOGIN_RATE_LIMIT_MAX;
+  return isRateLimited(loginAttemptKey(req, email), LOGIN_RATE_LIMIT_WINDOW_MS, LOGIN_RATE_LIMIT_MAX);
 }
 
 function recordFailedLogin(req, email = "") {
-  const key = loginAttemptKey(req, email);
-  const now = Date.now();
-  const attempt = loginAttempts.get(key);
-  if (!attempt || now - attempt.firstAttemptAt > LOGIN_RATE_LIMIT_WINDOW_MS) {
-    loginAttempts.set(key, { count: 1, firstAttemptAt: now });
-    return;
-  }
-  attempt.count += 1;
+  return recordRateLimitFailure(loginAttemptKey(req, email), LOGIN_RATE_LIMIT_WINDOW_MS);
 }
 
 function clearFailedLogin(req, email = "") {
-  loginAttempts.delete(loginAttemptKey(req, email));
+  return clearRateLimit(loginAttemptKey(req, email));
 }
 
 function loginAttemptKey(req, email = "") {
@@ -963,7 +1240,7 @@ function loginAttemptKey(req, email = "") {
 }
 
 function clientIp(req) {
-  const forwardedFor = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
+  const forwardedFor = TRUST_PROXY ? String(req.headers["x-forwarded-for"] || "").split(",")[0].trim() : "";
   return forwardedFor || req.socket?.remoteAddress || "unknown";
 }
 
@@ -971,6 +1248,9 @@ async function ensureUsers(store) {
   if (!Array.isArray(store.usuarios)) store.usuarios = [];
   // Bootstrap local-only admin account from explicit environment variables.
   if (LOCAL_ADMIN_EMAIL && LOCAL_ADMIN_PASSWORD && !store.usuarios.some((user) => user.email === LOCAL_ADMIN_EMAIL)) {
+    if (LOCAL_ADMIN_PASSWORD.length < 12) {
+      throw new Error("LOCAL_ADMIN_PASSWORD deve ter ao menos 12 caracteres.");
+    }
     store.usuarios.push({
       id: `admin-${crypto.randomUUID()}`,
       nome: "Administrador Almoxarifado",
@@ -984,6 +1264,21 @@ async function ensureUsers(store) {
     });
     await writeStore(store);
   }
+}
+
+function publicProcess(processo = {}) {
+  const {
+    documentos,
+    criadoPor,
+    criadoPorEmail,
+    motivoAnulacao,
+    anuladoPor,
+    ...safe
+  } = processo;
+  return {
+    ...safe,
+    documentosDisponiveis: Object.keys(documentos || {}).filter((key) => Boolean(documentos[key]))
+  };
 }
 
 function createSession(user) {
@@ -1061,10 +1356,16 @@ async function verifyGoogleCredential(credential = "") {
   if (!["accounts.google.com", "https://accounts.google.com"].includes(payload.iss)) throw new Error("Emissor Google invalido.");
   if (Number(payload.exp || 0) * 1000 < Date.now()) throw new Error("Credencial Google expirada.");
   if (!payload.email) throw new Error("Conta Google sem e-mail.");
+  if (payload.email_verified !== true) throw new Error("O e-mail da conta Google nao foi verificado.");
+  const email = normalizeEmail(payload.email);
+  const domain = email.split("@")[1] || "";
+  if (GOOGLE_ALLOWED_DOMAINS.size && !GOOGLE_ALLOWED_DOMAINS.has(domain)) {
+    throw new Error("Dominio Google nao autorizado.");
+  }
 
   return {
     sub: String(payload.sub || ""),
-    email: normalizeEmail(payload.email),
+    email,
     name: String(payload.name || payload.email || ""),
     picture: String(payload.picture || "")
   };
@@ -1092,7 +1393,7 @@ async function serveStatic(res, pathname) {
   const safePath = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
   const fullPath = normalize(join(ROOT, safePath));
 
-  if (!fullPath.startsWith(ROOT)) {
+  if (!isPathWithin(ROOT, fullPath)) {
     sendText(res, 403, "Acesso negado");
     return;
   }
@@ -1104,22 +1405,39 @@ async function serveStatic(res, pathname) {
   });
 }
 
-async function serveUpload(res, pathname) {
+async function serveUpload(req, res, pathname) {
+  const store = await readStore();
+  const user = await sessionUser(req, store);
+  if (!user) {
+    sendJson(res, 401, { error: "Faca login para acessar documentos." });
+    return;
+  }
   const safePath = pathname.replace(/^\/uploads\/+/, "");
   const fullPath = normalize(join(UPLOAD_ROOT, safePath));
 
-  if (!fullPath.startsWith(UPLOAD_ROOT)) {
+  if (!isPathWithin(UPLOAD_ROOT, fullPath)) {
     sendText(res, 403, "Acesso negado");
     return;
   }
 
-  await serveFile(res, fullPath);
+  await serveFile(res, fullPath, {
+    "cache-control": "private, no-store",
+    "content-disposition": `attachment; filename="${safeName(fullPath.split("/").pop() || "documento")}"`
+  });
 }
 
 async function serveFavicon(res) {
   await serveFile(res, FAVICON_FILE, {
     "cache-control": "public, max-age=86400"
   });
+}
+
+async function removeUploadedFile(uploadPath = "") {
+  if (!String(uploadPath).startsWith("/uploads/")) return;
+  const relativePath = String(uploadPath).replace(/^\/uploads\/+/, "");
+  const fullPath = normalize(join(UPLOAD_ROOT, relativePath));
+  if (!isPathWithin(UPLOAD_ROOT, fullPath)) return;
+  await rm(fullPath, { force: true });
 }
 
 async function serveFile(res, filePath, extraHeaders = {}) {
@@ -1164,13 +1482,14 @@ async function readJson(req) {
   const chunks = [];
   let total = 0;
   for await (const chunk of req) {
-    total += chunk.length;
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    total += buffer.length;
     if (total > MAX_JSON_BODY_BYTES) {
       const error = new Error("Payload muito grande.");
       error.statusCode = 413;
       throw error;
     }
-    chunks.push(chunk);
+    chunks.push(buffer);
   }
   if (!chunks.length) return {};
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
@@ -1205,7 +1524,11 @@ function decodeUploadContent(contentBase64 = "") {
   return content;
 }
 
-async function handleHealth(res) {
+async function handleHealth(res, pathname = "/health") {
+  if (pathname === "/health/live") {
+    sendJson(res, 200, { ok: true, checkedAt: new Date().toISOString() });
+    return;
+  }
   const storageBackend = await detectStoreBackend();
   const checks = {
     storage: false,
@@ -1219,7 +1542,9 @@ async function handleHealth(res) {
   } catch (error) {
     checks.storageError = error.message;
   }
-  const ok = checks.storage && checks.emailConfigured && checks.schedulerRunning;
+  const ok = pathname === "/health/ready"
+    ? checks.storage && (process.env.NODE_ENV !== "production" || storageBackend === "postgres")
+    : checks.storage && checks.emailConfigured && checks.schedulerRunning;
   sendJson(res, ok ? 200 : 503, {
     ok,
     checks,
@@ -1252,6 +1577,13 @@ function resolveUploadRoot(pathText) {
   return fileURLToPath(new URL(pathText, `file://${process.cwd()}/`));
 }
 
+function isPathWithin(root, candidate) {
+  let normalizedRoot = normalize(root);
+  while (normalizedRoot.length > 1 && normalizedRoot.endsWith(sep)) normalizedRoot = normalizedRoot.slice(0, -1);
+  const normalizedCandidate = normalize(candidate);
+  return normalizedCandidate === normalizedRoot || normalizedCandidate.startsWith(`${normalizedRoot}${sep}`);
+}
+
 function emailStatusPayload() {
   return {
     enabled: Boolean(GMAIL_USER && GMAIL_APP_PASSWORD),
@@ -1268,16 +1600,41 @@ function emailStatusPayload() {
 function startEmailScheduler() {
   if (emailSchedulerRunning) return;
   emailSchedulerRunning = true;
-  setTimeout(() => {
+  emailSchedulerTimeout = setTimeout(() => {
     runDueEmailNotifications().catch((error) => {
       logError("email_scheduler_failed", { message: error.message });
     });
   }, 10_000);
-  setInterval(() => {
+  emailSchedulerInterval = setInterval(() => {
     runDueEmailNotifications().catch((error) => {
       logError("email_scheduler_failed", { message: error.message });
     });
   }, EMAIL_CHECK_INTERVAL_MS);
+}
+
+function startMaintenance() {
+  cleanupExpiredSessions().catch((error) => logError("session_cleanup_failed", { message: error.message }));
+  cleanupRateLimits().catch((error) => logError("rate_limit_cleanup_failed", { message: error.message }));
+  maintenanceInterval = setInterval(() => {
+    cleanupExpiredSessions().catch((error) => logError("session_cleanup_failed", { message: error.message }));
+    cleanupRateLimits().catch((error) => logError("rate_limit_cleanup_failed", { message: error.message }));
+  }, 24 * 60 * 60 * 1000);
+  maintenanceInterval.unref();
+}
+
+async function gracefulShutdown(signal) {
+  logInfo("shutdown_started", { signal });
+  emailSchedulerRunning = false;
+  clearTimeout(emailSchedulerTimeout);
+  clearInterval(emailSchedulerInterval);
+  clearInterval(maintenanceInterval);
+  const forceExit = setTimeout(() => process.exit(1), 10_000);
+  forceExit.unref();
+  server.close(async () => {
+    await closePool().catch((error) => logError("database_close_failed", { message: error.message }));
+    clearTimeout(forceExit);
+    process.exit(0);
+  });
 }
 
 async function runDueEmailNotifications(options = {}) {
@@ -1309,7 +1666,7 @@ async function runDueEmailNotifications(options = {}) {
   }
 
   for (const candidate of candidates) {
-    const dedupeKey = emailDedupeKey(candidate, today);
+    const dedupeKey = emailDedupeKey(candidate, today, testRecipient);
     if (!options.force && history.some((entry) => entry.dedupeKey === dedupeKey && entry.status === "enviado")) {
       result.skipped.push({ processoId: candidate.processo.id, tipo: candidate.tipo, motivo: "ja enviado hoje" });
       continue;
@@ -1321,9 +1678,22 @@ async function runDueEmailNotifications(options = {}) {
       continue;
     }
 
-    const email = await buildNotificationEmail(candidate, recipients, testRecipient);
+    const claimed = await claimEmailDispatch(dedupeKey, {
+      processoId: candidate.processo.id,
+      tipo: candidate.tipo,
+      destinatarios: recipients,
+      modoTeste: Boolean(testRecipient)
+    }, Boolean(options.force));
+    if (!claimed) {
+      result.skipped.push({ processoId: candidate.processo.id, tipo: candidate.tipo, motivo: "envio ja reservado ou concluido" });
+      continue;
+    }
+
+    let email;
     try {
+      email = await buildNotificationEmail(candidate, recipients, testRecipient);
       const sendResult = await sendSmtpMailWithRetry(email);
+      await completeEmailDispatch(dedupeKey, { attempts: sendResult.attempts });
       const entry = {
         id: crypto.randomUUID(),
         dedupeKey,
@@ -1333,14 +1703,14 @@ async function runDueEmailNotifications(options = {}) {
         tipo: candidate.tipo,
         destinatariosOriginais: candidate.recipients,
         destinatarios: recipients,
-        assunto: email.subject,
+        assunto: email?.subject || "",
         status: "enviado",
         tentativas: sendResult.attempts,
         modoTeste: Boolean(testRecipient),
         enviadoEm: new Date().toISOString(),
         criadoEm: new Date().toISOString()
       };
-      history.unshift(entry);
+      upsertEmailHistory(history, entry);
       result.sent.push(entry);
       logInfo("email_sent", {
         processoId: candidate.processo.id,
@@ -1349,6 +1719,9 @@ async function runDueEmailNotifications(options = {}) {
         tentativas: sendResult.attempts
       });
     } catch (error) {
+      await failEmailDispatch(dedupeKey, error).catch((claimError) => {
+        logError("email_claim_update_failed", { dedupeKey, message: claimError.message });
+      });
       const entry = {
         id: crypto.randomUUID(),
         dedupeKey,
@@ -1358,7 +1731,7 @@ async function runDueEmailNotifications(options = {}) {
         tipo: candidate.tipo,
         destinatariosOriginais: candidate.recipients,
         destinatarios: recipients,
-        assunto: email.subject,
+        assunto: email?.subject || "",
         status: "erro",
         tentativas: error.attempts || 1,
         erro: error.message,
@@ -1366,7 +1739,7 @@ async function runDueEmailNotifications(options = {}) {
         modoTeste: Boolean(testRecipient),
         criadoEm: new Date().toISOString()
       };
-      history.unshift(entry);
+      upsertEmailHistory(history, entry);
       result.failed.push(entry);
       logError("email_failed", {
         processoId: candidate.processo.id,
@@ -1404,7 +1777,7 @@ function dueEmailCandidates(store, settings, today, options = {}) {
         template: settings.emailTemplates.avisoPrazos
       });
     }
-    if (dias === Number(rules.diaOficioFornecedor || 31)) {
+    if (dias === Number(rules.diaOficioFornecedor || 30)) {
       candidates.push({
         tipo: "oficioFornecedor",
         processo,
@@ -1465,8 +1838,9 @@ function uniqueEmails(values = []) {
   return [...new Set(values.map(normalizeEmail).filter(Boolean))];
 }
 
-function emailDedupeKey(candidate, today) {
-  return `${today}:${candidate.tipo}:${candidate.processo.id}:${candidate.processo.diasDecorridos}`;
+function emailDedupeKey(candidate, today, testRecipient = "") {
+  const mode = testRecipient ? `test:${testRecipient}` : "production";
+  return `${today}:${candidate.tipo}:${candidate.processo.id}:${candidate.processo.diasDecorridos}:${mode}`;
 }
 
 async function buildNotificationEmail(candidate, recipients, testRecipient = "") {
@@ -1510,7 +1884,7 @@ async function emailTemplateAttachments(template = {}) {
     if (!uploadPath.startsWith("/uploads/")) continue;
     const relativePath = uploadPath.replace(/^\/uploads\/+/, "");
     const fullPath = normalize(join(UPLOAD_ROOT, relativePath));
-    if (!fullPath.startsWith(UPLOAD_ROOT)) continue;
+    if (!isPathWithin(UPLOAD_ROOT, fullPath)) continue;
     try {
       attachments.push({
         fileName: attachment.fileName || "anexo",
@@ -1527,6 +1901,12 @@ async function emailTemplateAttachments(template = {}) {
 function ensureEmailHistory(store) {
   if (!Array.isArray(store.emailHistorico)) store.emailHistorico = [];
   return store.emailHistorico;
+}
+
+function upsertEmailHistory(history, entry) {
+  const existingIndex = history.findIndex((item) => item.dedupeKey === entry.dedupeKey);
+  if (existingIndex >= 0) history.splice(existingIndex, 1);
+  history.unshift(entry);
 }
 
 async function sendSmtpMail(message) {
@@ -1767,6 +2147,8 @@ function settingsPayload(store) {
       ativo: user.ativo !== false,
       role: resolveRole(user),
       origemCadastro: user.origemCadastro || "local",
+      justificativaAcesso: user.justificativaAcesso || "",
+      solicitadoEm: user.solicitadoEm || "",
       precisaDefinirSenha: Boolean(user.precisaDefinirSenha)
     }))
   };
@@ -1837,11 +2219,131 @@ function sanitizeMaterials(input) {
   const items = Array.isArray(input) ? input : legacyMaterials(input);
   return items
     .map((item) => ({
-      descricao: String(item.descricao || "").trim(),
-      valorUnitario: Number(item.valorUnitario || 0),
-      quantidade: Number(item.quantidade || 0)
+      descricao: String(item.descricao || "").trim().slice(0, 1000),
+      valorUnitario: nonNegativeNumber(item.valorUnitario),
+      quantidade: nonNegativeNumber(item.quantidade)
     }))
     .filter((item) => item.descricao);
+}
+
+function sanitizeProcessInput(input = {}, current = {}) {
+  const value = (key) => Object.prototype.hasOwnProperty.call(input, key) ? input[key] : current[key];
+  const result = {
+    numeroProcesso: String(value("numeroProcesso") || "").trim().slice(0, 100),
+    numeroEmpenho: String(value("numeroEmpenho") || "").trim().slice(0, 100),
+    fornecedor: String(value("fornecedor") || "").trim().slice(0, 300),
+    materiais: sanitizeMaterials(value("materiais") || input),
+    dataEnvioEmpenho: safeDate(value("dataEnvioEmpenho")),
+    dataEnvioFornecedor: safeDate(value("dataEnvioFornecedor")),
+    dataEntrega: safeDate(value("dataEntrega")),
+    dataEnvioLiquidacao: safeDate(value("dataEnvioLiquidacao")),
+    dataLiquidacao: safeDate(value("dataLiquidacao")),
+    dataPagamento: safeDate(value("dataPagamento"))
+  };
+  if (input.status && STATUS.includes(input.status)) result.status = input.status;
+  return result;
+}
+
+function validateProcessBody(input = {}) {
+  const dateFields = ["dataEnvioEmpenho", "dataEnvioFornecedor", "dataEntrega", "dataEnvioLiquidacao", "dataLiquidacao", "dataPagamento"];
+  for (const field of dateFields) {
+    if (input[field] && !safeDate(input[field])) return `Data invalida no campo ${field}.`;
+  }
+  if (input.status && !STATUS.includes(input.status)) return "Status invalido.";
+  if (Array.isArray(input.materiais)) {
+    for (const material of input.materiais) {
+      const price = Number(material.valorUnitario || 0);
+      const quantity = Number(material.quantidade || 0);
+      if (!Number.isFinite(price) || price < 0 || !Number.isFinite(quantity) || quantity < 0) {
+        return "Valores e quantidades dos materiais devem ser numeros nao negativos.";
+      }
+    }
+  }
+  return "";
+}
+
+function validateProcessForStatus(processo = {}) {
+  if (["Empenho enviado ao fornecedor", "Aguardando entrega", "Entrega parcial", "Entregue", "Aguardando envio para liquidacao", "Enviado para liquidacao", "Liquidado", "Pago"].includes(processo.status)
+      && !processDeadlineDate(processo)) {
+    return "Informe a data de envio do empenho ao fornecedor antes de avancar.";
+  }
+  if (["Entregue", "Aguardando envio para liquidacao", "Enviado para liquidacao", "Liquidado", "Pago"].includes(processo.status)
+      && !processo.dataEntrega) {
+    return "Registre o recebimento antes de avancar.";
+  }
+  if (["Enviado para liquidacao", "Liquidado", "Pago"].includes(processo.status)
+      && !processHasRequiredDocuments(processo)) {
+    return "Anexe Processo SPED, Nota de Empenho e Nota Fiscal em PDF antes da liquidacao.";
+  }
+  if (["Liquidado", "Pago"].includes(processo.status) && !processo.dataEnvioLiquidacao) {
+    return "Informe a data de envio para liquidacao antes de avancar.";
+  }
+  return "";
+}
+
+function safeDate(value = "") {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return "";
+  const parsed = new Date(`${text}T00:00:00Z`);
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== text) return "";
+  return text;
+}
+
+function nonNegativeNumber(value) {
+  const number = Number(value || 0);
+  return Number.isFinite(number) && number >= 0 ? number : 0;
+}
+
+function isValidStatusTransition(currentStatus, nextStatus) {
+  if (currentStatus === nextStatus) return true;
+  if (["Entrega parcial", "Entregue"].includes(nextStatus)) return false;
+  const workflow = STATUS.filter((status) => status !== "Anulado");
+  const currentIndex = workflow.indexOf(currentStatus);
+  return currentIndex >= 0 && workflow[currentIndex + 1] === nextStatus;
+}
+
+function sanitizeDeliveryItems(input, materials) {
+  if (!Array.isArray(input)) return [];
+  return input.map((item) => {
+    const materialIndex = Number(item.materialIndex);
+    return {
+      materialIndex,
+      descricao: String(materials[materialIndex]?.descricao || "").trim(),
+      quantidade: nonNegativeNumber(item.quantidade)
+    };
+  }).filter((item) => Number.isInteger(item.materialIndex) && item.descricao && item.quantidade > 0);
+}
+
+function deliveredTotals(deliveries = []) {
+  const totals = new Map();
+  for (const delivery of deliveries) {
+    for (const item of delivery.itens || []) {
+      totals.set(item.materialIndex, (totals.get(item.materialIndex) || 0) + Number(item.quantidade || 0));
+    }
+  }
+  return totals;
+}
+
+function deliveryExceedsOrdered(previous, nextItems, materials) {
+  const totals = deliveredTotals([...previous, { itens: nextItems }]);
+  return [...totals.entries()].some(([index, delivered]) => (
+    !materials[index] || delivered > Number(materials[index].quantidade || 0)
+  ));
+}
+
+function deliveryIsComplete(deliveries, materials) {
+  const totals = deliveredTotals(deliveries);
+  return materials.length > 0 && materials.every((material, index) => (
+    (totals.get(index) || 0) >= Number(material.quantidade || 0)
+  ));
+}
+
+function processChanges(before = {}, after = {}) {
+  const ignored = new Set(["atualizadoEm", "versao"]);
+  return Object.fromEntries(Object.keys(after).filter((key) => (
+    !ignored.has(key) && JSON.stringify(before[key]) !== JSON.stringify(after[key])
+  )).map((key) => [key, { anterior: before[key] ?? null, novo: after[key] ?? null }]));
 }
 
 function sendProcessesExport(res, processos = [], format = "csv") {
@@ -2086,7 +2588,7 @@ async function processDocumentEntries(processo) {
         const relative = item?.path?.replace(/^\/uploads\/+/, "");
         if (!relative) continue;
         const fullPath = normalize(join(UPLOAD_ROOT, relative));
-        if (!fullPath.startsWith(UPLOAD_ROOT)) continue;
+        if (!isPathWithin(UPLOAD_ROOT, fullPath)) continue;
         try {
           entries.push({
             name: `documentos/${safeName(key)}-${index + 1}-${safeName(item.fileName || "documento.pdf")}`,
@@ -2101,7 +2603,7 @@ async function processDocumentEntries(processo) {
     if (!value || typeof value === "string" || !value.path) continue;
     const relative = value.path.replace(/^\/uploads\/+/, "");
     const fullPath = normalize(join(UPLOAD_ROOT, relative));
-    if (!fullPath.startsWith(UPLOAD_ROOT)) continue;
+    if (!isPathWithin(UPLOAD_ROOT, fullPath)) continue;
     try {
       entries.push({
         name: `documentos/${safeName(key)}-${safeName(value.fileName || "documento.pdf")}`,
