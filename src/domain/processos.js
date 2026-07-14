@@ -103,6 +103,11 @@ export function validateDocumentUpload(fileName = "", mimeType = "", content = B
   return !normalizedMime || allowedDetectedMimes.includes(normalizedMime) || normalizedMime === "application/octet-stream";
 }
 
+export function validateProcessDocumentUpload(documentKey = "", fileName = "", mimeType = "", content = Buffer.alloc(0)) {
+  if (REQUIRED_DOCUMENT_KEYS.includes(documentKey) && !isPdfDocument(fileName, mimeType)) return false;
+  return validateDocumentUpload(fileName, mimeType, content);
+}
+
 function isSafeUploadFileName(fileName = "") {
   const normalizedName = String(fileName || "");
   return Boolean(normalizedName.trim()) && !normalizedName.includes("..") && !/[\\/]/.test(normalizedName);
@@ -131,7 +136,11 @@ function isMostlyText(buffer) {
 }
 
 export function canAttachDocument(processo = {}, documentKey = "") {
-  return Boolean(processo && !processo.inativo && processo.status !== "Anulado" && documentKey);
+  if (!processo || processo.inativo || ["Anulado", "Pago"].includes(processo.status) || !documentKey) return false;
+  if (documentKey === "notaFiscal") {
+    return ["Entrega parcial", "Entregue", "Aguardando envio para liquidacao", "Enviado para liquidacao", "Liquidado"].includes(processo.status);
+  }
+  return true;
 }
 
 export function processHasRequiredDocuments(processo = {}) {
@@ -224,7 +233,7 @@ export function isProcessOverdue(processo = {}) {
   return processo.diasDecorridos > 30 && !["Entregue", "Liquidado", "Pago", "Anulado"].includes(processo.status);
 }
 
-export function createAuditEntry({ processoId, usuario, acao, detalhes, documento }) {
+export function createAuditEntry({ processoId, usuario, acao, detalhes, documento, alteracoes }) {
   return {
     id: crypto.randomUUID(),
     processoId,
@@ -232,6 +241,7 @@ export function createAuditEntry({ processoId, usuario, acao, detalhes, document
     acao,
     detalhes,
     documento,
+    alteracoes,
     criadoEm: new Date().toISOString()
   };
 }

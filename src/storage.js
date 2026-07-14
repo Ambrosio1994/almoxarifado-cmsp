@@ -14,6 +14,10 @@ export async function readStore() {
     return readDatabaseStore();
   }
 
+  if (databaseConfigured() && process.env.NODE_ENV === "production") {
+    throw new Error("PostgreSQL configurado, mas o schema da aplicacao nao esta pronto.");
+  }
+
   try {
     const raw = await readFile(STORE_PATH, "utf8");
     return JSON.parse(raw);
@@ -32,6 +36,10 @@ async function persistStore(store) {
   if (await databaseStateReady()) {
     await writeDatabaseStore(store);
     return;
+  }
+
+  if (databaseConfigured() && process.env.NODE_ENV === "production") {
+    throw new Error("PostgreSQL configurado, mas o schema da aplicacao nao esta pronto.");
   }
 
   await atomicWriteStore(store);
@@ -53,11 +61,13 @@ async function readDatabaseStore() {
     suppliers,
     observations,
     audit,
-    emailHistory
+    emailHistory,
+    revision
   ] = await Promise.all([
     query(`
       SELECT id, nome, email, foto_url, google_sub, origem_cadastro, senha_hash,
-             precisa_definir_senha, ativo, criado_em, atualizado_em
+             precisa_definir_senha, ativo, role, access_justification, access_requested_at,
+             criado_em, atualizado_em
       FROM app_users
       ORDER BY criado_em ASC, id ASC
     `),
@@ -91,7 +101,8 @@ async function readDatabaseStore() {
       SELECT data
       FROM app_email_history
       ORDER BY COALESCE(updated_at, created_at) DESC, id DESC
-    `)
+    `),
+    query("SELECT revision FROM app_state_revision WHERE id = true")
   ]);
 
   return {
@@ -101,20 +112,27 @@ async function readDatabaseStore() {
     observacoes: observations.rows.map(deserializeRecord),
     emailHistorico: emailHistory.rows.map(deserializeRecord),
     usuarios: users.rows.map(deserializeUser),
-    configuracoes: settings.rows[0]?.value || {}
+    configuracoes: settings.rows[0]?.value || {},
+    __revision: Number(revision.rows[0]?.revision || 0)
   };
 }
 
 async function writeDatabaseStore(store) {
   await transaction(async (client) => {
+    const expectedRevision = Number.isInteger(store.__revision) ? store.__revision : null;
+    const revisionResult = expectedRevision === null
+      ? await client.query("UPDATE app_state_revision SET revision = revision + 1 WHERE id = true RETURNING revision")
+      : await client.query(
+        "UPDATE app_state_revision SET revision = revision + 1 WHERE id = true AND revision = $1 RETURNING revision",
+        [expectedRevision]
+      );
+    if (!revisionResult.rowCount) {
+      const error = new Error("Os dados foram alterados por outro usuario. Atualize a tela e tente novamente.");
+      error.statusCode = 409;
+      throw error;
+    }
     await upsertUsers(client, store.usuarios || []);
     await upsertSettings(client, store.configuracoes || {});
-
-    await client.query("DELETE FROM app_email_history");
-    await client.query("DELETE FROM app_process_audit");
-    await client.query("DELETE FROM app_process_observations");
-    await client.query("DELETE FROM app_processes");
-    await client.query("DELETE FROM app_suppliers");
 
     await insertRecords(client, "app_processes", store.processos || [], ["criadoEm", "atualizadoEm"]);
     await insertRecords(client, "app_suppliers", store.fornecedores || [], ["criadoEm", "atualizadoEm"]);
@@ -122,12 +140,16 @@ async function writeDatabaseStore(store) {
       processIdKey: "processoId"
     });
     await insertRecords(client, "app_process_audit", store.auditoria || [], ["criadoEm"], {
-      processIdKey: "processoId"
+      processIdKey: "processoId",
+      immutable: true
     });
     await insertRecords(client, "app_email_history", store.emailHistorico || [], ["criadoEm", "enviadoEm", "updatedAt"], {
       processIdKey: "processoId",
       dedupeKey: "dedupeKey"
     });
+    await deleteMissingRecords(client, "app_process_observations", store.observacoes || []);
+    await deleteMissingRecords(client, "app_email_history", store.emailHistorico || []);
+    store.__revision = Number(revisionResult.rows[0].revision);
   });
 }
 
@@ -136,9 +158,10 @@ async function upsertUsers(client, users) {
     await client.query(`
       INSERT INTO app_users (
         id, nome, email, foto_url, google_sub, origem_cadastro, senha_hash,
-        precisa_definir_senha, ativo, role, criado_em, atualizado_em
+        precisa_definir_senha, ativo, role, access_justification, access_requested_at,
+        criado_em, atualizado_em
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11::timestamptz, now()), COALESCE($12::timestamptz, now()))
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::timestamptz, COALESCE($13::timestamptz, now()), COALESCE($14::timestamptz, now()))
       ON CONFLICT (id) DO UPDATE SET
         nome = EXCLUDED.nome,
         email = EXCLUDED.email,
@@ -149,6 +172,8 @@ async function upsertUsers(client, users) {
         precisa_definir_senha = EXCLUDED.precisa_definir_senha,
         ativo = EXCLUDED.ativo,
         role = EXCLUDED.role,
+        access_justification = EXCLUDED.access_justification,
+        access_requested_at = EXCLUDED.access_requested_at,
         atualizado_em = EXCLUDED.atualizado_em
     `, [
       textId(user.id),
@@ -161,6 +186,8 @@ async function upsertUsers(client, users) {
       Boolean(user.precisaDefinirSenha),
       user.ativo !== false,
       normalizeRole(user.role, user.email),
+      text(user.justificativaAcesso),
+      timestamp(user.solicitadoEm || (user.origemCadastro === "solicitacao" ? user.criadoEm : "")),
       timestamp(user.criadoEm),
       timestamp(user.atualizadoEm)
     ]);
@@ -199,16 +226,28 @@ async function insertRecords(client, table, records, timestampKeys = [], options
       values.push(nullableText(record[options.dedupeKey]));
     }
 
+    const conflictClause = options.immutable
+      ? "DO NOTHING"
+      : `DO UPDATE SET
+         data = EXCLUDED.data,
+         created_at = EXCLUDED.created_at,
+         updated_at = EXCLUDED.updated_at${options.processIdKey ? ",\n         processo_id = EXCLUDED.processo_id" : ""}${options.dedupeKey ? ",\n         dedupe_key = EXCLUDED.dedupe_key" : ""}`;
     await client.query(
       `INSERT INTO ${table} (${columns.join(", ")})
        VALUES (${columns.map((_, index) => `$${index + 1}`).join(", ")})
-       ON CONFLICT (id) DO UPDATE SET
-         data = EXCLUDED.data,
-         created_at = EXCLUDED.created_at,
-         updated_at = EXCLUDED.updated_at${options.processIdKey ? ",\n         processo_id = EXCLUDED.processo_id" : ""}${options.dedupeKey ? ",\n         dedupe_key = EXCLUDED.dedupe_key" : ""}`,
+       ON CONFLICT (id) ${conflictClause}`,
       values
     );
   }
+}
+
+async function deleteMissingRecords(client, table, records) {
+  const ids = records.map((record) => textId(record.id));
+  if (!ids.length) {
+    await client.query(`DELETE FROM ${table}`);
+    return;
+  }
+  await client.query(`DELETE FROM ${table} WHERE NOT (id = ANY($1::text[]))`, [ids]);
 }
 
 async function databaseStateReady() {
@@ -220,7 +259,14 @@ async function databaseStateReady() {
         to_regclass('public.app_process_observations') IS NOT NULL AS observations_ready,
         to_regclass('public.app_process_audit') IS NOT NULL AS audit_ready,
         to_regclass('public.app_suppliers') IS NOT NULL AS suppliers_ready,
-        to_regclass('public.app_email_history') IS NOT NULL AS email_history_ready
+        to_regclass('public.app_email_history') IS NOT NULL AS email_history_ready,
+        to_regclass('public.app_state_revision') IS NOT NULL AS revision_ready,
+        to_regclass('public.app_email_dispatch_claims') IS NOT NULL AS email_claims_ready,
+        to_regclass('public.auth_rate_limits') IS NOT NULL AS rate_limits_ready,
+        to_regclass('public.app_security_audit') IS NOT NULL AS security_audit_ready,
+        EXISTS (
+          SELECT 1 FROM app_schema_migrations WHERE version = '009_security_audit'
+        ) AS schema_current
     `);
     const row = result.rows[0] || {};
     return Boolean(
@@ -228,7 +274,12 @@ async function databaseStateReady() {
       row.observations_ready &&
       row.audit_ready &&
       row.suppliers_ready &&
-      row.email_history_ready
+      row.email_history_ready &&
+      row.revision_ready &&
+      row.email_claims_ready &&
+      row.rate_limits_ready &&
+      row.security_audit_ready &&
+      row.schema_current
     );
   } catch {
     return false;
@@ -256,6 +307,8 @@ function deserializeUser(row = {}) {
     precisaDefinirSenha: Boolean(row.precisa_definir_senha),
     ativo: row.ativo !== false,
     role: row.role || "",
+    justificativaAcesso: row.access_justification || "",
+    solicitadoEm: toIsoString(row.access_requested_at),
     criadoEm: toIsoString(row.criado_em),
     atualizadoEm: toIsoString(row.atualizado_em)
   };

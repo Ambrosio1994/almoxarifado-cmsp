@@ -65,6 +65,36 @@ describe("rotas http", () => {
     assert.match(response.text(), /"Processo";"Empenho";"Fornecedor";"Materiais"/);
   });
 
+  it("gera relatorios publicos em PDF e Excel", async () => {
+    const pdf = await invokeRequest({ method: "GET", path: "/api/processes/export?format=pdf" });
+    assert.equal(pdf.statusCode, 200);
+    assert.equal(pdf.headers["content-type"], "application/pdf");
+    assert.equal(pdf.body.subarray(0, 4).toString(), "%PDF");
+
+    const excel = await invokeRequest({ method: "GET", path: "/api/processes/export?format=excel" });
+    assert.equal(excel.statusCode, 200);
+    assert.match(excel.headers["content-type"] || "", /application\/vnd\.ms-excel/);
+    assert.match(excel.text(), /<table>/);
+  });
+
+  it("remove caminhos de documentos e autoria da consulta publica", async () => {
+    const store = await readStore();
+    const process = {
+      id: crypto.randomUUID(), numeroProcesso: `PUBLIC-${crypto.randomUUID()}`,
+      status: "Enviado para SALC", materiais: [], criadoPor: "Interno",
+      criadoPorEmail: "interno@example.com", documentos: { notaEmpenho: { path: "/uploads/segredo.pdf" } },
+      criadoEm: new Date().toISOString(), atualizadoEm: new Date().toISOString()
+    };
+    store.processos.push(process);
+    await writeStore(store);
+    const response = await invokeRequest({ method: "GET", path: `/api/processes?q=${encodeURIComponent(process.numeroProcesso)}` });
+    assert.equal(response.statusCode, 200);
+    const [publicProcess] = response.json();
+    assert.equal(Object.hasOwn(publicProcess, "documentos"), false);
+    assert.equal(Object.hasOwn(publicProcess, "criadoPorEmail"), false);
+    assert.deepEqual(publicProcess.documentosDisponiveis, ["notaEmpenho"]);
+  });
+
   it("exige autenticacao para o alias de download", async () => {
     const response = await invokeRequest({ method: "GET", path: "/api/processes/download" });
 
@@ -111,7 +141,97 @@ describe("rotas http", () => {
       assert.match(response.text(), /"Processo";"Empenho";"Fornecedor";"Materiais"/);
     });
   });
+
+  it("remove o cadastro local que permitia falsificar identidade Google", async () => {
+    const response = await invokeRequest({
+      method: "POST",
+      path: "/auth/google/signup-local",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ nome: "Invasor", email: "admin@example.com", googleSub: "forjado" })
+    });
+    assert.equal(response.statusCode, 410);
+  });
+
+  it("registra solicitacao de acesso como conta inativa e sem privilegio", async () => {
+    const email = `solicitante-${crypto.randomUUID()}@example.com`;
+    const response = await invokeRequest({
+      method: "POST",
+      path: "/auth/request-access",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ nome: "Solicitante", email, justificativa: "Atuacao no almoxarifado" })
+    });
+    assert.equal(response.statusCode, 202);
+    const store = await readStore();
+    const requested = store.usuarios.find((item) => item.email === email);
+    assert.equal(requested.ativo, false);
+    assert.equal(requested.role, "almoxarifado");
+    assert.equal(requested.senhaHash, "");
+  });
+
+  it("impede usuario comum de alterar configuracoes", async () => {
+    const { token } = await authenticatedAs("almoxarifado");
+    const response = await invokeRequest({
+      method: "PUT",
+      path: "/api/settings/notifications",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ diasAvisoInterno: [7], diaOficioFornecedor: 30 })
+    });
+    assert.equal(response.statusCode, 403);
+
+    const auditResponse = await invokeRequest({
+      method: "GET",
+      path: "/api/security-audit",
+      headers: { authorization: `Bearer ${token}` }
+    });
+    assert.equal(auditResponse.statusCode, 403);
+  });
+
+  it("rejeita status e datas invalidas recebidas pela API", async () => {
+    const { token } = await authenticatedAs("almoxarifado");
+    const invalidStatus = await invokeRequest({
+      method: "POST",
+      path: "/api/processes",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ status: "Status inventado" })
+    });
+    assert.equal(invalidStatus.statusCode, 400);
+
+    const invalidDate = await invokeRequest({
+      method: "POST",
+      path: "/api/processes",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ dataEnvioEmpenho: "2026-02-31" })
+    });
+    assert.equal(invalidDate.statusCode, 400);
+  });
+
+  it("protege arquivos de upload contra acesso anonimo", async () => {
+    const response = await invokeRequest({ method: "GET", path: "/uploads/processo/nota.pdf" });
+    assert.equal(response.statusCode, 401);
+    assert.match(response.text(), /login para acessar documentos/i);
+  });
 });
+
+async function authenticatedAs(role) {
+  await closePool();
+  const store = await readStore();
+  const user = {
+    id: `test-${role}`,
+    nome: `Teste ${role}`,
+    email: `teste-${role}@cmsp.local`,
+    senhaHash: "",
+    precisaDefinirSenha: false,
+    ativo: true,
+    role,
+    criadoEm: new Date().toISOString()
+  };
+  const index = (store.usuarios || []).findIndex((item) => item.id === user.id);
+  if (!Array.isArray(store.usuarios)) store.usuarios = [];
+  if (index >= 0) store.usuarios[index] = user;
+  else store.usuarios.push(user);
+  await writeStore(store);
+  return { user, token: await createSession(user.id) };
+}
 
 async function invokeRequest({ method = "GET", path = "/", headers = {}, body = "" }) {
   const req = Readable.from(body ? [body] : []);

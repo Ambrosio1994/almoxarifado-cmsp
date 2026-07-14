@@ -24,21 +24,18 @@
             <button type="submit" class="email-submit" id="emailSubmitButton">Continuar com e-mail</button>
           </form>
           <p class="auth-note">Ao continuar, voce reconhece a Politica de Privacidade do Almoxarifado CMSP.</p>
+          <details class="auth-note">
+            <summary>Solicitar acesso</summary>
+            <form id="accessRequestForm" class="auth-form">
+              <label>Nome <input name="nome" required></label>
+              <label>E-mail institucional <input name="email" type="email" required></label>
+              <label>Justificativa <textarea name="justificativa" rows="3" maxlength="1000"></textarea></label>
+              <button type="submit">Enviar solicitacao</button>
+            </form>
+          </details>
           <p class="auth-message" id="authMessage"></p>
         </section>
 
-        <section class="auth-panel hidden" id="setPasswordPanel">
-          <div>
-            <h1>Defina sua senha</h1>
-            <p id="setPasswordEmail">Cadastro criado via Google.</p>
-          </div>
-          <form id="setPasswordForm" class="auth-form">
-            <input type="hidden" name="pendingUserId">
-            <label>Senha <input name="senha" type="password" autocomplete="new-password" minlength="6" required></label>
-            <label>Confirmar senha <input name="confirmacao" type="password" autocomplete="new-password" minlength="6" required></label>
-            <button type="submit">Salvar senha e entrar</button>
-          </form>
-        </section>
       </main>
     </section>
     <aside class="sidebar hidden" id="sidebar">
@@ -48,7 +45,7 @@
         <strong>Almoxarifado</strong>
         <span>CMSP · CONTROLE DE EMPENHOS</span>
       </div>
-      <section class="sidebar-profile" id="sidebarProfile" aria-label="Perfil do usuario">
+      <section class="sidebar-profile" id="sidebarProfile" aria-label="Abrir configuracoes da conta" role="button" tabindex="0">
         <div class="sidebar-avatar" id="sidebarAvatar" aria-hidden="true">
           <img id="sidebarAvatarImage" alt="">
           <span id="sidebarAvatarInitials">A</span>
@@ -62,6 +59,7 @@
         <a href="#" class="nav-item" data-section="dashboard"><span>▦</span>Painel</a>
         <a href="#" class="nav-item active" data-section="processes"><span>▱</span>Empenhos</a>
         <a href="#" class="nav-item" data-section="suppliers"><span>▤</span>Fornecedores</a>
+        <a href="#" class="nav-item" data-section="audit"><span>◫</span>Auditoria</a>
         <a href="#" class="nav-item" data-section="settings"><span>⚙</span>Templates</a>
       </nav>
       <button type="button" class="sidebar-logout" id="logoutButton">Sair</button>
@@ -131,6 +129,7 @@
 
         <section class="module-view hidden" id="dashboardView"></section>
         <section class="module-view hidden" id="suppliersView"></section>
+        <section class="module-view hidden" id="auditView"></section>
         <section class="module-view hidden" id="settingsView"></section>
 
         <section class="process-detail hidden" id="processDetailView">
@@ -251,6 +250,20 @@
           <button type="submit">Salvar informacoes</button>
           <button type="button" class="secondary" id="cancelSupplierInfo">Cancelar</button>
         </div>
+      </form>
+    </dialog>
+
+    <dialog id="changePasswordDialog" class="small-dialog">
+      <form method="dialog" class="dialog-header">
+        <strong>Alterar minha senha</strong>
+        <button type="submit" class="secondary">Fechar</button>
+      </form>
+      <form id="changePasswordForm" class="process-form">
+        <label>Senha atual <input name="senhaAtual" type="password" autocomplete="current-password" required></label>
+        <label>Nova senha <input name="novaSenha" type="password" autocomplete="new-password" minlength="12" required></label>
+        <label>Confirmar nova senha <input name="confirmacao" type="password" autocomplete="new-password" minlength="12" required></label>
+        <div class="actions"><button type="submit">Alterar senha</button></div>
+        <p class="form-message" id="changePasswordMessage"></p>
       </form>
     </dialog>
 

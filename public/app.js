@@ -5,6 +5,8 @@ const state = {
   allProcesses: [],
   fornecedores: [],
   auditoria: [],
+  emailHistory: [],
+  securityAudit: [],
   detailObservations: [],
   editing: null,
   observationProcessId: null,
@@ -36,10 +38,8 @@ const sidebarAvatarInitials = document.querySelector("#sidebarAvatarInitials");
 const sidebarGreeting = document.querySelector("#sidebarGreeting");
 const sidebarUserRole = document.querySelector("#sidebarUserRole");
 const loginPanel = document.querySelector("#loginPanel");
-const setPasswordPanel = document.querySelector("#setPasswordPanel");
 const loginForm = document.querySelector("#loginForm");
-const setPasswordForm = document.querySelector("#setPasswordForm");
-const setPasswordEmail = document.querySelector("#setPasswordEmail");
+const accessRequestForm = document.querySelector("#accessRequestForm");
 const googleSignupButton = document.querySelector("#googleSignupButton");
 const googleSdkButton = document.querySelector("#googleSdkButton");
 const passwordStep = document.querySelector("#passwordStep");
@@ -82,6 +82,7 @@ const supplierInfoForm = document.querySelector("#supplierInfoForm");
 const cancelSupplierInfo = document.querySelector("#cancelSupplierInfo");
 const dashboardView = document.querySelector("#dashboardView");
 const suppliersView = document.querySelector("#suppliersView");
+const auditView = document.querySelector("#auditView");
 const settingsView = document.querySelector("#settingsView");
 const navItems = document.querySelectorAll(".nav-item");
 const sectionTitle = document.querySelector("#sectionTitle");
@@ -92,6 +93,9 @@ const documentMetadataDialog = document.querySelector("#documentMetadataDialog")
 const documentMetadataForm = document.querySelector("#documentMetadataForm");
 const documentSelectedFile = document.querySelector("#documentSelectedFile");
 const cancelDocumentMetadata = document.querySelector("#cancelDocumentMetadata");
+const changePasswordDialog = document.querySelector("#changePasswordDialog");
+const changePasswordForm = document.querySelector("#changePasswordForm");
+const changePasswordMessage = document.querySelector("#changePasswordMessage");
 
 initTheme();
 await initAuth();
@@ -160,31 +164,48 @@ function bindAuthEvents() {
   googleSignupButton.addEventListener("click", () => {
     authMessage.textContent = "Login Google real aguardando configuracao do GOOGLE_CLIENT_ID.";
   });
-  document.querySelectorAll("[data-auth-back]").forEach((button) => {
-    button.addEventListener("click", () => showAuthPanel("login"));
-  });
-
-  setPasswordForm.addEventListener("submit", async (event) => {
+  accessRequestForm?.addEventListener("submit", async (event) => {
     event.preventDefault();
-    const data = Object.fromEntries(new FormData(setPasswordForm));
     try {
-      const response = await api("/auth/set-password", {
+      const result = await api("/auth/request-access", {
         method: "POST",
-        body: JSON.stringify(data)
+        body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget)))
       });
-      startSession(response);
+      authMessage.textContent = result.message;
+      event.currentTarget.reset();
     } catch (error) {
       authMessage.textContent = error.message;
-      showAuthPanel("login");
     }
   });
-
   logoutButton.addEventListener("click", async () => {
     await api("/auth/logout", { method: "POST" }).catch(() => null);
     localStorage.removeItem("almoxAuthToken");
     authToken = "";
     location.reload();
   });
+
+  sidebarProfile?.addEventListener("click", () => changePasswordDialog?.showModal());
+  sidebarProfile?.addEventListener("keydown", (event) => {
+    if (["Enter", " "].includes(event.key)) changePasswordDialog?.showModal();
+  });
+  changePasswordForm?.addEventListener("submit", changePassword);
+}
+
+async function changePassword(event) {
+  event.preventDefault();
+  changePasswordMessage.textContent = "";
+  try {
+    const response = await api("/auth/change-password", {
+      method: "POST",
+      body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget)))
+    });
+    authToken = response.token;
+    localStorage.setItem("almoxAuthToken", authToken);
+    event.currentTarget.reset();
+    changePasswordDialog.close();
+  } catch (error) {
+    changePasswordMessage.textContent = error.message;
+  }
 }
 
 async function initGoogleIdentity() {
@@ -318,7 +339,6 @@ function userInitials(name = "") {
 
 function showAuthPanel(panel) {
   loginPanel.classList.toggle("hidden", panel !== "login");
-  setPasswordPanel.classList.toggle("hidden", panel !== "password");
   if (panel !== "login") authMessage.textContent = "";
   if (panel === "login") {
     passwordStep?.classList.add("hidden");
@@ -333,7 +353,13 @@ function showAuthPanel(panel) {
 async function boot() {
   state.meta = await api("/api/meta");
   state.fornecedores = await api("/api/suppliers");
-  state.auditoria = await api("/api/audit");
+  state.auditoria = ["admin", "auditor"].includes(currentUser.role) ? await api("/api/audit") : [];
+  state.emailHistory = ["admin", "auditor"].includes(currentUser.role) ? await api("/api/emails/history") : [];
+  state.securityAudit = ["admin", "auditor"].includes(currentUser.role) ? await api("/api/security-audit") : [];
+  document.querySelector('[data-section="settings"]')?.classList.toggle("hidden", currentUser.role !== "admin");
+  document.querySelector('[data-section="audit"]')?.classList.toggle("hidden", !["admin", "auditor"].includes(currentUser.role));
+  newProcessButton?.classList.toggle("hidden", currentUser.role === "auditor");
+  observationForm?.classList.toggle("hidden", currentUser.role === "auditor");
   fillSelect(statusSelect, state.meta.status, "Todos os status");
   fillSelect(statusFilter, state.meta.status, "Todos os status");
   fillSelect(quickFilter, state.meta.filtrosRapidos, "Filtros rapidos");
@@ -404,7 +430,7 @@ function renderMetrics(data) {
 
   metrics.innerHTML = items.map(([label, value]) => `
     <article class="metric">
-      <span>${label}</span>
+      <span>${escapeHtml(label)}</span>
       <strong>${value}</strong>
     </article>
   `).join("");
@@ -412,7 +438,7 @@ function renderMetrics(data) {
 
 function renderTable() {
   table.innerHTML = state.processos.map((processo) => `
-    <tr data-edit="${processo.id}">
+    <tr data-edit="${escapeAttribute(processo.id)}">
       <td class="strong-cell">${empty(processo.numeroProcesso)}</td>
       <td class="mono-cell">${documentCell(processo.numeroEmpenho, "Nota de Empenho", processo.documentos?.notaEmpenho)}</td>
       <td>${empty(processo.fornecedor)}</td>
@@ -599,7 +625,7 @@ detailPanel.addEventListener("click", async (event) => {
 
   const openPath = event.target.dataset.openDocument;
   if (openPath) {
-    window.open(openPath, "_blank");
+    await downloadDocument(openPath);
   }
 
   const downloadPath = event.target.dataset.downloadDocument;
@@ -648,10 +674,12 @@ async function sendTestEmail(processId) {
       body: JSON.stringify({ processId, force: true, tipo: "oficioFornecedor" })
     });
     if (!result.enabled) {
-      alert(result.error || "Configure o Gmail antes de enviar.");
+      alert(result.error || "Configure o servidor SMTP antes de enviar.");
       return;
     }
     if (result.sent?.length) {
+      state.emailHistory = await api("/api/emails/history");
+      renderDetailPanel();
       alert(`E-mail de teste enviado para ${result.sent[0].destinatarios.join(", ")}.`);
       return;
     }
@@ -684,11 +712,11 @@ async function loadObservations() {
   const items = await api(`/api/processes/${state.observationProcessId}/observations`);
   observationsList.innerHTML = items.length ? items.map((item) => `
     <article class="note">
-      <span>${new Date(item.criadoEm).toLocaleString("pt-BR")} - ${item.usuario}</span>
-      <div>${item.conteudo}</div>
+      <span>${new Date(item.criadoEm).toLocaleString("pt-BR")} - ${escapeHtml(item.usuario)}</span>
+      <div>${escapeHtml(item.conteudo)}</div>
       <div class="note-actions">
-        <button type="button" class="secondary" data-edit-observation="${item.id}">Alterar</button>
-        <button type="button" class="secondary" data-delete-observation="${item.id}">Excluir</button>
+        <button type="button" class="secondary" data-edit-observation="${escapeAttribute(item.id)}">Alterar</button>
+        <button type="button" class="secondary" data-delete-observation="${escapeAttribute(item.id)}">Excluir</button>
       </div>
     </article>
   `).join("") : "<p>Nenhuma observacao registrada.</p>";
@@ -739,6 +767,7 @@ function openProcessDetail(processo, returnSection = "processes") {
   dashboardView.classList.add("hidden");
   suppliersView.classList.add("hidden");
   settingsView.classList.add("hidden");
+  auditView.classList.add("hidden");
   processDetailView.classList.remove("hidden");
   if (sectionTitle) sectionTitle.textContent = "Empenhos";
   detailTabs.forEach((tab) => tab.classList.toggle("active", tab.dataset.detailTab === "general"));
@@ -756,6 +785,7 @@ function closeProcessDetail() {
     processListView.classList.add("hidden");
     dashboardView.classList.add("hidden");
     settingsView.classList.add("hidden");
+    auditView.classList.add("hidden");
     suppliersView.classList.remove("hidden");
     renderSuppliersView();
     return;
@@ -764,18 +794,24 @@ function closeProcessDetail() {
   suppliersView.classList.add("hidden");
   dashboardView.classList.add("hidden");
   settingsView.classList.add("hidden");
+  auditView.classList.add("hidden");
   processListView.classList.remove("hidden");
 }
 
-function downloadProcess(processId, format) {
+async function downloadProcess(processId, format) {
   const normalized = format === "pdf" ? "pdf" : "zip";
+  const response = await fetch(`/api/processes/${processId}/download?format=${normalized}`, {
+    headers: authToken ? { authorization: `Bearer ${authToken}` } : {}
+  });
+  if (!response.ok) throw new Error("Nao foi possivel baixar o processo.");
+  const blobUrl = URL.createObjectURL(await response.blob());
   const link = document.createElement("a");
-  link.href = `/api/processes/${processId}/download?format=${normalized}`;
-  link.target = "_blank";
-  link.rel = "noopener";
+  link.href = blobUrl;
+  link.download = normalized === "pdf" ? "processo.pdf" : "processo.zip";
   document.body.append(link);
   link.click();
   link.remove();
+  setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
 }
 
 function renderProcessDetail() {
@@ -847,15 +883,15 @@ function renderDocumentsModule(processo) {
         return `
         <article class="module-row">
           <div>
-            <strong>${label}</strong>
+            <strong>${escapeHtml(label)}</strong>
             ${doc.path
-              ? `<button type="button" class="document-name" data-open-document="${doc.path}">${doc.fileName}</button>`
+              ? `<button type="button" class="document-name" data-open-document="${escapeAttribute(doc.path)}">${escapeHtml(doc.fileName)}</button>`
               : `<span>${`Nao ha ${label} anexado`}</span>`}
           </div>
           <div class="document-actions">
             ${doc.path ? "" : `<button type="button" class="secondary" data-attach-document="${key}" ${canAttachDocumentInUi(processo, key) ? "" : "disabled"}>Anexar</button>`}
-            <button type="button" class="secondary danger-action" ${doc.path ? `data-remove-document="${key}"` : "disabled"}>Remover</button>
-            <button type="button" class="secondary" ${doc.path ? `data-download-document="${doc.path}"` : "disabled"}>Baixar</button>
+            <button type="button" class="secondary danger-action" ${doc.path && canAttachDocumentInUi(processo, key) ? `data-remove-document="${key}"` : "disabled"}>Remover</button>
+            <button type="button" class="secondary" ${doc.path ? `data-download-document="${escapeAttribute(doc.path)}"` : "disabled"}>Baixar</button>
           </div>
         </article>
       `;}).join("")}
@@ -863,13 +899,13 @@ function renderDocumentsModule(processo) {
         ? complementaryDocuments.map((doc, index) => `
           <article class="module-row document-extra-item">
             <div>
-              <button type="button" class="document-name document-title" data-open-document="${doc.path}">${escapeHtml(doc.titulo || doc.nome || doc.fileName)}</button>
+              <button type="button" class="document-name document-title" data-open-document="${escapeAttribute(doc.path)}">${escapeHtml(doc.titulo || doc.nome || doc.fileName)}</button>
               ${doc.descricao ? `<span>${escapeHtml(doc.descricao)}</span>` : ""}
               <span>${escapeHtml(doc.fileName)}</span>
             </div>
             <div class="document-actions">
-              <button type="button" class="secondary danger-action" data-remove-document="complementares:${index}">Remover</button>
-              <button type="button" class="secondary" data-download-document="${doc.path}">Baixar</button>
+              <button type="button" class="secondary danger-action" ${canAttachDocumentInUi(processo, "complementares") ? `data-remove-document="complementares:${index}"` : "disabled"}>Remover</button>
+              <button type="button" class="secondary" data-download-document="${escapeAttribute(doc.path)}">Baixar</button>
             </div>
           </article>
         `).join("")
@@ -888,10 +924,10 @@ function renderTimelineModule(processo) {
     <ol class="timeline">
       ${events.map((event) => `
         <li class="${timelineEventClass(event)}">
-          <strong>${event.label}</strong>
+          <strong>${escapeHtml(event.label)}</strong>
           <span>${event.date ? (event.showTime ? formatDateTime(event.date) : formatDate(event.date)) : "Pendente"}</span>
-          ${event.meta ? `<span>${event.meta}</span>` : ""}
-          ${event.details ? `<span>${event.details}</span>` : ""}
+          ${event.meta ? `<span>${escapeHtml(event.meta)}</span>` : ""}
+          ${event.details ? `<span>${escapeHtml(event.details)}</span>` : ""}
           ${event.documento?.path ? documentTimelinePreview(event.documento) : ""}
         </li>
       `).join("")}
@@ -908,7 +944,7 @@ function renderDeliveriesModule(processo) {
           <strong>${delivered ? "Entrega registrada" : "Nenhuma entrega registrada"}</strong>
           <span>${delivered ? `Data: ${dateCell(processo.dataEntrega)}` : "Use este modulo para registrar quantidade entregue, pendente e data da entrega."}</span>
         </div>
-        <button type="button" class="secondary" data-register-partial-delivery="true">Registrar entrega parcial</button>
+        ${currentUser.role === "auditor" ? "" : '<button type="button" class="secondary" data-register-partial-delivery="true">Registrar entrega parcial</button>'}
       </article>
     </div>
   `;
@@ -918,12 +954,12 @@ function renderObservationsModule(processo) {
   const observations = state.detailObservations.length
     ? state.detailObservations.map((observacao) => `
       <article class="note">
-        <span>${new Date(observacao.criadoEm).toLocaleString("pt-BR")} - ${observacao.usuario}</span>
-        <div>${observacao.conteudo}</div>
-        <div class="note-actions">
-          <button type="button" class="secondary" data-edit-observation="${observacao.id}">Alterar</button>
-          <button type="button" class="secondary" data-delete-observation="${observacao.id}">Excluir</button>
-        </div>
+        <span>${new Date(observacao.criadoEm).toLocaleString("pt-BR")} - ${escapeHtml(observacao.usuario)}</span>
+        <div>${escapeHtml(observacao.conteudo)}</div>
+        ${(currentUser.role === "admin" || observacao.usuarioEmail === currentUser.email) ? `<div class="note-actions">
+          <button type="button" class="secondary" data-edit-observation="${escapeAttribute(observacao.id)}">Alterar</button>
+          <button type="button" class="secondary" data-delete-observation="${escapeAttribute(observacao.id)}">Excluir</button>
+        </div>` : ""}
       </article>
     `).join("")
     : "<p>Nenhuma observacao registrada.</p>";
@@ -943,22 +979,24 @@ function renderObservationsModule(processo) {
 }
 
 function renderEmailsModule(processo) {
+  const history = state.emailHistory.filter((entry) => entry.processoId === processo.id);
   return `
     <div class="module-list">
       <article class="module-row">
         <div>
           <strong>Notificacoes automaticas</strong>
-          <span>Envio via Gmail para o e-mail cadastrado no fornecedor.</span>
+          <span>Envio via SMTP para o e-mail cadastrado no fornecedor.</span>
         </div>
-        <button type="button" class="secondary" data-send-test-email="${processo.id}">Enviar teste</button>
+        ${currentUser.role === "admin" ? `<button type="button" class="secondary" data-send-test-email="${processo.id}">Enviar teste</button>` : ""}
       </article>
       <article class="module-row">
         <div>
           <strong>Historico de e-mails</strong>
           <span>Data, hora, destinatario, assunto e status do envio.</span>
         </div>
-        <button type="button" class="secondary">Ver historico</button>
+        <span>${history.length} envio(s)</span>
       </article>
+      ${history.map((entry) => `<article class="module-row"><div><strong>${escapeHtml(entry.assunto || entry.tipo)}</strong><span>${formatDateTime(entry.enviadoEm || entry.criadoEm)} · ${escapeHtml(entry.status)} · ${escapeHtml((entry.destinatarios || []).join(", "))}</span></div></article>`).join("")}
     </div>
   `;
 }
@@ -966,8 +1004,8 @@ function renderEmailsModule(processo) {
 function detailField(label, value) {
   return `
     <div class="detail-field">
-      <span>${label}</span>
-      <strong>${value || "-"}</strong>
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(value || "-")}</strong>
     </div>
   `;
 }
@@ -981,7 +1019,7 @@ async function loadDetailObservations(processId) {
 }
 
 async function refreshAudit() {
-  state.auditoria = await api("/api/audit");
+  state.auditoria = ["admin", "auditor"].includes(currentUser.role) ? await api("/api/audit") : [];
 }
 
 async function attachDocument(documentKey) {
@@ -1135,6 +1173,11 @@ async function saveNewProcessData() {
     return;
   }
 
+  if (["Entrega parcial", "Entregue"].includes(status)) {
+    await registerDelivery(date, status === "Entregue");
+    return;
+  }
+
   const overrides = { status };
   if (step?.field) overrides[step.field] = date;
 
@@ -1152,12 +1195,34 @@ async function registerPartialDelivery() {
   const date = prompt("Informe a data da entrega parcial (AAAA-MM-DD):", state.selectedProcess.dataEntrega || "");
   if (!date?.trim()) return;
 
-  const updatedProcess = await api(`/api/processes/${state.selectedProcess.id}`, {
-    method: "PUT",
-    body: JSON.stringify(processUpdatePayload({
-      status: "Entrega parcial",
-      dataEntrega: date.trim()
-    }))
+  await registerDelivery(date.trim(), false);
+}
+
+async function registerDelivery(date, complete) {
+  const processo = state.selectedProcess;
+  const delivered = new Map();
+  (processo.entregas || []).forEach((entrega) => (entrega.itens || []).forEach((item) => {
+    delivered.set(item.materialIndex, (delivered.get(item.materialIndex) || 0) + Number(item.quantidade || 0));
+  }));
+  const itens = [];
+  for (const [materialIndex, material] of (processo.materiais || []).entries()) {
+    const remaining = Math.max(0, Number(material.quantidade || 0) - (delivered.get(materialIndex) || 0));
+    if (!remaining) continue;
+    const answer = prompt(
+      `Quantidade recebida de ${material.descricao} (saldo ${remaining}):`,
+      complete ? String(remaining) : "0"
+    );
+    if (answer === null) return;
+    const quantidade = Number(String(answer).replace(",", "."));
+    if (Number.isFinite(quantidade) && quantidade > 0) itens.push({ materialIndex, quantidade });
+  }
+  if (!itens.length) {
+    alert("Informe ao menos uma quantidade recebida.");
+    return;
+  }
+  const updatedProcess = await api(`/api/processes/${processo.id}/deliveries`, {
+    method: "POST",
+    body: JSON.stringify({ data, itens })
   });
   state.selectedProcess = updatedProcess;
   await refresh();
@@ -1220,17 +1285,19 @@ function escapeHtml(value = "") {
 
 function openSection(section) {
   navItems.forEach((item) => item.classList.toggle("active", item.dataset.section === section));
-  const titles = { dashboard: "Painel", processes: "Empenhos", suppliers: "Fornecedores", settings: "Templates" };
+  const titles = { dashboard: "Painel", processes: "Empenhos", suppliers: "Fornecedores", audit: "Auditoria", settings: "Templates" };
   if (sectionTitle) sectionTitle.textContent = titles[section] || "";
   processListView.classList.toggle("hidden", section !== "processes");
   dashboardView.classList.toggle("hidden", section !== "dashboard");
   suppliersView.classList.toggle("hidden", section !== "suppliers");
+  auditView.classList.toggle("hidden", section !== "audit");
   settingsView.classList.toggle("hidden", section !== "settings");
   processDetailView.classList.add("hidden");
   state.selectedProcess = null;
 
   if (section === "dashboard") renderDashboardView();
   if (section === "suppliers") renderSuppliersView();
+  if (section === "audit") renderAuditView();
   if (section === "settings") renderSettingsView();
 }
 
@@ -1501,12 +1568,14 @@ function chartKey(label) {
 }
 
 function newDataButton(processo) {
+  if (!canEditGeneralInUi(processo)) return "";
   const step = nextProcessStep(processo);
   if (!step) return "";
   return `<button type="button" class="secondary" data-show-new-data="true">${step.button}</button>`;
 }
 
 function newDataPanel(processo) {
+  if (!canEditGeneralInUi(processo)) return "";
   const step = nextProcessStep(processo);
   if (!step) return "";
   return `
@@ -1582,13 +1651,18 @@ function nextProcessStep(processo, skipPermissionCheck = false) {
 }
 function canEditGeneralInUi(processo) {
   if (!processo || processo.status === "Anulado") return false;
+  if (currentUser.role === "auditor") return false;
   if (processo.status === "Pago") return false;
   if (processo.status === "Liquidado") return isCurrentUserAdmin();
   return true;
 }
 
 function canAttachDocumentInUi(processo, documentKey) {
-  return Boolean(processo && !processo.inativo && processo.status !== "Anulado" && documentKey);
+  if (!processo || processo.inativo || ["Anulado", "Pago"].includes(processo.status) || !documentKey || currentUser.role === "auditor") return false;
+  if (documentKey === "notaFiscal") {
+    return ["Entrega parcial", "Entregue", "Aguardando envio para liquidacao", "Enviado para liquidacao", "Liquidado"].includes(processo.status);
+  }
+  return true;
 }
 
 function renderSuppliersView() {
@@ -1683,7 +1757,7 @@ function supplierRow(fornecedor) {
       </div>
       <div class="supplier-actions">
         <button type="button" class="secondary" data-supplier-history="${escapeAttribute(key)}">Historico de processos</button>
-        <button type="button" data-supplier-info="${escapeAttribute(fornecedor.razaoSocial)}">Adicionar informacoes</button>
+        ${currentUser.role === "auditor" ? "" : `<button type="button" data-supplier-info="${escapeAttribute(fornecedor.razaoSocial)}">Adicionar informacoes</button>`}
       </div>
     </article>
     ${historyOpen ? supplierHistory(fornecedor) : ""}
@@ -1703,7 +1777,7 @@ function supplierDetail(fornecedor) {
       </div>
       <div class="supplier-actions">
         <button type="button" class="secondary" data-supplier-history="${escapeAttribute(normalizeText(fornecedor.razaoSocial))}">Historico de processos</button>
-        <button type="button" data-supplier-info="${escapeAttribute(fornecedor.razaoSocial)}">Adicionar informacoes</button>
+        ${currentUser.role === "auditor" ? "" : `<button type="button" data-supplier-info="${escapeAttribute(fornecedor.razaoSocial)}">Adicionar informacoes</button>`}
       </div>
     </section>
   `;
@@ -1783,6 +1857,37 @@ function normalizeText(value = "") {
     .toLowerCase();
 }
 
+function renderAuditView() {
+  const processEvents = state.auditoria.map((entry) => ({
+    date: entry.criadoEm,
+    type: entry.acao,
+    actor: entry.usuario,
+    target: entry.processoId,
+    details: entry.detalhes
+  }));
+  const securityEvents = state.securityAudit.map((entry) => ({
+    date: entry.createdAt,
+    type: entry.eventType,
+    actor: entry.actorEmail || "Sistema",
+    target: entry.targetUserId || "-",
+    details: Object.keys(entry.metadata || {}).length ? JSON.stringify(entry.metadata) : ""
+  }));
+  const events = [...processEvents, ...securityEvents]
+    .sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
+  auditView.innerHTML = `
+    <div class="content-header"><div><h1>Auditoria</h1><p>Eventos imutaveis de processos, acesso e seguranca.</p></div><button type="button" class="secondary" id="refreshAuditButton">Atualizar</button></div>
+    <div class="table-wrap"><table><thead><tr><th>Data</th><th>Evento</th><th>Ator</th><th>Alvo</th><th>Detalhes</th></tr></thead>
+      <tbody>${events.map((entry) => `<tr><td>${escapeHtml(formatDateTime(entry.date))}</td><td>${escapeHtml(entry.type)}</td><td>${escapeHtml(entry.actor)}</td><td>${escapeHtml(entry.target)}</td><td>${escapeHtml(entry.details)}</td></tr>`).join("")}</tbody>
+    </table></div>
+  `;
+  auditView.querySelector("#refreshAuditButton")?.addEventListener("click", refreshAuditView);
+}
+
+async function refreshAuditView() {
+  [state.auditoria, state.securityAudit] = await Promise.all([api("/api/audit"), api("/api/security-audit")]);
+  renderAuditView();
+}
+
 async function renderSettingsView() {
   if (!state.settings) {
     settingsView.innerHTML = `
@@ -1805,6 +1910,7 @@ async function renderSettingsView() {
     <div class="settings-grid">
       ${settingsCard("templates", "Templates de e-mail", "Modelos usados nas notificacoes automaticas e reenvios manuais.")}
       ${settingsCard("notifications", "Prazos para notificacoes", `${state.settings.notificationRules.diasAvisoInterno.join(", ")} dias; oficio no dia ${state.settings.notificationRules.diaOficioFornecedor}.`)}
+      ${settingsCard("users", "Usuarios e permissoes", `${state.settings.usuarios.length} usuario(s) cadastrado(s).`)}
     </div>
     <section class="settings-panel">
       ${state.settings.localFallback ? `<p class="settings-note">Servidor atual nao possui a rota de configuracoes; exibindo valores padrao. Reinicie o servidor atualizado para salvar alteracoes.</p>` : ""}
@@ -1838,8 +1944,8 @@ function defaultSettings() {
       }
     },
     notificationRules: {
-      diasAvisoInterno: [14, 21, 28],
-      diaOficioFornecedor: 31
+      diasAvisoInterno: [7, 14, 21, 31],
+      diaOficioFornecedor: 30
     },
     responsaveis: [],
     status: state.meta.status,
@@ -1861,13 +1967,14 @@ function settingsCard(panel, title, description) {
 
 function renderSettingsPanel() {
   if (state.settingsPanel === "notifications") return renderNotificationSettings();
+  if (state.settingsPanel === "users") return renderUserSettings();
   return renderEmailTemplateSettings();
 }
 
 function renderEmailTemplateSettings() {
   const labels = {
-    avisoPrazos: "Aviso nos dias 14, 21 e 28",
-    oficioFornecedor: "Oficio no dia 31"
+    avisoPrazos: "Avisos nos dias 7, 14, 21 e 31",
+    oficioFornecedor: "Oficio no dia 30"
   };
   return `
     <form id="emailTemplatesForm" class="settings-form">
@@ -1879,12 +1986,43 @@ function renderEmailTemplateSettings() {
           <legend>${labels[key] || key}</legend>
           <label>Assunto <input name="${key}.assunto" value="${escapeAttribute(template.assunto)}"></label>
           <label>Corpo <textarea name="${key}.corpo" rows="4">${escapeHtml(template.corpo)}</textarea></label>
+          ${templateAttachmentList(key, template.anexos)}
+          <button type="button" class="secondary" data-attach-template="${escapeAttribute(key)}">Adicionar anexo</button>
         </fieldset>
       `).join("")}
       <div class="actions">
         <button type="submit">Salvar templates</button>
       </div>
     </form>
+  `;
+}
+
+function renderUserSettings() {
+  return `
+    <form id="newManagedUserForm" class="settings-form">
+      <div class="section-title"><strong>Novo usuario</strong></div>
+      <label>Nome <input name="nome" required></label>
+      <label>E-mail <input name="email" type="email" required></label>
+      <label>Perfil
+        <select name="role"><option value="almoxarifado">Almoxarifado</option><option value="auditor">Auditor</option><option value="admin">Administrador</option></select>
+      </label>
+      <label>Senha inicial <input name="senhaTemporaria" type="password" minlength="12" required></label>
+      <div class="actions"><button type="submit">Criar usuario</button></div>
+    </form>
+    <div class="module-list">
+      ${state.settings.usuarios.map((user) => `
+        <article class="module-row">
+          <div><strong>${escapeHtml(user.nome)}</strong><span>${escapeHtml(user.email)} · ${user.ativo ? "ativo" : "aguardando aprovacao"}</span>${user.justificativaAcesso ? `<span>${escapeHtml(user.justificativaAcesso)}</span>` : ""}</div>
+          <div class="document-actions">
+            <select data-user-role="${escapeAttribute(user.id)}">
+              ${["almoxarifado", "auditor", "admin"].map((role) => `<option value="${role}" ${user.role === role ? "selected" : ""}>${role}</option>`).join("")}
+            </select>
+            <button type="button" class="secondary" data-toggle-user="${escapeAttribute(user.id)}" data-user-active="${user.ativo}">${user.ativo ? "Desativar" : "Ativar"}</button>
+            <button type="button" class="secondary" data-revoke-user="${escapeAttribute(user.id)}">Revogar sessoes</button>
+          </div>
+        </article>
+      `).join("")}
+    </div>
   `;
 }
 
@@ -1897,7 +2035,7 @@ function renderNotificationSettings() {
         <span>Controle dos marcos usados para alertas internos e oficio ao fornecedor.</span>
       </div>
       <label>Dias de aviso interno <input name="diasAvisoInterno" value="${escapeAttribute(rules.diasAvisoInterno.join(", "))}"></label>
-      <label>Dia para oficio ao fornecedor <input name="diaOficioFornecedor" type="number" min="1" step="1" value="${Number(rules.diaOficioFornecedor || 31)}"></label>
+      <label>Dia para oficio ao fornecedor <input name="diaOficioFornecedor" type="number" min="1" step="1" value="${Number(rules.diaOficioFornecedor || 30)}"></label>
       <div class="actions">
         <button type="submit">Salvar prazos</button>
       </div>
@@ -1920,6 +2058,33 @@ function bindSettingsHandlers() {
     button.addEventListener("click", () => downloadDocument(button.dataset.downloadDocument));
   });
   settingsView.querySelector("#notificationSettingsForm")?.addEventListener("submit", saveNotificationSettings);
+  settingsView.querySelector("#newManagedUserForm")?.addEventListener("submit", createManagedUser);
+  settingsView.querySelectorAll("[data-attach-template]").forEach((button) => {
+    button.addEventListener("click", () => attachTemplateDocument(button.dataset.attachTemplate));
+  });
+  settingsView.querySelectorAll("[data-user-role]").forEach((select) => {
+    select.addEventListener("change", () => updateManagedUser(select.dataset.userRole, { role: select.value }));
+  });
+  settingsView.querySelectorAll("[data-toggle-user]").forEach((button) => {
+    button.addEventListener("click", () => updateManagedUser(button.dataset.toggleUser, { ativo: button.dataset.userActive !== "true" }));
+  });
+  settingsView.querySelectorAll("[data-revoke-user]").forEach((button) => {
+    button.addEventListener("click", () => updateManagedUser(button.dataset.revokeUser, { revogarSessoes: true }));
+  });
+}
+
+async function createManagedUser(event) {
+  event.preventDefault();
+  const body = Object.fromEntries(new FormData(event.currentTarget));
+  await api("/api/admin/users", { method: "POST", body: JSON.stringify(body) });
+  state.settings = await api("/api/settings");
+  renderSettingsView();
+}
+
+async function updateManagedUser(userId, changes) {
+  await api(`/api/admin/users/${encodeURIComponent(userId)}`, { method: "PATCH", body: JSON.stringify(changes) });
+  state.settings = await api("/api/settings");
+  renderSettingsView();
 }
 
 async function saveEmailTemplates(event) {
@@ -1991,12 +2156,18 @@ async function removeTemplateDocument(templateKey, attachmentId) {
   renderSettingsView();
 }
 
-function downloadDocument(path) {
+async function downloadDocument(path) {
   if (!path) return;
+  const response = await fetch(path, {
+    headers: authToken ? { authorization: `Bearer ${authToken}` } : {}
+  });
+  if (!response.ok) throw new Error("Nao foi possivel baixar o documento.");
+  const blobUrl = URL.createObjectURL(await response.blob());
   const link = document.createElement("a");
-  link.href = path;
+  link.href = blobUrl;
   link.download = "";
   link.click();
+  setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
 }
 
 async function saveNotificationSettings(event) {
@@ -2007,7 +2178,7 @@ async function saveNotificationSettings(event) {
     method: "PUT",
     body: JSON.stringify({
       diasAvisoInterno: String(data.diasAvisoInterno || "").split(/[\n,; ]+/),
-      diaOficioFornecedor: Number(data.diaOficioFornecedor || 31)
+      diaOficioFornecedor: Number(data.diaOficioFornecedor || 30)
     })
   });
   renderSettingsView();
@@ -2107,8 +2278,8 @@ async function api(path, options = {}) {
 
 function documentCell(label, documentName, documentPath) {
   if (!label) return "-";
-  if (!documentPath) return `<span class="doc-link missing" title="Nao ha ${documentName} anexado">${label}</span>`;
-  return `<span class="doc-link" title="${documentPath}">${label}</span>`;
+  if (!documentPath) return `<span class="doc-link missing" title="Nao ha ${escapeAttribute(documentName)} anexado">${escapeHtml(label)}</span>`;
+  return `<span class="doc-link" title="${escapeAttribute(typeof documentPath === "string" ? documentPath : documentPath.path || "Documento anexado")}">${escapeHtml(label)}</span>`;
 }
 
 function materialsSummary(materiais = []) {
@@ -2136,7 +2307,7 @@ function statusClass(status) {
 }
 
 function statusBadges(processo) {
-  const badges = [`<span class="status ${statusClass(processo.status)}">${statusLabel(processo.status)}</span>`];
+  const badges = [`<span class="status ${statusClass(processo.status)}">${escapeHtml(statusLabel(processo.status))}</span>`];
   if (isOverdue(processo)) {
     badges.push(`<span class="status overdue">+${overdueDays(processo)}d em atraso</span>`);
   }
@@ -2152,8 +2323,7 @@ function overdueDays(processo) {
 }
 
 function canCancelInUi(processo) {
-  if (!processo || processo.status === "Anulado") return false;
-  if (processo.status === "Pago") return isCurrentUserAdmin();
+  if (!processo || ["Anulado", "Pago"].includes(processo.status) || currentUser.role === "auditor") return false;
   if (isCurrentUserAdmin()) return true;
   return processo.criadoPorEmail === currentUser.email;
 }
@@ -2163,7 +2333,7 @@ function isCurrentUserAdmin() {
 }
 
 function empty(value) {
-  return value || "-";
+  return escapeHtml(value || "-");
 }
 
 function money(value) {
@@ -2183,7 +2353,7 @@ function compactMoney(value) {
 }
 
 function dateCell(value) {
-  return value || "-";
+  return escapeHtml(value || "-");
 }
 
 function daysCell(processo) {
@@ -2260,7 +2430,6 @@ function documentTimelinePreview(documento = {}) {
   if (!path) return "";
   return `
     <div class="timeline-document-preview">
-      <iframe src="${escapeAttribute(`${path}#page=1&toolbar=0&navpanes=0&scrollbar=1`)}" title="${escapeAttribute(title)}"></iframe>
       <span>${escapeHtml(title)}</span>
       <button type="button" class="secondary small-action" data-download-document="${escapeAttribute(path)}">Abrir documento</button>
     </div>
