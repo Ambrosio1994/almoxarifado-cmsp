@@ -52,8 +52,10 @@ const LOCAL_ADMIN_PASSWORD = process.env.LOCAL_ADMIN_PASSWORD || "";
 const SMTP_HOST = process.env.SMTP_HOST || "smtp.gmail.com";
 const SMTP_PORT = Number(process.env.SMTP_PORT || 465);
 const EMAIL_TEST_RECIPIENT = normalizeEmail(process.env.EMAIL_TEST_RECIPIENT || "");
-const GMAIL_USER = normalizeEmail(process.env.GMAIL_USER || process.env.SMTP_USER || "");
-const GMAIL_APP_PASSWORD = process.env.GMAIL_APP_PASSWORD || process.env.SMTP_PASS || "";
+const EMAIL_CONFIGURATION = resolveEmailConfiguration(process.env);
+const SMTP_AUTH_USER = EMAIL_CONFIGURATION.authUser;
+const SMTP_AUTH_PASSWORD = EMAIL_CONFIGURATION.authPassword;
+const EMAIL_FROM_ADDRESS = EMAIL_CONFIGURATION.fromAddress;
 const EMAIL_FROM_NAME = process.env.EMAIL_FROM_NAME || "Almoxarifado CMSP";
 const EMAIL_CHECK_INTERVAL_MS = Number(process.env.EMAIL_CHECK_INTERVAL_MS || 60 * 60 * 1000);
 const SESSION_TIMEOUT_MS = Number(process.env.SESSION_TIMEOUT_MS || 30 * 60 * 1000);
@@ -1311,6 +1313,18 @@ function normalizeEmail(email = "") {
   return String(email).trim().toLowerCase();
 }
 
+export function resolveEmailConfiguration(env = {}) {
+  const authUser = String(env.SMTP_USER || env.GMAIL_USER || "").trim();
+  const authPassword = String(env.SMTP_PASS || env.GMAIL_APP_PASSWORD || "");
+  const fromAddress = normalizeEmail(env.EMAIL_FROM_ADDRESS || env.GMAIL_USER || "");
+  return {
+    authUser,
+    authPassword,
+    fromAddress,
+    configured: Boolean(authUser && authPassword && isSafeEmailAddress(fromAddress))
+  };
+}
+
 function resolveRole(user = {}) {
   const explicit = String(user.role || "").trim().toLowerCase();
   if (["admin", "almoxarifado", "auditor"].includes(explicit)) return explicit;
@@ -1533,7 +1547,7 @@ async function handleHealth(res, pathname = "/health") {
   const checks = {
     storage: false,
     storageBackend,
-    emailConfigured: Boolean(GMAIL_USER && GMAIL_APP_PASSWORD),
+    emailConfigured: EMAIL_CONFIGURATION.configured,
     schedulerRunning: emailSchedulerRunning
   };
   try {
@@ -1586,10 +1600,11 @@ function isPathWithin(root, candidate) {
 
 function emailStatusPayload() {
   return {
-    enabled: Boolean(GMAIL_USER && GMAIL_APP_PASSWORD),
+    enabled: EMAIL_CONFIGURATION.configured,
     host: SMTP_HOST,
     port: SMTP_PORT,
-    user: GMAIL_USER || "",
+    user: EMAIL_FROM_ADDRESS,
+    fromAddress: EMAIL_FROM_ADDRESS,
     fromName: EMAIL_FROM_NAME,
     simulationRecipient: EMAIL_TEST_RECIPIENT,
     mode: "producao",
@@ -1650,7 +1665,7 @@ async function runDueEmailNotifications(options = {}) {
   });
   const result = {
     ok: true,
-    enabled: Boolean(GMAIL_USER && GMAIL_APP_PASSWORD),
+    enabled: EMAIL_CONFIGURATION.configured,
     redirectRecipient: testRecipient,
     checkedAt: new Date().toISOString(),
     candidates: candidates.length,
@@ -1659,9 +1674,9 @@ async function runDueEmailNotifications(options = {}) {
     failed: []
   };
 
-  if (!GMAIL_USER || !GMAIL_APP_PASSWORD) {
+  if (!EMAIL_CONFIGURATION.configured) {
     result.ok = false;
-    result.error = "Configure GMAIL_USER e GMAIL_APP_PASSWORD no .env para enviar e-mails.";
+    result.error = "Configure credenciais SMTP e EMAIL_FROM_ADDRESS para enviar e-mails.";
     return result;
   }
 
@@ -1864,7 +1879,7 @@ async function buildNotificationEmail(candidate, recipients, testRecipient = "")
     `Dias decorridos: ${processo.diasDecorridos || 0}`
   ].filter((line, index) => line || index > 1).join("\n");
   return {
-    from: GMAIL_USER,
+    from: EMAIL_FROM_ADDRESS,
     fromName: EMAIL_FROM_NAME,
     to: recipients,
     subject,
@@ -1914,8 +1929,8 @@ async function sendSmtpMail(message) {
   const client = await SmtpClient.connect({
     host: SMTP_HOST,
     port: SMTP_PORT,
-    user: GMAIL_USER,
-    pass: GMAIL_APP_PASSWORD
+    user: SMTP_AUTH_USER,
+    pass: SMTP_AUTH_PASSWORD
   });
   try {
     await client.send(message);

@@ -9,7 +9,7 @@ Alvo oficial: `https://sapgestao.dpdns.org`, com PostgreSQL de producao no Neon.
 - [ ] Manter `DATABASE_URL` com a conexao pooled do Neon para a aplicacao e `DATABASE_URL_MIGRATION` com a conexao direta para migracoes e backup.
 - [ ] Confirmar `DB_SSL=true` e `sslmode=require` ou `sslmode=verify-full` nas duas URLs; manter `channel_binding=require` quando fornecido pelo Neon.
 - [ ] Confirmar que a role de runtime tem somente os privilegios necessarios e que a credencial de migracao fica restrita ao operador/CI.
-- [ ] Validar SMTP, administradores, limites, `TRUST_PROXY=true` e volume persistente de uploads.
+- [ ] Validar SMTP, `EMAIL_FROM_ADDRESS` em dominio verificado, administradores, limites, `TRUST_PROXY=true` e volume persistente de uploads.
 - [ ] Garantir que `.env.production`, dumps, `.deploy/` e certificados privados nao aparecem em `git status` nem no artefato da imagem.
 
 ## DNS, firewall e TLS

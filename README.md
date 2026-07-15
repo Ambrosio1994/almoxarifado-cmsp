@@ -29,10 +29,13 @@ Configure um servidor SMTP transacional ou uma conta Gmail com senha de app:
 ```text
 GMAIL_USER=seu-email@gmail.com
 GMAIL_APP_PASSWORD=sua-senha-de-app
+EMAIL_FROM_ADDRESS=seu-email@gmail.com
 EMAIL_TEST_RECIPIENT=seu-email-de-teste@example.com
 ```
 
 O destinatario dos oficios e o e-mail cadastrado no fornecedor. Testes manuais sao sempre redirecionados a `EMAIL_TEST_RECIPIENT`, com chave de idempotencia separada da producao. Reservas persistidas no PostgreSQL impedem disparos duplicados entre replicas.
+
+Para SMTP transacional, `SMTP_USER` e usado somente na autenticacao e `EMAIL_FROM_ADDRESS` define o remetente. No Resend, use `SMTP_USER=resend`, a API key em `SMTP_PASS` e um endereço de domínio verificado em `EMAIL_FROM_ADDRESS`.
 
 ## Prontidao para producao
 
