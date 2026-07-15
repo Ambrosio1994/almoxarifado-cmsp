@@ -16,6 +16,12 @@ if (!(process.env.GMAIL_USER && process.env.GMAIL_APP_PASSWORD) && !(process.env
   errors.push("Configure credenciais SMTP por GMAIL_USER/GMAIL_APP_PASSWORD ou SMTP_USER/SMTP_PASS.");
 }
 if (process.env.SMTP_USER && !process.env.SMTP_HOST) errors.push("SMTP_HOST e obrigatorio ao usar SMTP_USER.");
+if (process.env.SMTP_USER && !process.env.EMAIL_FROM_ADDRESS && !process.env.GMAIL_USER) {
+  errors.push("EMAIL_FROM_ADDRESS e obrigatorio ao usar SMTP_USER.");
+}
+if (process.env.EMAIL_FROM_ADDRESS && !isEmail(process.env.EMAIL_FROM_ADDRESS)) {
+  errors.push("EMAIL_FROM_ADDRESS deve ser um endereco de e-mail valido.");
+}
 required("EMAIL_TEST_RECIPIENT");
 if (!process.env.ADMIN_EMAILS && !(process.env.LOCAL_ADMIN_EMAIL && process.env.LOCAL_ADMIN_PASSWORD)) {
   errors.push("Configure ADMIN_EMAILS ou uma conta LOCAL_ADMIN completa.");
@@ -50,6 +56,10 @@ function paired(first, second) {
 function positiveInteger(name) {
   const value = process.env[name];
   if (value && (!/^\d+$/.test(value) || Number(value) <= 0)) errors.push(`${name} deve ser um inteiro positivo.`);
+}
+
+function isEmail(value) {
+  return /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(String(value).trim());
 }
 
 function validateDatabaseUrl(name = "DATABASE_URL", requiredValue = true) {

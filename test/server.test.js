@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
-import { requestHandler, contentTypeForPath, errorResponsePayload } from "../src/server.js";
+import { requestHandler, contentTypeForPath, errorResponsePayload, resolveEmailConfiguration } from "../src/server.js";
 import { createSession } from "../src/repositories/sessions.js";
 import { closePool } from "../src/db/postgres.js";
 import { readStore, writeStore } from "../src/storage.js";
@@ -28,6 +28,36 @@ describe("respostas de erro do servidor", () => {
   it("identifica corretamente js e css", () => {
     assert.equal(contentTypeForPath("app.js"), "text/javascript; charset=utf-8");
     assert.equal(contentTypeForPath("styles.css"), "text/css; charset=utf-8");
+  });
+});
+
+describe("configuracao SMTP", () => {
+  it("separa usuario SMTP do endereco remetente no Resend", () => {
+    const configuration = resolveEmailConfiguration({
+      SMTP_USER: "resend",
+      SMTP_PASS: "re_fake_key",
+      EMAIL_FROM_ADDRESS: "NOREPLY@SAPGESTAO.DPDNS.ORG"
+    });
+
+    assert.equal(configuration.authUser, "resend");
+    assert.equal(configuration.fromAddress, "noreply@sapgestao.dpdns.org");
+    assert.equal(configuration.configured, true);
+  });
+
+  it("mantem compatibilidade com credenciais Gmail", () => {
+    const configuration = resolveEmailConfiguration({
+      GMAIL_USER: "Equipe@Example.com",
+      GMAIL_APP_PASSWORD: "senha-de-app"
+    });
+
+    assert.equal(configuration.authUser, "Equipe@Example.com");
+    assert.equal(configuration.fromAddress, "equipe@example.com");
+    assert.equal(configuration.configured, true);
+  });
+
+  it("rejeita configuracao sem remetente valido", () => {
+    const configuration = resolveEmailConfiguration({ SMTP_USER: "resend", SMTP_PASS: "re_fake_key" });
+    assert.equal(configuration.configured, false);
   });
 });
 
