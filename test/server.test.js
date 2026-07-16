@@ -69,6 +69,8 @@ describe("rotas http", () => {
     assert.equal(response.statusCode, 200);
     assert.match(response.headers["content-type"] || "", /text\/html/);
     assert.match(body, /\/my-fav\.webp/);
+    assert.doesNotMatch(body, /Olá, Administrador|id="sidebarUserRole">admin/);
+    assert.match(body, /data-section="settings"[^>]*hidden|class="[^"]*hidden[^"]*" data-section="settings"/);
   });
 
   it("serve o favicon em webp via rota nova e alias legado", async () => {
