@@ -1,5 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { Readable } from "node:stream";
 import { requestHandler, contentTypeForPath, errorResponsePayload, resolveEmailConfiguration } from "../src/server.js";
 import { createSession } from "../src/repositories/sessions.js";
@@ -71,6 +72,14 @@ describe("rotas http", () => {
     assert.match(body, /\/my-fav\.webp/);
     assert.doesNotMatch(body, /Olá, Administrador|id="sidebarUserRole">admin/);
     assert.match(body, /data-section="settings"[^>]*hidden|class="[^"]*hidden[^"]*" data-section="settings"/);
+  });
+
+  it("permite carregar o login antes de existir um usuario no frontend", () => {
+    const appSource = readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
+    const apiSource = appSource.slice(appSource.indexOf("async function api("), appSource.indexOf("function documentCell("));
+    assert.match(appSource, /const identityHeaders = currentUser\s*\?/);
+    assert.match(apiSource, /\.\.\.identityHeaders/);
+    assert.doesNotMatch(apiSource, /"x-user-email": currentUser\.email,\s*"x-user-name": currentUser\.name,\s*\.\.\.\(authToken/);
   });
 
   it("serve o favicon em webp via rota nova e alias legado", async () => {
