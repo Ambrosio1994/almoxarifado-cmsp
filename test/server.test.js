@@ -72,6 +72,9 @@ describe("rotas http", () => {
     assert.match(body, /\/my-fav\.webp/);
     assert.doesNotMatch(body, /Olá, Administrador|id="sidebarUserRole">admin/);
     assert.match(body, /data-section="settings"[^>]*hidden|class="[^"]*hidden[^"]*" data-section="settings"/);
+    assert.match(body, /id="mobileMenuToggle"/);
+    assert.match(body, /class="process-table"/);
+    assert.match(body, /class="sidebar-header">[\s\S]*class="brand"[\s\S]*id="sidebarToggle"/);
   });
 
   it("permite carregar o login antes de existir um usuario no frontend", () => {
@@ -80,6 +83,14 @@ describe("rotas http", () => {
     assert.match(appSource, /const identityHeaders = currentUser\s*\?/);
     assert.match(apiSource, /\.\.\.identityHeaders/);
     assert.doesNotMatch(apiSource, /"x-user-email": currentUser\.email,\s*"x-user-name": currentUser\.name,\s*\.\.\.\(authToken/);
+  });
+
+  it("mantem a busca como componente unico nos temas claro e escuro", () => {
+    const styles = readFileSync(new URL("../public/styles.css", import.meta.url), "utf8");
+    assert.match(styles, /\.search-box input \{[\s\S]*?background: transparent;/);
+    assert.match(styles, /\.search-box:focus-within/);
+    assert.match(styles, /\.search-box input:-webkit-autofill/);
+    assert.match(styles, /data-theme="dark"\] \.search-box input[\s\S]*?background: transparent;/);
   });
 
   it("serve o favicon em webp via rota nova e alias legado", async () => {
