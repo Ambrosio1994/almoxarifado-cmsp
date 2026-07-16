@@ -75,6 +75,7 @@ const cancelSupplierInfo = document.querySelector("#cancelSupplierInfo");
 const dashboardView = document.querySelector("#dashboardView");
 const suppliersView = document.querySelector("#suppliersView");
 const auditView = document.querySelector("#auditView");
+const usersView = document.querySelector("#usersView");
 const settingsView = document.querySelector("#settingsView");
 const navItems = document.querySelectorAll(".nav-item");
 const sectionTitle = document.querySelector("#sectionTitle");
@@ -247,6 +248,7 @@ function renderSidebarProfile() {
 function applyRoleVisibility() {
   const role = currentUser?.role || "";
   document.querySelector('[data-section="settings"]')?.classList.toggle("hidden", role !== "admin");
+  document.querySelector('[data-section="users"]')?.classList.toggle("hidden", role !== "admin");
   document.querySelector('[data-section="audit"]')?.classList.toggle("hidden", !["admin", "auditor"].includes(role));
   newProcessButton?.classList.toggle("hidden", role === "auditor");
   observationForm?.classList.toggle("hidden", role === "auditor");
@@ -721,6 +723,7 @@ function openProcessDetail(processo, returnSection = "processes") {
   processListView.classList.add("hidden");
   dashboardView.classList.add("hidden");
   suppliersView.classList.add("hidden");
+  usersView.classList.add("hidden");
   settingsView.classList.add("hidden");
   auditView.classList.add("hidden");
   processDetailView.classList.remove("hidden");
@@ -739,6 +742,7 @@ function closeProcessDetail() {
   if (returnSection === "suppliers") {
     processListView.classList.add("hidden");
     dashboardView.classList.add("hidden");
+    usersView.classList.add("hidden");
     settingsView.classList.add("hidden");
     auditView.classList.add("hidden");
     suppliersView.classList.remove("hidden");
@@ -748,6 +752,7 @@ function closeProcessDetail() {
 
   suppliersView.classList.add("hidden");
   dashboardView.classList.add("hidden");
+  usersView.classList.add("hidden");
   settingsView.classList.add("hidden");
   auditView.classList.add("hidden");
   processListView.classList.remove("hidden");
@@ -1245,12 +1250,13 @@ function escapeHtml(value = "") {
 
 function openSection(section) {
   navItems.forEach((item) => item.classList.toggle("active", item.dataset.section === section));
-  const titles = { dashboard: "Painel", processes: "Empenhos", suppliers: "Fornecedores", audit: "Auditoria", settings: "Templates" };
+  const titles = { dashboard: "Painel", processes: "Empenhos", suppliers: "Fornecedores", audit: "Auditoria", users: "Usuarios e permissoes", settings: "Templates" };
   if (sectionTitle) sectionTitle.textContent = titles[section] || "";
   processListView.classList.toggle("hidden", section !== "processes");
   dashboardView.classList.toggle("hidden", section !== "dashboard");
   suppliersView.classList.toggle("hidden", section !== "suppliers");
   auditView.classList.toggle("hidden", section !== "audit");
+  usersView.classList.toggle("hidden", section !== "users");
   settingsView.classList.toggle("hidden", section !== "settings");
   processDetailView.classList.add("hidden");
   state.selectedProcess = null;
@@ -1258,6 +1264,7 @@ function openSection(section) {
   if (section === "dashboard") renderDashboardView();
   if (section === "suppliers") renderSuppliersView();
   if (section === "audit") renderAuditView();
+  if (section === "users") renderUsersView();
   if (section === "settings") renderSettingsView();
 }
 
@@ -1869,7 +1876,6 @@ async function renderSettingsView() {
     <div class="settings-grid">
       ${settingsCard("templates", "Templates de e-mail", "Modelos usados nas notificacoes automaticas e reenvios manuais.")}
       ${settingsCard("notifications", "Prazos para notificacoes", `${state.settings.notificationRules.diasAvisoInterno.join(", ")} dias; oficio no dia ${state.settings.notificationRules.diaOficioFornecedor}.`)}
-      ${settingsCard("users", "Usuarios e permissoes", `${state.settings.usuarios.length} usuario(s) cadastrado(s).`)}
     </div>
     <section class="settings-panel">
       ${state.settings.localFallback ? `<p class="settings-note">Servidor atual nao possui a rota de configuracoes; exibindo valores padrao. Reinicie o servidor atualizado para salvar alteracoes.</p>` : ""}
@@ -1926,8 +1932,22 @@ function settingsCard(panel, title, description) {
 
 function renderSettingsPanel() {
   if (state.settingsPanel === "notifications") return renderNotificationSettings();
-  if (state.settingsPanel === "users") return renderUserSettings();
   return renderEmailTemplateSettings();
+}
+
+async function renderUsersView() {
+  usersView.innerHTML = `
+    <div class="content-header"><div><h1>Usuarios e permissoes</h1></div></div>
+    <p class="empty-state">Carregando usuarios...</p>
+  `;
+  if (!state.settings) state.settings = await loadSettings();
+  usersView.innerHTML = `
+    <div class="content-header">
+      <div><h1>Usuarios e permissoes</h1><p>Gerencie acessos, perfis e senhas dos usuarios.</p></div>
+    </div>
+    <section class="settings-panel">${renderUserSettings()}</section>
+  `;
+  bindUserHandlers(usersView);
 }
 
 function renderEmailTemplateSettings() {
@@ -2020,23 +2040,27 @@ function bindSettingsHandlers() {
     button.addEventListener("click", () => downloadDocument(button.dataset.downloadDocument));
   });
   settingsView.querySelector("#notificationSettingsForm")?.addEventListener("submit", saveNotificationSettings);
-  settingsView.querySelector("#newManagedUserForm")?.addEventListener("submit", createManagedUser);
   settingsView.querySelectorAll("[data-attach-template]").forEach((button) => {
     button.addEventListener("click", () => attachTemplateDocument(button.dataset.attachTemplate));
   });
-  settingsView.querySelectorAll("[data-user-role]").forEach((select) => {
+}
+
+function bindUserHandlers(root) {
+  enhancePasswordFields(root);
+  root.querySelector("#newManagedUserForm")?.addEventListener("submit", createManagedUser);
+  root.querySelectorAll("[data-user-role]").forEach((select) => {
     select.addEventListener("change", () => updateManagedUser(select.dataset.userRole, { role: select.value }));
   });
-  settingsView.querySelectorAll("[data-toggle-user]").forEach((button) => {
+  root.querySelectorAll("[data-toggle-user]").forEach((button) => {
     button.addEventListener("click", () => updateManagedUser(button.dataset.toggleUser, { ativo: button.dataset.userActive !== "true" }));
   });
-  settingsView.querySelectorAll("[data-revoke-user]").forEach((button) => {
+  root.querySelectorAll("[data-revoke-user]").forEach((button) => {
     button.addEventListener("click", () => updateManagedUser(button.dataset.revokeUser, { revogarSessoes: true }));
   });
-  settingsView.querySelectorAll("[data-password-user]").forEach((button) => {
+  root.querySelectorAll("[data-password-user]").forEach((button) => {
     button.addEventListener("click", () => editManagedUserPassword(button.dataset.passwordUser));
   });
-  settingsView.querySelectorAll("[data-delete-user]").forEach((button) => {
+  root.querySelectorAll("[data-delete-user]").forEach((button) => {
     button.addEventListener("click", () => deleteManagedUser(button.dataset.deleteUser));
   });
 }
@@ -2050,13 +2074,13 @@ async function createManagedUser(event) {
   }
   await api("/api/admin/users", { method: "POST", body: JSON.stringify(body) });
   state.settings = await api("/api/settings");
-  renderSettingsView();
+  renderUsersView();
 }
 
 async function updateManagedUser(userId, changes) {
   await api(`/api/admin/users/${encodeURIComponent(userId)}`, { method: "PATCH", body: JSON.stringify(changes) });
   state.settings = await api("/api/settings");
-  renderSettingsView();
+  renderUsersView();
 }
 
 async function editManagedUserPassword(userId) {
@@ -2073,7 +2097,7 @@ async function deleteManagedUser(userId) {
   if (!confirm("Excluir este usuario permanentemente?")) return;
   await api(`/api/admin/users/${encodeURIComponent(userId)}`, { method: "DELETE" });
   state.settings = await api("/api/settings");
-  renderSettingsView();
+  renderUsersView();
 }
 
 async function saveEmailTemplates(event) {
