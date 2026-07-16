@@ -81,7 +81,7 @@
                   <option value="csv">CSV</option>
                 </select>
                 <button type="button" class="secondary" id="downloadProcessesButton">Download</button>
-                <button type="button" id="newProcessButton">+ Novo processo</button>
+                <button type="button" id="newProcessButton">+ Novo</button>
               </div>
             </div>
 
@@ -160,10 +160,10 @@
         <input type="hidden" name="versao">
 
         <div class="split">
-          <label>Numero do processo <input name="numeroProcesso"></label>
-          <label>Numero do empenho <input name="numeroEmpenho"></label>
+          <label>Numero do processo <input name="numeroProcesso" maxlength="20"></label>
+          <label>Numero do empenho <input name="numeroEmpenho" maxlength="20"></label>
         </div>
-        <label>Fornecedor <input name="fornecedor"></label>
+        <label>Fornecedor <input name="fornecedor" maxlength="100"></label>
 
         <section class="materials-section">
           <div class="section-title">
@@ -188,7 +188,7 @@
       </form>
       <div id="observationsList"></div>
       <form id="observationForm" class="observation-form">
-        <textarea name="conteudo" rows="4" placeholder="Nova observacao"></textarea>
+        <textarea name="conteudo" rows="4" minlength="1" maxlength="350" required placeholder="Nova observacao (ate 350 caracteres)"></textarea>
         <button>Registrar</button>
       </form>
     </dialog>

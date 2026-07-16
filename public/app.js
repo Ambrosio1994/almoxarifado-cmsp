@@ -133,6 +133,7 @@ async function initAuth() {
 }
 
 function bindAuthEvents() {
+  enhancePasswordFields(document);
   loginForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     const data = Object.fromEntries(new FormData(loginForm));
@@ -1111,7 +1112,7 @@ async function saveNewProcessData() {
   const statusField = detailPanel.querySelector("[data-detail-status]");
   const dateField = detailPanel.querySelector("[data-detail-date]");
   const status = statusField?.value;
-  const date = dateField?.value;
+  const date = normalizeDateInput(dateField?.value);
   const step = nextProcessStep(state.selectedProcess);
   if (!status || !date) {
     alert("Informe a data para salvar.");
@@ -1137,10 +1138,15 @@ async function saveNewProcessData() {
 }
 async function registerPartialDelivery() {
   if (!state.selectedProcess) return;
-  const date = prompt("Informe a data da entrega parcial (AAAA-MM-DD):", state.selectedProcess.dataEntrega || "");
+  const date = prompt("Informe a data da entrega parcial (DD-MM-AAAA):", displayDate(state.selectedProcess.dataEntrega));
   if (!date?.trim()) return;
 
-  await registerDelivery(date.trim(), false);
+  const normalizedDate = normalizeDateInput(date);
+  if (!normalizedDate) {
+    alert("Informe uma data valida no formato DD-MM-AAAA.");
+    return;
+  }
+  await registerDelivery(normalizedDate, false);
 }
 
 async function registerDelivery(date, complete) {
@@ -1270,10 +1276,9 @@ async function renderDashboardView() {
     renderDashboardView();
   });
   const year = state.dashboardYear || yearSelect.value || new Date().getFullYear();
-  const [monthlyExecution, statusDistribution] = await Promise.all([
-    api(`/api/dashboard/execucao-mensal?ano=${year}`),
-    api(`/api/dashboard/distribuicao-status?ano=${year}`)
-  ]);
+  const charts = await api(`/api/dashboard/charts?ano=${year}`);
+  const monthlyExecution = charts.execucaoMensal;
+  const statusDistribution = charts.distribuicaoStatus;
 
   dashboardView.innerHTML = `
     <div class="content-header">
@@ -1528,7 +1533,7 @@ function newDataPanel(processo) {
       <input type="hidden" data-detail-status value="${step.status}">
       <span class="new-data-title">${step.title}</span>
       <label>Data
-        <input type="date" data-detail-date required>
+        <input type="text" inputmode="numeric" placeholder="DD-MM-AAAA" pattern="\\d{2}-\\d{2}-\\d{4}" maxlength="10" data-detail-date required>
       </label>
       <button type="button" class="secondary" data-update-status="true">Salvar</button>
     </div>
@@ -1963,7 +1968,9 @@ function renderUserSettings() {
               ${["almoxarifado", "auditor", "admin"].map((role) => `<option value="${role}" ${user.role === role ? "selected" : ""}>${role}</option>`).join("")}
             </select>
             <button type="button" class="secondary" data-toggle-user="${escapeAttribute(user.id)}" data-user-active="${user.ativo}">${user.ativo ? "Desativar" : "Ativar"}</button>
+            <button type="button" class="secondary" data-password-user="${escapeAttribute(user.id)}">Editar senha</button>
             <button type="button" class="secondary" data-revoke-user="${escapeAttribute(user.id)}">Revogar sessoes</button>
+            <button type="button" class="secondary danger-button" data-delete-user="${escapeAttribute(user.id)}">Excluir</button>
           </div>
         </article>
       `).join("")}
@@ -1989,6 +1996,7 @@ function renderNotificationSettings() {
 }
 
 function bindSettingsHandlers() {
+  enhancePasswordFields(settingsView);
   settingsView.querySelectorAll("[data-settings-panel]").forEach((button) => {
     button.addEventListener("click", () => {
       state.settingsPanel = button.dataset.settingsPanel;
@@ -2016,6 +2024,12 @@ function bindSettingsHandlers() {
   settingsView.querySelectorAll("[data-revoke-user]").forEach((button) => {
     button.addEventListener("click", () => updateManagedUser(button.dataset.revokeUser, { revogarSessoes: true }));
   });
+  settingsView.querySelectorAll("[data-password-user]").forEach((button) => {
+    button.addEventListener("click", () => editManagedUserPassword(button.dataset.passwordUser));
+  });
+  settingsView.querySelectorAll("[data-delete-user]").forEach((button) => {
+    button.addEventListener("click", () => deleteManagedUser(button.dataset.deleteUser));
+  });
 }
 
 async function createManagedUser(event) {
@@ -2028,6 +2042,23 @@ async function createManagedUser(event) {
 
 async function updateManagedUser(userId, changes) {
   await api(`/api/admin/users/${encodeURIComponent(userId)}`, { method: "PATCH", body: JSON.stringify(changes) });
+  state.settings = await api("/api/settings");
+  renderSettingsView();
+}
+
+async function editManagedUserPassword(userId) {
+  const senha = prompt("Digite a nova senha do usuario (minimo de 12 caracteres):");
+  if (senha === null) return;
+  if (senha.length < 12) {
+    alert("A nova senha deve ter ao menos 12 caracteres.");
+    return;
+  }
+  await updateManagedUser(userId, { senha });
+}
+
+async function deleteManagedUser(userId) {
+  if (!confirm("Excluir este usuario permanentemente?")) return;
+  await api(`/api/admin/users/${encodeURIComponent(userId)}`, { method: "DELETE" });
   state.settings = await api("/api/settings");
   renderSettingsView();
 }
@@ -2145,7 +2176,7 @@ function addMaterialRow(material = { descricao: "", valorUnitario: "", quantidad
   const row = document.createElement("div");
   row.className = "material-row";
   row.innerHTML = `
-    <label>Descricao <input data-material-field="descricao" value="${escapeAttribute(material.descricao || "")}"></label>
+    <label>Descricao <input data-material-field="descricao" maxlength="100" value="${escapeAttribute(material.descricao || "")}"></label>
     <label>Valor unitario <input data-material-field="valorUnitario" type="number" min="0" step="0.01" value="${Number(material.valorUnitario || 0) || ""}"></label>
     <label>Quantidade <input data-material-field="quantidade" type="number" min="0" step="1" value="${Number(material.quantidade || 0) || ""}"></label>
     <button type="button" class="secondary remove-material" data-remove-material="true">Remover</button>
@@ -2303,7 +2334,46 @@ function compactMoney(value) {
 }
 
 function dateCell(value) {
-  return escapeHtml(value || "-");
+  if (!value) return "-";
+  const isoDate = String(value).slice(0, 10);
+  const match = isoDate.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return escapeHtml(match ? `${match[3]}-${match[2]}-${match[1]}` : isoDate);
+}
+
+function displayDate(value) {
+  if (!value) return "";
+  const match = String(value).slice(0, 10).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return match ? `${match[3]}-${match[2]}-${match[1]}` : String(value);
+}
+
+function normalizeDateInput(value) {
+  const match = String(value || "").trim().match(/^(\d{2})-(\d{2})-(\d{4})$/);
+  if (!match) return "";
+  const iso = `${match[3]}-${match[2]}-${match[1]}`;
+  const parsed = new Date(`${iso}T00:00:00Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === iso ? iso : "";
+}
+
+function enhancePasswordFields(root = document) {
+  root.querySelectorAll('input[type="password"]:not([data-password-enhanced])').forEach((input) => {
+    input.dataset.passwordEnhanced = "true";
+    const wrapper = document.createElement("span");
+    wrapper.className = "password-input-wrap";
+    input.parentNode.insertBefore(wrapper, input);
+    wrapper.append(input);
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "password-toggle";
+    toggle.textContent = "Mostrar";
+    toggle.setAttribute("aria-label", "Mostrar senha digitada");
+    toggle.addEventListener("click", () => {
+      const showing = input.type === "text";
+      input.type = showing ? "password" : "text";
+      toggle.textContent = showing ? "Mostrar" : "Ocultar";
+      toggle.setAttribute("aria-label", showing ? "Mostrar senha digitada" : "Ocultar senha digitada");
+    });
+    wrapper.append(toggle);
+  });
 }
 
 function daysCell(processo) {
