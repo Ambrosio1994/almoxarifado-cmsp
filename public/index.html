@@ -6,33 +6,18 @@
     <title>Almoxarifado CMSP</title>
     <link rel="icon" type="image/webp" href="/my-fav.webp">
     <link rel="stylesheet" href="/styles.css">
-    <script src="https://accounts.google.com/gsi/client" async defer></script>
   </head>
   <body>
     <section class="auth-screen" id="authScreen">
       <main class="auth-card">
         <section class="auth-panel" id="loginPanel">
           <form id="loginForm" class="auth-form">
-            <div class="google-sdk-button" id="googleSdkButton"></div>
-            <button type="button" class="google-button hidden" id="googleSignupButton">
-              <span>G</span>
-              Continuar com Google
-            </button>
-            <div class="auth-divider"><span>OU</span></div>
             <label class="email-only"><input name="email" type="email" autocomplete="email" placeholder="Digite seu e-mail" required></label>
             <label class="password-step hidden" id="passwordStep"><input name="senha" type="password" autocomplete="current-password" placeholder="Digite sua senha"></label>
             <button type="submit" class="email-submit" id="emailSubmitButton">Continuar com e-mail</button>
           </form>
           <p class="auth-note">Ao continuar, voce reconhece a Politica de Privacidade do Almoxarifado CMSP.</p>
-          <details class="auth-note">
-            <summary>Solicitar acesso</summary>
-            <form id="accessRequestForm" class="auth-form">
-              <label>Nome <input name="nome" required></label>
-              <label>E-mail institucional <input name="email" type="email" required></label>
-              <label>Justificativa <textarea name="justificativa" rows="3" maxlength="1000"></textarea></label>
-              <button type="submit">Enviar solicitacao</button>
-            </form>
-          </details>
+          <p class="auth-note">O acesso deve ser cadastrado previamente por um administrador.</p>
           <p class="auth-message" id="authMessage"></p>
         </section>
 

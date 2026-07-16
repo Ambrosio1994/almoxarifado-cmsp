@@ -1,6 +1,6 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 
 if (process.argv.includes("--help")) {
   console.log("Uso: NODE_ENV=production node scripts/backup-production.js [diretorio]");
@@ -34,17 +34,35 @@ const childEnv = {
   PGUSER: decodeURIComponent(url.username),
   PGPASSWORD: decodeURIComponent(url.password),
   PGSSLMODE: sslmode,
+  PGSSLROOTCERT: process.env.PGSSLROOTCERT || (sslmode === "verify-full" ? "system" : undefined),
   PGCHANNELBINDING: url.searchParams.get("channel_binding") || "prefer"
 };
 
-const child = spawn("pg_dump", ["--format=custom", "--no-owner", "--no-acl", "--file", output], {
+const pgDumpAvailable = !spawnSync("pg_dump", ["--version"], { stdio: "ignore" }).error;
+const backupFile = output.split("/").pop();
+const command = pgDumpAvailable ? "pg_dump" : "docker";
+const args = pgDumpAvailable
+  ? ["--format=custom", "--no-owner", "--no-acl", "--file", output]
+  : [
+      "run", "--rm",
+      "--user", `${process.getuid?.() ?? 1000}:${process.getgid?.() ?? 1000}`,
+      "-e", "PGHOST", "-e", "PGPORT", "-e", "PGDATABASE", "-e", "PGUSER",
+      "-e", "PGPASSWORD", "-e", "PGSSLMODE", "-e", "PGSSLROOTCERT", "-e", "PGCHANNELBINDING",
+      "-v", `${backupDir}:/backup`,
+      process.env.POSTGRES_CLIENT_IMAGE || "postgres:17-alpine",
+      "pg_dump", "--format=custom", "--no-owner", "--no-acl", "--file", `/backup/${backupFile}`
+    ];
+
+if (!pgDumpAvailable) console.log("pg_dump local ausente; usando cliente PostgreSQL em container.");
+
+const child = spawn(command, args, {
   env: childEnv,
   stdio: ["ignore", "inherit", "inherit"]
 });
 
 child.on("error", (error) => {
   try { unlinkSync(output); } catch {}
-  console.error(`Falha ao iniciar pg_dump: ${error.message}`);
+  console.error(`Falha ao iniciar ${command}: ${error.message}`);
   process.exitCode = 1;
 });
 child.on("exit", (code) => {

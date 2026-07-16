@@ -1,9 +1,9 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-loadEnvironmentFile();
+const duplicatedEnvironmentKeys = loadEnvironmentFile();
 
-const errors = [];
+const errors = duplicatedEnvironmentKeys.map((key) => `${key} esta definido mais de uma vez no arquivo de ambiente.`);
 
 required("DATABASE_URL");
 if (process.env.DB_SSL !== "true") errors.push("DB_SSL deve ser true em producao.");
@@ -29,9 +29,6 @@ if (!process.env.ADMIN_EMAILS && !(process.env.LOCAL_ADMIN_EMAIL && process.env.
 
 if (process.env.LOCAL_ADMIN_PASSWORD && process.env.LOCAL_ADMIN_PASSWORD.length < 12) {
   errors.push("LOCAL_ADMIN_PASSWORD deve ter ao menos 12 caracteres.");
-}
-if (process.env.GOOGLE_CLIENT_ID && !process.env.GOOGLE_ALLOWED_DOMAINS) {
-  errors.push("GOOGLE_ALLOWED_DOMAINS e obrigatorio quando GOOGLE_CLIENT_ID estiver configurado.");
 }
 for (const name of ["SESSION_TIMEOUT_MS", "LOGIN_RATE_LIMIT_WINDOW_MS", "LOGIN_RATE_LIMIT_MAX", "MAX_JSON_BODY_BYTES", "MAX_UPLOAD_BYTES"]) {
   positiveInteger(name);
@@ -71,6 +68,10 @@ function validateDatabaseUrl(name = "DATABASE_URL", requiredValue = true) {
     const url = new URL(process.env[name]);
     if (!["postgres:", "postgresql:"].includes(url.protocol)) throw new Error();
     if (!url.hostname || !url.pathname.slice(1)) throw new Error();
+    if (/^(APP_USER|MIGRATION_USER)$/i.test(decodeURIComponent(url.username)) || /YOUR_|APP_USER|MIGRATION_USER/i.test(url.hostname)) {
+      errors.push(`${name} ainda contem marcadores do arquivo de exemplo.`);
+      return;
+    }
     if (!["require", "verify-full"].includes(url.searchParams.get("sslmode"))) {
       errors.push(`${name} deve incluir sslmode=require ou sslmode=verify-full.`);
     }
@@ -81,12 +82,18 @@ function validateDatabaseUrl(name = "DATABASE_URL", requiredValue = true) {
 
 function loadEnvironmentFile() {
   const file = resolve(process.env.ENV_FILE || ".env.production");
-  if (!existsSync(file)) return;
+  if (!existsSync(file)) return [];
+  const seen = new Set();
+  const duplicates = new Set();
   for (const line of readFileSync(file, "utf8").split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#")) continue;
     const [key, ...parts] = trimmed.split("=");
-    if (!key || process.env[key]) continue;
+    if (!key) continue;
+    if (seen.has(key)) duplicates.add(key);
+    seen.add(key);
+    if (process.env[key]) continue;
     process.env[key] = parts.join("=").trim();
   }
+  return [...duplicates];
 }

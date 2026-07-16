@@ -22,7 +22,7 @@ Alvo oficial: `https://sapgestao.dpdns.org`, com PostgreSQL de producao no Neon.
 
 ## Backup, migracao e release
 
-- [ ] Instalar cliente PostgreSQL compatível com o Neon (`pg_dump`/`pg_restore`) e Docker com Compose v2.
+- [ ] Instalar Docker com Compose v2. O backup usa `pg_dump` local quando disponível e recorre ao cliente PostgreSQL em container quando necessário.
 - [ ] Executar `bash scripts/deploy-production.sh check`.
 - [ ] Executar `npm run backup:production`; testar o dump com `pg_restore --list backups/<arquivo>.dump` e copiar o backup criptografado para armazenamento externo.
 - [ ] Executar `npm run deploy:production`. O script repete testes, cria backup, aplica migracoes, preserva a imagem anterior, sobe a nova imagem e aguarda readiness.

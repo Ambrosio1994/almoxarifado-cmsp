@@ -39,9 +39,6 @@ const sidebarGreeting = document.querySelector("#sidebarGreeting");
 const sidebarUserRole = document.querySelector("#sidebarUserRole");
 const loginPanel = document.querySelector("#loginPanel");
 const loginForm = document.querySelector("#loginForm");
-const accessRequestForm = document.querySelector("#accessRequestForm");
-const googleSignupButton = document.querySelector("#googleSignupButton");
-const googleSdkButton = document.querySelector("#googleSdkButton");
 const passwordStep = document.querySelector("#passwordStep");
 const emailSubmitButton = document.querySelector("#emailSubmitButton");
 const authMessage = document.querySelector("#authMessage");
@@ -121,7 +118,6 @@ function applyTheme(theme) {
 
 async function initAuth() {
   bindAuthEvents();
-  await initGoogleIdentity();
   if (!authToken) {
     showAuth();
     return;
@@ -161,22 +157,6 @@ function bindAuthEvents() {
     }
   });
 
-  googleSignupButton.addEventListener("click", () => {
-    authMessage.textContent = "Login Google real aguardando configuracao do GOOGLE_CLIENT_ID.";
-  });
-  accessRequestForm?.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    try {
-      const result = await api("/auth/request-access", {
-        method: "POST",
-        body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget)))
-      });
-      authMessage.textContent = result.message;
-      event.currentTarget.reset();
-    } catch (error) {
-      authMessage.textContent = error.message;
-    }
-  });
   logoutButton.addEventListener("click", async () => {
     await api("/auth/logout", { method: "POST" }).catch(() => null);
     localStorage.removeItem("almoxAuthToken");
@@ -205,71 +185,6 @@ async function changePassword(event) {
     changePasswordDialog.close();
   } catch (error) {
     changePasswordMessage.textContent = error.message;
-  }
-}
-
-async function initGoogleIdentity() {
-  if (!googleSdkButton) return;
-  try {
-    const config = await api("/auth/google/config");
-    if (!config.enabled || !config.clientId) {
-      googleSignupButton?.classList.remove("hidden");
-      googleSdkButton.classList.add("hidden");
-      return;
-    }
-    await waitForGoogleIdentity();
-    googleSdkButton.classList.remove("hidden");
-    googleSignupButton?.classList.add("hidden");
-    window.google.accounts.id.initialize({
-      client_id: config.clientId,
-      callback: handleGoogleCredential,
-      ux_mode: "popup",
-      auto_select: false
-    });
-    window.google.accounts.id.renderButton(googleSdkButton, {
-      theme: "outline",
-      size: "large",
-      text: "continue_with",
-      shape: "rectangular",
-      width: 390,
-      locale: "pt-BR"
-    });
-  } catch {
-    googleSignupButton?.classList.remove("hidden");
-    googleSdkButton.classList.add("hidden");
-  }
-}
-
-function waitForGoogleIdentity() {
-  return new Promise((resolve, reject) => {
-    let attempts = 0;
-    const timer = setInterval(() => {
-      attempts += 1;
-      if (window.google?.accounts?.id) {
-        clearInterval(timer);
-        resolve();
-      }
-      if (attempts > 80) {
-        clearInterval(timer);
-        reject(new Error("SDK do Google nao carregou."));
-      }
-    }, 100);
-  });
-}
-
-async function handleGoogleCredential(response) {
-  if (!response?.credential) {
-    authMessage.textContent = "O Google nao retornou a credencial de login. Tente novamente.";
-    return;
-  }
-  try {
-    const session = await api("/auth/google/callback", {
-      method: "POST",
-      body: JSON.stringify({ credential: response.credential })
-    });
-    await startSession(session);
-  } catch (error) {
-    authMessage.textContent = error.message;
   }
 }
 
