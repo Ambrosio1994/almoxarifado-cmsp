@@ -28,6 +28,24 @@ integration("integracao PostgreSQL", () => {
     await assert.rejects(() => writeStore(stale), (error) => error.statusCode === 409);
   });
 
+  it("persiste registros legados sem timestamps sem alterar a criacao depois", async () => {
+    const store = await readStore();
+    const supplierId = crypto.randomUUID();
+    store.fornecedores.push({ id: supplierId, razaoSocial: "Fornecedor legado sem timestamp" });
+    await writeStore(store);
+
+    const inserted = await query("SELECT created_at FROM app_suppliers WHERE id = $1", [supplierId]);
+    assert.ok(inserted.rows[0]?.created_at);
+
+    const updatedStore = await readStore();
+    const supplier = updatedStore.fornecedores.find((item) => item.id === supplierId);
+    supplier.razaoSocial = "Fornecedor legado atualizado";
+    await writeStore(updatedStore);
+
+    const updated = await query("SELECT created_at FROM app_suppliers WHERE id = $1", [supplierId]);
+    assert.equal(updated.rows[0].created_at.toISOString(), inserted.rows[0].created_at.toISOString());
+  });
+
   it("impede update e delete de auditoria no banco", async () => {
     const store = await readStore();
     const processId = crypto.randomUUID();

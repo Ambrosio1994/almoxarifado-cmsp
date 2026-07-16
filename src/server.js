@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 import { connect as connectTls } from "node:tls";
 import { spawn } from "node:child_process";
-import { createPublicKey, randomBytes, scryptSync, timingSafeEqual, verify } from "node:crypto";
+import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -44,8 +44,6 @@ const FAVICON_FILE = fileURLToPath(new URL("../my-fav.webp", import.meta.url));
 const UPLOAD_ROOT = process.env.UPLOAD_STORAGE_ROOT
   ? resolveUploadRoot(process.env.UPLOAD_STORAGE_ROOT)
   : fileURLToPath(new URL("../uploads/", import.meta.url));
-const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "";
-const GOOGLE_ALLOWED_DOMAINS = new Set(parseList(process.env.GOOGLE_ALLOWED_DOMAINS));
 const ADMIN_EMAILS = new Set(parseList(process.env.ADMIN_EMAILS));
 const LOCAL_ADMIN_EMAIL = normalizeEmail(process.env.LOCAL_ADMIN_EMAIL);
 const LOCAL_ADMIN_PASSWORD = process.env.LOCAL_ADMIN_PASSWORD || "";
@@ -64,11 +62,11 @@ const LOGIN_RATE_LIMIT_MAX = Number(process.env.LOGIN_RATE_LIMIT_MAX || 5);
 const TRUST_PROXY = process.env.TRUST_PROXY === "true";
 const MAX_JSON_BODY_BYTES = Number(process.env.MAX_JSON_BODY_BYTES || 24 * 1024 * 1024);
 const MAX_UPLOAD_BYTES = Number(process.env.MAX_UPLOAD_BYTES || 15 * 1024 * 1024);
-let googleKeysCache = { expiresAt: 0, keys: [] };
 let emailSchedulerRunning = false;
 let emailSchedulerTimeout;
 let emailSchedulerInterval;
 let maintenanceInterval;
+let localAdminBootstrapped = false;
 
 const DEFAULT_SETTINGS = {
   emailTemplates: {
@@ -173,14 +171,6 @@ async function handleAuth(req, res, url) {
     return;
   }
 
-  if (req.method === "GET" && url.pathname === "/auth/google/config") {
-    sendJson(res, 200, {
-      enabled: Boolean(GOOGLE_CLIENT_ID),
-      clientId: GOOGLE_CLIENT_ID
-    });
-    return;
-  }
-
   if (req.method === "POST" && url.pathname === "/auth/login") {
     const body = await readJson(req);
     const email = normalizeEmail(body.email);
@@ -199,91 +189,6 @@ async function handleAuth(req, res, url) {
     await recordSecurityEvent("login_succeeded", { actorUserId: user.id, actorEmail: user.email, metadata: { ip: clientIp(req) } });
     const token = await createSession(user);
     sendJson(res, 200, { token, user: publicUser(user) });
-    return;
-  }
-
-  if (req.method === "POST" && url.pathname === "/auth/google/callback") {
-    if (!GOOGLE_CLIENT_ID) {
-      sendJson(res, 503, { error: "Login Google ainda nao configurado. Defina GOOGLE_CLIENT_ID." });
-      return;
-    }
-    const body = await readJson(req);
-    let profile;
-    try {
-      profile = await verifyGoogleCredential(body.credential);
-    } catch (error) {
-      sendJson(res, 401, { error: error.message || "Credencial Google invalida." });
-      return;
-    }
-    let user = store.usuarios.find((item) => item.email === profile.email);
-    if (user?.ativo === false) {
-      sendJson(res, 403, { error: "Seu acesso ainda nao foi aprovado pelo administrador." });
-      return;
-    }
-    if (!user) {
-      user = {
-        id: crypto.randomUUID(),
-        nome: profile.name || profile.email.split("@")[0],
-        email: profile.email,
-        foto: profile.picture || "",
-        googleSub: profile.sub,
-        origemCadastro: "google",
-        senhaHash: "",
-        precisaDefinirSenha: false,
-        ativo: true,
-        role: resolveRole({ email: profile.email }),
-        criadoEm: new Date().toISOString()
-      };
-      store.usuarios.push(user);
-    } else {
-      if (user.googleSub && user.googleSub !== profile.sub) {
-        sendJson(res, 409, { error: "Esta conta ja esta vinculada a outra identidade Google." });
-        return;
-      }
-      user.nome = user.nome || profile.name || user.email.split("@")[0];
-      user.foto = profile.picture || user.foto || "";
-      user.googleSub = profile.sub || user.googleSub || "";
-      user.atualizadoEm = new Date().toISOString();
-    }
-    await writeStore(store);
-    await recordSecurityEvent("google_login_succeeded", { actorUserId: user.id, actorEmail: user.email, targetUserId: user.id });
-    const token = await createSession(user);
-    sendJson(res, 200, { token, user: publicUser(user) });
-    return;
-  }
-
-  if (["/auth/google/signup-local", "/auth/set-password"].includes(url.pathname)) {
-    sendJson(res, 410, { error: "Fluxo inseguro removido. Use login Google verificado ou uma conta criada pelo administrador." });
-    return;
-  }
-
-  if (req.method === "POST" && url.pathname === "/auth/request-access") {
-    const body = await readJson(req);
-    const email = normalizeEmail(body.email);
-    const nome = String(body.nome || "").trim();
-    if (!nome || !isSafeEmailAddress(email)) {
-      sendJson(res, 400, { error: "Informe nome e e-mail validos." });
-      return;
-    }
-    if (await isLoginRateLimited(req, `access:${email}`)) {
-      sendJson(res, 429, { error: "Muitas solicitacoes. Tente novamente mais tarde." });
-      return;
-    }
-    await recordFailedLogin(req, `access:${email}`);
-    let requestedUser = store.usuarios.find((item) => normalizeEmail(item.email) === email);
-    if (!requestedUser) {
-      const requestedAt = new Date().toISOString();
-      requestedUser = {
-        id: crypto.randomUUID(), nome, email, origemCadastro: "solicitacao",
-        senhaHash: "", precisaDefinirSenha: false, ativo: false, role: "almoxarifado",
-        justificativaAcesso: String(body.justificativa || "").trim().slice(0, 1000),
-        solicitadoEm: requestedAt, criadoEm: requestedAt
-      };
-      store.usuarios.push(requestedUser);
-      await writeStore(store);
-    }
-    await recordSecurityEvent("access_requested", { actorEmail: email, targetUserId: requestedUser.id, metadata: { ip: clientIp(req) } });
-    sendJson(res, 202, { ok: true, message: "Solicitacao recebida. Aguarde a aprovacao do administrador." });
     return;
   }
 
@@ -1248,11 +1153,21 @@ function clientIp(req) {
 
 async function ensureUsers(store) {
   if (!Array.isArray(store.usuarios)) store.usuarios = [];
+  if (localAdminBootstrapped || !LOCAL_ADMIN_EMAIL || !LOCAL_ADMIN_PASSWORD) return;
+  if (LOCAL_ADMIN_PASSWORD.length < 12) {
+    throw new Error("LOCAL_ADMIN_PASSWORD deve ter ao menos 12 caracteres.");
+  }
+
   // Bootstrap local-only admin account from explicit environment variables.
-  if (LOCAL_ADMIN_EMAIL && LOCAL_ADMIN_PASSWORD && !store.usuarios.some((user) => user.email === LOCAL_ADMIN_EMAIL)) {
-    if (LOCAL_ADMIN_PASSWORD.length < 12) {
-      throw new Error("LOCAL_ADMIN_PASSWORD deve ter ao menos 12 caracteres.");
-    }
+  const existingAdmin = store.usuarios.find((user) => normalizeEmail(user.email) === LOCAL_ADMIN_EMAIL);
+  if (existingAdmin) {
+    existingAdmin.senhaHash = hashPassword(LOCAL_ADMIN_PASSWORD);
+    existingAdmin.ativo = true;
+    existingAdmin.role = "admin";
+    existingAdmin.origemCadastro = existingAdmin.origemCadastro || "local";
+    existingAdmin.precisaDefinirSenha = false;
+    existingAdmin.atualizadoEm = new Date().toISOString();
+  } else {
     store.usuarios.push({
       id: `admin-${crypto.randomUUID()}`,
       nome: "Administrador Almoxarifado",
@@ -1264,8 +1179,9 @@ async function ensureUsers(store) {
       role: "admin",
       criadoEm: new Date().toISOString()
     });
-    await writeStore(store);
   }
+  await writeStore(store);
+  localAdminBootstrapped = true;
 }
 
 function publicProcess(processo = {}) {
@@ -1350,57 +1266,6 @@ function verifyPassword(password, stored) {
   const expected = Buffer.from(hash, "hex");
   const actual = scryptSync(String(password), salt, 64);
   return expected.length === actual.length && timingSafeEqual(expected, actual);
-}
-
-async function verifyGoogleCredential(credential = "") {
-  const parts = String(credential || "").split(".");
-  if (parts.length !== 3) throw new Error("Credencial Google invalida.");
-  const [headerText, payloadText, signatureText] = parts;
-  const header = JSON.parse(base64UrlDecode(headerText).toString("utf8"));
-  const payload = JSON.parse(base64UrlDecode(payloadText).toString("utf8"));
-  if (header.alg !== "RS256" || !header.kid) throw new Error("Assinatura Google invalida.");
-
-  const key = (await googlePublicKeys()).find((item) => item.kid === header.kid);
-  if (!key) throw new Error("Chave publica Google nao encontrada.");
-
-  const publicKey = createPublicKey({ key, format: "jwk" });
-  const valid = verify("RSA-SHA256", Buffer.from(`${headerText}.${payloadText}`), publicKey, base64UrlDecode(signatureText));
-  if (!valid) throw new Error("Assinatura Google nao confere.");
-  if (payload.aud !== GOOGLE_CLIENT_ID) throw new Error("Client ID Google nao confere.");
-  if (!["accounts.google.com", "https://accounts.google.com"].includes(payload.iss)) throw new Error("Emissor Google invalido.");
-  if (Number(payload.exp || 0) * 1000 < Date.now()) throw new Error("Credencial Google expirada.");
-  if (!payload.email) throw new Error("Conta Google sem e-mail.");
-  if (payload.email_verified !== true) throw new Error("O e-mail da conta Google nao foi verificado.");
-  const email = normalizeEmail(payload.email);
-  const domain = email.split("@")[1] || "";
-  if (GOOGLE_ALLOWED_DOMAINS.size && !GOOGLE_ALLOWED_DOMAINS.has(domain)) {
-    throw new Error("Dominio Google nao autorizado.");
-  }
-
-  return {
-    sub: String(payload.sub || ""),
-    email,
-    name: String(payload.name || payload.email || ""),
-    picture: String(payload.picture || "")
-  };
-}
-
-async function googlePublicKeys() {
-  if (googleKeysCache.expiresAt > Date.now() && googleKeysCache.keys.length) return googleKeysCache.keys;
-  const response = await fetch("https://www.googleapis.com/oauth2/v3/certs");
-  if (!response.ok) throw new Error("Nao foi possivel obter chaves publicas do Google.");
-  const payload = await response.json();
-  const maxAge = String(response.headers.get("cache-control") || "").match(/max-age=(\d+)/);
-  googleKeysCache = {
-    expiresAt: Date.now() + Number(maxAge?.[1] || 3600) * 1000,
-    keys: Array.isArray(payload.keys) ? payload.keys : []
-  };
-  return googleKeysCache.keys;
-}
-
-function base64UrlDecode(value = "") {
-  const normalized = String(value).replace(/-/g, "+").replace(/_/g, "/");
-  return Buffer.from(normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "="), "base64");
 }
 
 async function serveStatic(res, pathname) {
@@ -1523,7 +1388,7 @@ function applySecurityHeaders(res) {
   res.setHeader("x-content-type-options", "nosniff");
   res.setHeader("x-frame-options", "DENY");
   res.setHeader("strict-transport-security", "max-age=31536000; includeSubDomains");
-  res.setHeader("content-security-policy", "default-src 'self'; script-src 'self' https://accounts.google.com/gsi/client; frame-src https://accounts.google.com; connect-src 'self' https://www.googleapis.com; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'");
+  res.setHeader("content-security-policy", "default-src 'self'; script-src 'self'; frame-src 'none'; connect-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'");
   res.setHeader("referrer-policy", "strict-origin-when-cross-origin");
   res.setHeader("permissions-policy", "camera=(), microphone=(), geolocation=()");
 }

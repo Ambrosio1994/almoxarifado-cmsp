@@ -172,30 +172,16 @@ describe("rotas http", () => {
     });
   });
 
-  it("remove o cadastro local que permitia falsificar identidade Google", async () => {
-    const response = await invokeRequest({
-      method: "POST",
-      path: "/auth/google/signup-local",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ nome: "Invasor", email: "admin@example.com", googleSub: "forjado" })
-    });
-    assert.equal(response.statusCode, 410);
-  });
-
-  it("registra solicitacao de acesso como conta inativa e sem privilegio", async () => {
-    const email = `solicitante-${crypto.randomUUID()}@example.com`;
+  it("nao oferece login Google nem solicitacao publica de acesso", async () => {
+    const google = await invokeRequest({ method: "GET", path: "/auth/google/config" });
     const response = await invokeRequest({
       method: "POST",
       path: "/auth/request-access",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ nome: "Solicitante", email, justificativa: "Atuacao no almoxarifado" })
+      body: JSON.stringify({ nome: "Solicitante", email: "solicitante@example.com" })
     });
-    assert.equal(response.statusCode, 202);
-    const store = await readStore();
-    const requested = store.usuarios.find((item) => item.email === email);
-    assert.equal(requested.ativo, false);
-    assert.equal(requested.role, "almoxarifado");
-    assert.equal(requested.senhaHash, "");
+    assert.equal(google.statusCode, 404);
+    assert.equal(response.statusCode, 404);
   });
 
   it("impede usuario comum de alterar configuracoes", async () => {
