@@ -24,12 +24,14 @@
       </main>
     </section>
     <aside class="sidebar hidden" id="sidebar">
-      <button type="button" class="sidebar-toggle" id="sidebarToggle" aria-label="Minimizar menu">‹</button>
-      <div class="sidebar-resizer" id="sidebarResizer" aria-hidden="true"></div>
-      <div class="brand">
-        <strong>Almoxarifado</strong>
-        <span>CMSP · CONTROLE DE EMPENHOS</span>
+      <div class="sidebar-header">
+        <div class="brand">
+          <strong>Almoxarifado</strong>
+          <span>CMSP · CONTROLE DE EMPENHOS</span>
+        </div>
+        <button type="button" class="sidebar-toggle" id="sidebarToggle" aria-label="Minimizar menu">‹</button>
       </div>
+      <div class="sidebar-resizer" id="sidebarResizer" aria-hidden="true"></div>
       <section class="sidebar-profile" id="sidebarProfile" aria-label="Abrir configuracoes da conta" role="button" tabindex="0">
         <div class="sidebar-avatar" id="sidebarAvatar" aria-hidden="true">
           <img id="sidebarAvatarImage" alt="">
@@ -49,10 +51,14 @@
       </nav>
       <button type="button" class="sidebar-logout" id="logoutButton">Sair</button>
     </aside>
+    <button type="button" class="sidebar-backdrop hidden" id="sidebarBackdrop" aria-label="Fechar menu"></button>
 
     <div class="app-shell hidden" id="appShell">
       <header class="topbar">
-        <strong id="sectionTitle">Painel</strong>
+        <div class="topbar-title">
+          <button type="button" class="mobile-menu-toggle" id="mobileMenuToggle" aria-label="Abrir menu" aria-controls="sidebar" aria-expanded="false">☰</button>
+          <strong id="sectionTitle">Painel</strong>
+        </div>
         <button type="button" class="theme-toggle" id="themeToggle" aria-label="Alternar para modo escuro" title="Alternar tema">
           <span aria-hidden="true">◐</span>
           <strong>Escuro</strong>
@@ -91,7 +97,7 @@
             <div class="quick-filter-bar" id="quickFilterBar"></div>
 
             <div class="table-wrap">
-              <table>
+              <table class="process-table">
                 <thead>
                   <tr>
                     <th>Nº Processo no SPED</th>

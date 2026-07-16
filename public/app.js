@@ -80,6 +80,8 @@ const navItems = document.querySelectorAll(".nav-item");
 const sectionTitle = document.querySelector("#sectionTitle");
 const sidebarToggle = document.querySelector("#sidebarToggle");
 const sidebarResizer = document.querySelector("#sidebarResizer");
+const mobileMenuToggle = document.querySelector("#mobileMenuToggle");
+const sidebarBackdrop = document.querySelector("#sidebarBackdrop");
 const themeToggle = document.querySelector("#themeToggle");
 const documentMetadataDialog = document.querySelector("#documentMetadataDialog");
 const documentMetadataForm = document.querySelector("#documentMetadataForm");
@@ -486,7 +488,35 @@ navItems.forEach((item) => {
   item.addEventListener("click", (event) => {
     event.preventDefault();
     openSection(item.dataset.section);
+    closeMobileMenu();
   });
+});
+
+function setMobileMenu(open) {
+  document.body.classList.toggle("mobile-menu-open", open);
+  mobileMenuToggle?.setAttribute("aria-expanded", String(open));
+  mobileMenuToggle?.setAttribute("aria-label", open ? "Fechar menu" : "Abrir menu");
+  sidebarBackdrop?.classList.toggle("hidden", !open);
+}
+
+function closeMobileMenu() {
+  setMobileMenu(false);
+}
+
+mobileMenuToggle?.addEventListener("click", () => {
+  document.body.classList.remove("sidebar-collapsed");
+  setMobileMenu(!document.body.classList.contains("mobile-menu-open"));
+});
+sidebarBackdrop?.addEventListener("click", closeMobileMenu);
+window.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeMobileMenu();
+});
+window.addEventListener("resize", () => {
+  if (window.innerWidth > 980) {
+    closeMobileMenu();
+  } else {
+    document.body.classList.remove("sidebar-collapsed");
+  }
 });
 
 sidebarToggle?.addEventListener("click", () => {
@@ -503,7 +533,7 @@ sidebarResizer?.addEventListener("pointerdown", (event) => {
 
 sidebarResizer?.addEventListener("pointermove", (event) => {
   if (!document.body.classList.contains("resizing-sidebar")) return;
-  const width = Math.min(360, Math.max(188, event.clientX));
+  const width = Math.min(360, Math.max(208, event.clientX));
   document.documentElement.style.setProperty("--sidebar-width", `${width}px`);
 });
 
