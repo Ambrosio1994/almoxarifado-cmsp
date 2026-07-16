@@ -204,8 +204,12 @@ async function handleAuth(req, res, url) {
       sendJson(res, 401, { error: "Senha atual invalida." });
       return;
     }
-    if (newPassword.length < 12 || newPassword !== body.confirmacao) {
-      sendJson(res, 400, { error: "A nova senha deve ter ao menos 12 caracteres e confirmacao identica." });
+    if (newPassword !== body.confirmacao) {
+      sendJson(res, 400, { error: "A confirmacao da nova senha deve ser identica." });
+      return;
+    }
+    if (!isValidPassword(newPassword)) {
+      sendJson(res, 400, { error: passwordPolicyMessage() });
       return;
     }
     user.senhaHash = hashPassword(newPassword);
@@ -272,8 +276,12 @@ async function handleApi(req, res, url) {
     const nome = String(body.nome || "").trim();
     const password = String(body.senhaTemporaria || "");
     const newRole = normalizeManagedRole(body.role);
-    if (!nome || !isSafeEmailAddress(email) || password.length < 12 || !newRole) {
-      sendJson(res, 400, { error: "Informe nome, e-mail valido, perfil e senha temporaria com ao menos 12 caracteres." });
+    if (!nome || !isSafeEmailAddress(email) || !newRole) {
+      sendJson(res, 400, { error: "Informe nome, e-mail valido e perfil." });
+      return;
+    }
+    if (!isValidPassword(password)) {
+      sendJson(res, 400, { error: passwordPolicyMessage() });
       return;
     }
     if (store.usuarios.some((item) => normalizeEmail(item.email) === email)) {
@@ -317,8 +325,8 @@ async function handleApi(req, res, url) {
     }
     if (Object.prototype.hasOwnProperty.call(body, "senha")) {
       const newPassword = String(body.senha || "");
-      if (newPassword.length < 12) {
-        sendJson(res, 400, { error: "A nova senha deve ter ao menos 12 caracteres." });
+      if (!isValidPassword(newPassword)) {
+        sendJson(res, 400, { error: passwordPolicyMessage() });
         return;
       }
       managedUser.senhaHash = hashPassword(newPassword);
@@ -1197,8 +1205,8 @@ function clientIp(req) {
 async function ensureUsers(store) {
   if (!Array.isArray(store.usuarios)) store.usuarios = [];
   if (localAdminBootstrapped || !LOCAL_ADMIN_EMAIL || !LOCAL_ADMIN_PASSWORD) return;
-  if (LOCAL_ADMIN_PASSWORD.length < 12) {
-    throw new Error("LOCAL_ADMIN_PASSWORD deve ter ao menos 12 caracteres.");
+  if (!isValidPassword(LOCAL_ADMIN_PASSWORD)) {
+    throw new Error(`LOCAL_ADMIN_PASSWORD invalida. ${passwordPolicyMessage()}`);
   }
 
   // Bootstrap local-only admin account from explicit environment variables.
@@ -1301,6 +1309,18 @@ function hashPassword(password) {
   const salt = randomBytes(16).toString("hex");
   const hash = scryptSync(String(password), salt, 64).toString("hex");
   return `${salt}:${hash}`;
+}
+
+export function isValidPassword(password = "") {
+  const value = String(password);
+  return value.length >= 8
+    && /\p{Lu}/u.test(value)
+    && /\p{N}/u.test(value)
+    && /[^\p{L}\p{N}]/u.test(value);
+}
+
+function passwordPolicyMessage() {
+  return "A senha deve ter no minimo 8 caracteres, incluindo uma letra maiuscula, um numero e um caractere especial.";
 }
 
 function verifyPassword(password, stored) {
