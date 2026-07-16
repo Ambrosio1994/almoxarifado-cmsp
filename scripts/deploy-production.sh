@@ -59,7 +59,6 @@ smoke() {
 }
 
 backup() {
-  require_command pg_dump
   NODE_ENV=production npm run backup:production
 }
 
@@ -75,7 +74,6 @@ preflight() {
 
 deploy() {
   preflight
-  require_command pg_dump
   npm ci
   npm test
   npm run check
