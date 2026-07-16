@@ -21,12 +21,7 @@ const state = {
   settingsPanel: "templates"
 };
 
-let currentUser = {
-  email: "admin@cmsp.local",
-  name: "Administrador",
-  role: "admin",
-  foto: ""
-};
+let currentUser = null;
 let authToken = localStorage.getItem("almoxAuthToken") || "";
 const authScreen = document.querySelector("#authScreen");
 const appShell = document.querySelector("#appShell");
@@ -203,6 +198,7 @@ function setCurrentUser(user) {
     role: user.role || "almoxarifado",
     foto: user.foto || ""
   };
+  applyRoleVisibility();
   renderSidebarProfile();
 }
 
@@ -221,7 +217,7 @@ function showApp() {
 }
 
 function renderSidebarProfile() {
-  if (!sidebarProfile) return;
+  if (!sidebarProfile || !currentUser) return;
   const name = displayFirstName(currentUser.name || currentUser.email || "Usuario");
   sidebarGreeting.textContent = `Olá, ${name}`;
   sidebarUserRole.textContent = currentUser.role || "almoxarifado";
@@ -234,6 +230,14 @@ function renderSidebarProfile() {
     sidebarAvatarImage.hidden = true;
   }
   sidebarAvatar.classList.toggle("has-image", Boolean(currentUser.foto));
+}
+
+function applyRoleVisibility() {
+  const role = currentUser?.role || "";
+  document.querySelector('[data-section="settings"]')?.classList.toggle("hidden", role !== "admin");
+  document.querySelector('[data-section="audit"]')?.classList.toggle("hidden", !["admin", "auditor"].includes(role));
+  newProcessButton?.classList.toggle("hidden", role === "auditor");
+  observationForm?.classList.toggle("hidden", role === "auditor");
 }
 
 sidebarAvatarImage?.addEventListener("error", () => {
@@ -271,10 +275,6 @@ async function boot() {
   state.auditoria = ["admin", "auditor"].includes(currentUser.role) ? await api("/api/audit") : [];
   state.emailHistory = ["admin", "auditor"].includes(currentUser.role) ? await api("/api/emails/history") : [];
   state.securityAudit = ["admin", "auditor"].includes(currentUser.role) ? await api("/api/security-audit") : [];
-  document.querySelector('[data-section="settings"]')?.classList.toggle("hidden", currentUser.role !== "admin");
-  document.querySelector('[data-section="audit"]')?.classList.toggle("hidden", !["admin", "auditor"].includes(currentUser.role));
-  newProcessButton?.classList.toggle("hidden", currentUser.role === "auditor");
-  observationForm?.classList.toggle("hidden", currentUser.role === "auditor");
   fillSelect(statusSelect, state.meta.status, "Todos os status");
   fillSelect(statusFilter, state.meta.status, "Todos os status");
   fillSelect(quickFilter, state.meta.filtrosRapidos, "Filtros rapidos");
