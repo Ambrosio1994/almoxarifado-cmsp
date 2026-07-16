@@ -696,6 +696,7 @@ function fillForm(processo) {
   for (const [key, value] of Object.entries(processo)) {
     if (processForm.elements[key]) processForm.elements[key].value = value ?? "";
   }
+  if (processForm.elements.dataProcesso) processForm.elements.dataProcesso.value = displayDate(processo.dataProcesso);
   if (processForm.elements.dataEnvioFornecedor && !processForm.elements.dataEnvioFornecedor.value) {
     processForm.elements.dataEnvioFornecedor.value = processo.dataEnvioEmpenho || "";
   }
@@ -810,6 +811,7 @@ function renderGeneralModule(processo) {
   return `
     <div class="detail-grid">
       ${detailField("Fornecedor", processo.fornecedor)}
+      ${detailField("Data do processo", dateCell(processo.dataProcesso))}
       ${detailField("CNPJ", fornecedor?.cnpj)}
       ${detailField("Materiais", processo.materiais.map((material) => material.descricao).join(", "))}
       ${detailField("Valor unitario medio", money(unitAverage))}
@@ -1205,6 +1207,7 @@ function processUpdatePayload(overrides = {}) {
     numeroProcesso: processo.numeroProcesso || "",
     numeroEmpenho: processo.numeroEmpenho || "",
     fornecedor: processo.fornecedor || "",
+    dataProcesso: processo.dataProcesso || "",
     materiais: processo.materiais || [],
     dataEnvioFornecedor: processo.dataEnvioFornecedor || deadlineDate(processo),
     dataEntrega: processo.dataEntrega || "",
@@ -2480,16 +2483,40 @@ function enhancePasswordFields(root = document) {
     const toggle = document.createElement("button");
     toggle.type = "button";
     toggle.className = "password-toggle";
-    toggle.textContent = "Mostrar";
-    toggle.setAttribute("aria-label", "Mostrar senha digitada");
+    updatePasswordToggle(toggle, false);
     toggle.addEventListener("click", () => {
       const showing = input.type === "text";
       input.type = showing ? "password" : "text";
-      toggle.textContent = showing ? "Mostrar" : "Ocultar";
-      toggle.setAttribute("aria-label", showing ? "Mostrar senha digitada" : "Ocultar senha digitada");
+      updatePasswordToggle(toggle, !showing);
     });
     wrapper.append(toggle);
   });
+}
+
+function updatePasswordToggle(toggle, passwordVisible) {
+  toggle.innerHTML = passwordVisible ? eyeOpenIcon() : eyeOffIcon();
+  toggle.setAttribute("aria-label", passwordVisible ? "Ocultar senha" : "Mostrar senha");
+  toggle.setAttribute("title", passwordVisible ? "Ocultar senha" : "Mostrar senha");
+  toggle.setAttribute("aria-pressed", String(passwordVisible));
+}
+
+function eyeOpenIcon() {
+  return `
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"></path>
+      <circle cx="12" cy="12" r="2.75"></circle>
+    </svg>
+  `;
+}
+
+function eyeOffIcon() {
+  return `
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M3 3l18 18"></path>
+      <path d="M10.6 6.15A10.2 10.2 0 0 1 12 6c6 0 9.5 6 9.5 6a17.7 17.7 0 0 1-3.05 3.65M6.2 6.2C3.85 7.75 2.5 12 2.5 12s3.5 6 9.5 6a9.9 9.9 0 0 0 3.2-.53"></path>
+      <path d="M9.9 9.9a2.75 2.75 0 0 0 4.2 4.2"></path>
+    </svg>
+  `;
 }
 
 function isValidPasswordInput(password = "") {
