@@ -623,6 +623,24 @@ main {
   width: 100%;
 }
 
+.password-input-wrap {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  width: 100%;
+}
+
+.password-input-wrap input {
+  flex: 1;
+  min-width: 0;
+}
+
+.password-toggle {
+  flex: 0 0 auto;
+  padding: .55rem .7rem;
+  font-size: .78rem;
+}
+
 .email-submit {
   background: #111;
   border-color: #111;

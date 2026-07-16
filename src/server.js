@@ -300,8 +300,11 @@ async function handleApi(req, res, url) {
       sendJson(res, 404, { error: "Usuario nao encontrado." });
       return;
     }
-    if (managedUser.id === authenticatedUser.id && body.ativo === false) {
-      sendJson(res, 400, { error: "O administrador nao pode desativar a propria conta." });
+    const removesAdminAccess = resolveRole(managedUser) === "admin" && (
+      body.ativo === false || (Object.prototype.hasOwnProperty.call(body, "role") && normalizeManagedRole(body.role) !== "admin")
+    );
+    if (removesAdminAccess && activeAdminCount(store.usuarios) <= 1) {
+      sendJson(res, 400, { error: "O ultimo administrador ativo nao pode ser desativado nem perder o perfil administrativo." });
       return;
     }
     if (Object.prototype.hasOwnProperty.call(body, "role")) {
@@ -312,6 +315,16 @@ async function handleApi(req, res, url) {
       }
       managedUser.role = newRole;
     }
+    if (Object.prototype.hasOwnProperty.call(body, "senha")) {
+      const newPassword = String(body.senha || "");
+      if (newPassword.length < 12) {
+        sendJson(res, 400, { error: "A nova senha deve ter ao menos 12 caracteres." });
+        return;
+      }
+      managedUser.senhaHash = hashPassword(newPassword);
+      managedUser.precisaDefinirSenha = false;
+      body.revogarSessoes = true;
+    }
     if (Object.prototype.hasOwnProperty.call(body, "ativo")) managedUser.ativo = body.ativo === true;
     managedUser.atualizadoEm = new Date().toISOString();
     await writeStore(store);
@@ -321,6 +334,26 @@ async function handleApi(req, res, url) {
       metadata: { role: managedUser.role, ativo: managedUser.ativo, sessoesRevogadas: body.revogarSessoes === true }
     });
     sendJson(res, 200, publicUser(managedUser));
+    return;
+  }
+
+  if (adminUserMatch && req.method === "DELETE") {
+    const managedUser = store.usuarios.find((item) => item.id === adminUserMatch[1]);
+    if (!managedUser) {
+      sendJson(res, 404, { error: "Usuario nao encontrado." });
+      return;
+    }
+    if (managedUser.ativo !== false && resolveRole(managedUser) === "admin" && activeAdminCount(store.usuarios) <= 1) {
+      sendJson(res, 400, { error: "O ultimo administrador ativo nao pode ser excluido." });
+      return;
+    }
+    store.usuarios = store.usuarios.filter((item) => item.id !== managedUser.id);
+    await writeStore(store);
+    await revokeUserSessions(managedUser.id);
+    await recordSecurityEvent("user_deleted", {
+      actorUserId: authenticatedUser.id, actorEmail: authenticatedUser.email, targetUserId: managedUser.id
+    });
+    sendJson(res, 200, { ok: true });
     return;
   }
 
@@ -504,6 +537,16 @@ async function handleApi(req, res, url) {
     const year = Number(url.searchParams.get("ano") || new Date().getFullYear());
     const processos = store.processos.map((processo) => enrichProcess(processo));
     sendJson(res, 200, dashboardStatusDistribution(processos, year));
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/dashboard/charts") {
+    const year = Number(url.searchParams.get("ano") || new Date().getFullYear());
+    const processos = store.processos.map((processo) => enrichProcess(processo));
+    sendJson(res, 200, {
+      execucaoMensal: dashboardMonthlyExecution(processos, year),
+      distribuicaoStatus: dashboardStatusDistribution(processos, year)
+    });
     return;
   }
 
@@ -759,8 +802,8 @@ async function handleApi(req, res, url) {
   if (obsMatch && req.method === "POST") {
     const body = await readJson(req);
     const content = String(body.conteudo || "").trim();
-    if (!content || content.length > 5000) {
-      sendJson(res, 400, { error: "A observacao deve ter entre 1 e 5000 caracteres." });
+    if (!content || content.length > 350) {
+      sendJson(res, 400, { error: "A observacao deve ter entre 1 e 350 caracteres." });
       return;
     }
     const processo = store.processos.find((item) => item.id === obsMatch[1]);
@@ -796,8 +839,8 @@ async function handleApi(req, res, url) {
   if (obsItemMatch && req.method === "PUT") {
     const body = await readJson(req);
     const content = String(body.conteudo || "").trim();
-    if (!content || content.length > 5000) {
-      sendJson(res, 400, { error: "A observacao deve ter entre 1 e 5000 caracteres." });
+    if (!content || content.length > 350) {
+      sendJson(res, 400, { error: "A observacao deve ter entre 1 e 350 caracteres." });
       return;
     }
     const processo = store.processos.find((item) => item.id === obsItemMatch[1]);
@@ -2099,7 +2142,7 @@ function sanitizeMaterials(input) {
   const items = Array.isArray(input) ? input : legacyMaterials(input);
   return items
     .map((item) => ({
-      descricao: String(item.descricao || "").trim().slice(0, 1000),
+      descricao: String(item.descricao || "").trim().slice(0, 100),
       valorUnitario: nonNegativeNumber(item.valorUnitario),
       quantidade: nonNegativeNumber(item.quantidade)
     }))
@@ -2109,9 +2152,9 @@ function sanitizeMaterials(input) {
 function sanitizeProcessInput(input = {}, current = {}) {
   const value = (key) => Object.prototype.hasOwnProperty.call(input, key) ? input[key] : current[key];
   const result = {
-    numeroProcesso: String(value("numeroProcesso") || "").trim().slice(0, 100),
-    numeroEmpenho: String(value("numeroEmpenho") || "").trim().slice(0, 100),
-    fornecedor: String(value("fornecedor") || "").trim().slice(0, 300),
+    numeroProcesso: String(value("numeroProcesso") || "").trim().slice(0, 20),
+    numeroEmpenho: String(value("numeroEmpenho") || "").trim().slice(0, 20),
+    fornecedor: String(value("fornecedor") || "").trim().slice(0, 100),
     materiais: sanitizeMaterials(value("materiais") || input),
     dataEnvioEmpenho: safeDate(value("dataEnvioEmpenho")),
     dataEnvioFornecedor: safeDate(value("dataEnvioFornecedor")),
@@ -2125,6 +2168,15 @@ function sanitizeProcessInput(input = {}, current = {}) {
 }
 
 function validateProcessBody(input = {}) {
+  if (!String(input.numeroProcesso || "").trim() && !String(input.numeroEmpenho || "").trim()) {
+    return "Informe o numero do processo, o numero do empenho ou ambos.";
+  }
+  if (String(input.numeroProcesso || "").trim().length > 20) return "O numero do processo deve ter no maximo 20 caracteres.";
+  if (String(input.numeroEmpenho || "").trim().length > 20) return "O numero do empenho deve ter no maximo 20 caracteres.";
+  if (String(input.fornecedor || "").trim().length > 100) return "O fornecedor deve ter no maximo 100 caracteres.";
+  if (Array.isArray(input.materiais) && input.materiais.some((item) => String(item.descricao || "").trim().length > 100)) {
+    return "A descricao do material deve ter no maximo 100 caracteres.";
+  }
   const dateFields = ["dataEnvioEmpenho", "dataEnvioFornecedor", "dataEntrega", "dataEnvioLiquidacao", "dataLiquidacao", "dataPagamento"];
   for (const field of dateFields) {
     if (input[field] && !safeDate(input[field])) return `Data invalida no campo ${field}.`;
@@ -2162,12 +2214,18 @@ function validateProcessForStatus(processo = {}) {
 }
 
 function safeDate(value = "") {
-  const text = String(value || "").trim();
+  let text = String(value || "").trim();
   if (!text) return "";
+  const brazilianDate = text.match(/^(\d{2})-(\d{2})-(\d{4})$/);
+  if (brazilianDate) text = `${brazilianDate[3]}-${brazilianDate[2]}-${brazilianDate[1]}`;
   if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return "";
   const parsed = new Date(`${text}T00:00:00Z`);
   if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== text) return "";
   return text;
+}
+
+function activeAdminCount(users = []) {
+  return users.filter((user) => user.ativo !== false && resolveRole(user) === "admin").length;
 }
 
 function nonNegativeNumber(value) {
