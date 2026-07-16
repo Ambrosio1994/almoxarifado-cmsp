@@ -43,8 +43,8 @@
         </div>
       </section>
       <nav class="side-nav" aria-label="Navegacao principal">
-        <a href="#" class="nav-item" data-section="dashboard"><span>▦</span>Painel</a>
-        <a href="#" class="nav-item active" data-section="processes"><span>▱</span>Empenhos</a>
+        <a href="#" class="nav-item active" data-section="dashboard"><span>▦</span>Painel</a>
+        <a href="#" class="nav-item" data-section="processes"><span>▱</span>Empenhos</a>
         <a href="#" class="nav-item" data-section="suppliers"><span>▤</span>Fornecedores</a>
         <a href="#" class="nav-item hidden" data-section="audit"><span>◫</span>Auditoria</a>
         <a href="#" class="nav-item hidden" data-section="users"><span>♙</span>Usuarios e permissoes</a>
@@ -69,7 +69,7 @@
       <main>
         <section class="metrics" id="metrics"></section>
 
-        <section class="workspace" id="processListView">
+        <section class="workspace hidden" id="processListView">
           <section class="content">
             <div class="content-header">
               <div>
@@ -119,7 +119,7 @@
           </section>
         </section>
 
-        <section class="module-view hidden" id="dashboardView"></section>
+        <section class="module-view" id="dashboardView"><p class="empty-state">Carregando painel...</p></section>
         <section class="module-view hidden" id="suppliersView"></section>
         <section class="module-view hidden" id="auditView"></section>
         <section class="module-view hidden" id="usersView"></section>
