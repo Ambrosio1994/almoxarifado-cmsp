@@ -208,13 +208,12 @@ async function insertRecords(client, table, records, timestampKeys = [], options
   for (const record of records) {
     const createdAt = firstTimestamp(record, timestampKeys);
     const updatedAt = firstTimestamp(record, ["atualizadoEm", "updatedAt", ...timestampKeys.filter((key) => key !== "atualizadoEm")]);
-    const columns = ["id", "data", "created_at", "updated_at"];
-    const values = [
-      textId(record.id),
-      JSON.stringify(record),
-      createdAt,
-      updatedAt
-    ];
+    const columns = options.immutable
+      ? ["id", "data", "created_at"]
+      : ["id", "data", "created_at", "updated_at"];
+    const values = options.immutable
+      ? [textId(record.id), JSON.stringify(record), createdAt]
+      : [textId(record.id), JSON.stringify(record), createdAt, updatedAt];
 
     if (options.processIdKey) {
       columns.push("processo_id");
@@ -230,11 +229,15 @@ async function insertRecords(client, table, records, timestampKeys = [], options
       ? "DO NOTHING"
       : `DO UPDATE SET
          data = EXCLUDED.data,
-         created_at = EXCLUDED.created_at,
          updated_at = EXCLUDED.updated_at${options.processIdKey ? ",\n         processo_id = EXCLUDED.processo_id" : ""}${options.dedupeKey ? ",\n         dedupe_key = EXCLUDED.dedupe_key" : ""}`;
+    const placeholders = columns.map((column, index) =>
+      ["created_at", "updated_at"].includes(column)
+        ? `COALESCE($${index + 1}::timestamptz, now())`
+        : `$${index + 1}`
+    );
     await client.query(
       `INSERT INTO ${table} (${columns.join(", ")})
-       VALUES (${columns.map((_, index) => `$${index + 1}`).join(", ")})
+       VALUES (${placeholders.join(", ")})
        ON CONFLICT (id) ${conflictClause}`,
       values
     );
@@ -291,8 +294,8 @@ export async function detectStoreBackend() {
   return "json";
 }
 
-function deserializeRecord(value = {}) {
-  return cloneJson(value);
+function deserializeRecord(row = {}) {
+  return cloneJson(Object.prototype.hasOwnProperty.call(row, "data") ? row.data : row);
 }
 
 function deserializeUser(row = {}) {
