@@ -172,10 +172,19 @@ function bindAuthEvents() {
 async function changePassword(event) {
   event.preventDefault();
   changePasswordMessage.textContent = "";
+  const passwordData = Object.fromEntries(new FormData(event.currentTarget));
+  if (passwordData.novaSenha !== passwordData.confirmacao) {
+    changePasswordMessage.textContent = "A confirmacao da nova senha deve ser identica.";
+    return;
+  }
+  if (!isValidPasswordInput(passwordData.novaSenha)) {
+    changePasswordMessage.textContent = passwordPolicyMessage();
+    return;
+  }
   try {
     const response = await api("/auth/change-password", {
       method: "POST",
-      body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget)))
+      body: JSON.stringify(passwordData)
     });
     authToken = response.token;
     localStorage.setItem("almoxAuthToken", authToken);
@@ -1956,7 +1965,7 @@ function renderUserSettings() {
       <label>Perfil
         <select name="role"><option value="almoxarifado">Almoxarifado</option><option value="auditor">Auditor</option><option value="admin">Administrador</option></select>
       </label>
-      <label>Senha inicial <input name="senhaTemporaria" type="password" minlength="12" required></label>
+      <label>Senha inicial <input name="senhaTemporaria" type="password" minlength="8" required title="Minimo de 8 caracteres, com maiuscula, numero e caractere especial"></label>
       <div class="actions"><button type="submit">Criar usuario</button></div>
     </form>
     <div class="module-list">
@@ -2035,6 +2044,10 @@ function bindSettingsHandlers() {
 async function createManagedUser(event) {
   event.preventDefault();
   const body = Object.fromEntries(new FormData(event.currentTarget));
+  if (!isValidPasswordInput(body.senhaTemporaria)) {
+    alert(passwordPolicyMessage());
+    return;
+  }
   await api("/api/admin/users", { method: "POST", body: JSON.stringify(body) });
   state.settings = await api("/api/settings");
   renderSettingsView();
@@ -2047,10 +2060,10 @@ async function updateManagedUser(userId, changes) {
 }
 
 async function editManagedUserPassword(userId) {
-  const senha = prompt("Digite a nova senha do usuario (minimo de 12 caracteres):");
+  const senha = prompt("Digite a nova senha do usuario (minimo de 8 caracteres, com maiuscula, numero e caractere especial):");
   if (senha === null) return;
-  if (senha.length < 12) {
-    alert("A nova senha deve ter ao menos 12 caracteres.");
+  if (!isValidPasswordInput(senha)) {
+    alert(passwordPolicyMessage());
     return;
   }
   await updateManagedUser(userId, { senha });
@@ -2374,6 +2387,18 @@ function enhancePasswordFields(root = document) {
     });
     wrapper.append(toggle);
   });
+}
+
+function isValidPasswordInput(password = "") {
+  const value = String(password);
+  return value.length >= 8
+    && /\p{Lu}/u.test(value)
+    && /\p{N}/u.test(value)
+    && /[^\p{L}\p{N}]/u.test(value);
+}
+
+function passwordPolicyMessage() {
+  return "A senha deve ter no minimo 8 caracteres, incluindo uma letra maiuscula, um numero e um caractere especial.";
 }
 
 function daysCell(processo) {

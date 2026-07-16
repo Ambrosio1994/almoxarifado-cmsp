@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { Readable } from "node:stream";
-import { requestHandler, contentTypeForPath, errorResponsePayload, resolveEmailConfiguration } from "../src/server.js";
+import { requestHandler, contentTypeForPath, errorResponsePayload, isValidPassword, resolveEmailConfiguration } from "../src/server.js";
 import { createSession } from "../src/repositories/sessions.js";
 import { closePool } from "../src/db/postgres.js";
 import { readStore, writeStore } from "../src/storage.js";
@@ -29,6 +29,23 @@ describe("respostas de erro do servidor", () => {
   it("identifica corretamente js e css", () => {
     assert.equal(contentTypeForPath("app.js"), "text/javascript; charset=utf-8");
     assert.equal(contentTypeForPath("styles.css"), "text/css; charset=utf-8");
+  });
+});
+
+describe("politica de senhas", () => {
+  it("aceita senha com oito caracteres, maiuscula, numero e especial", () => {
+    assert.equal(isValidPassword("Almox@12"), true);
+  });
+
+  it("rejeita senha que nao atende cada requisito", () => {
+    assert.equal(isValidPassword("Ab@123"), false, "menos de oito caracteres");
+    assert.equal(isValidPassword("almox@123"), false, "sem maiuscula");
+    assert.equal(isValidPassword("Almox@abc"), false, "sem numero");
+    assert.equal(isValidPassword("Almox123"), false, "sem caractere especial");
+  });
+
+  it("aceita letras maiusculas Unicode e espaco como especial", () => {
+    assert.equal(isValidPassword("Álmox 12"), true);
   });
 });
 
