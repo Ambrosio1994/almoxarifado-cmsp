@@ -138,13 +138,6 @@ function bindAuthEvents() {
   loginForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     const data = Object.fromEntries(new FormData(loginForm));
-    if (passwordStep?.classList.contains("hidden")) {
-      passwordStep.classList.remove("hidden");
-      passwordStep.querySelector("input").required = true;
-      emailSubmitButton.textContent = "Entrar";
-      passwordStep.querySelector("input").focus();
-      return;
-    }
     try {
       const response = await api("/auth/login", {
         method: "POST",
@@ -274,12 +267,11 @@ function showAuthPanel(panel) {
   loginPanel.classList.toggle("hidden", panel !== "login");
   if (panel !== "login") authMessage.textContent = "";
   if (panel === "login") {
-    passwordStep?.classList.add("hidden");
     if (passwordStep?.querySelector("input")) {
-      passwordStep.querySelector("input").required = false;
+      passwordStep.querySelector("input").required = true;
       passwordStep.querySelector("input").value = "";
     }
-    if (emailSubmitButton) emailSubmitButton.textContent = "Continuar com e-mail";
+    if (emailSubmitButton) emailSubmitButton.textContent = "Entrar";
   }
 }
 
