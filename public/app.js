@@ -146,7 +146,7 @@ function bindAuthEvents() {
         method: "POST",
         body: JSON.stringify(data)
       });
-      startSession(response);
+      await startSession(response);
     } catch (error) {
       authMessage.textContent = error.message;
     }
@@ -2176,12 +2176,17 @@ function renderYearOptions() {
 }
 
 async function api(path, options = {}) {
+  const identityHeaders = currentUser
+    ? {
+        "x-user-email": currentUser.email,
+        "x-user-name": currentUser.name
+      }
+    : {};
   const response = await fetch(path, {
     ...options,
     headers: {
       "content-type": "application/json",
-      "x-user-email": currentUser.email,
-      "x-user-name": currentUser.name,
+      ...identityHeaders,
       ...(authToken ? { authorization: `Bearer ${authToken}` } : {}),
       ...(options.headers || {})
     }
