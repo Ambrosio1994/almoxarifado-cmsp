@@ -628,21 +628,58 @@ main {
 }
 
 .password-input-wrap {
-  display: flex;
-  align-items: center;
-  gap: .5rem;
+  display: block;
+  position: relative;
   width: 100%;
 }
 
 .password-input-wrap input {
-  flex: 1;
   min-width: 0;
+  padding-right: 46px !important;
+  width: 100%;
 }
 
 .password-toggle {
-  flex: 0 0 auto;
-  padding: .55rem .7rem;
-  font-size: .78rem;
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  color: var(--muted);
+  cursor: pointer;
+  display: flex;
+  height: 32px;
+  justify-content: center;
+  min-height: 32px;
+  padding: 0;
+  position: absolute;
+  right: 7px;
+  top: 50%;
+  transform: translateY(-50%);
+  transition: background-color .15s ease, color .15s ease;
+  width: 32px;
+}
+
+.password-toggle svg {
+  fill: none;
+  height: 20px;
+  pointer-events: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+  width: 20px;
+}
+
+.password-toggle:hover {
+  background: color-mix(in srgb, var(--ink) 9%, transparent);
+  color: var(--ink);
+}
+
+.password-toggle:focus-visible {
+  background: color-mix(in srgb, var(--ink) 9%, transparent);
+  color: var(--ink);
+  outline: 2px solid var(--orange);
+  outline-offset: 1px;
 }
 
 .email-submit {

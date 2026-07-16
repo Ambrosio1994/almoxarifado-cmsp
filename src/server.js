@@ -2173,6 +2173,7 @@ function sanitizeProcessInput(input = {}, current = {}) {
     numeroEmpenho: String(value("numeroEmpenho") || "").trim().slice(0, 20),
     fornecedor: String(value("fornecedor") || "").trim().slice(0, 100),
     materiais: sanitizeMaterials(value("materiais") || input),
+    dataProcesso: safeDate(value("dataProcesso")),
     dataEnvioEmpenho: safeDate(value("dataEnvioEmpenho")),
     dataEnvioFornecedor: safeDate(value("dataEnvioFornecedor")),
     dataEntrega: safeDate(value("dataEntrega")),
@@ -2194,7 +2195,7 @@ function validateProcessBody(input = {}) {
   if (Array.isArray(input.materiais) && input.materiais.some((item) => String(item.descricao || "").trim().length > 100)) {
     return "A descricao do material deve ter no maximo 100 caracteres.";
   }
-  const dateFields = ["dataEnvioEmpenho", "dataEnvioFornecedor", "dataEntrega", "dataEnvioLiquidacao", "dataLiquidacao", "dataPagamento"];
+  const dateFields = ["dataProcesso", "dataEnvioEmpenho", "dataEnvioFornecedor", "dataEntrega", "dataEnvioLiquidacao", "dataLiquidacao", "dataPagamento"];
   for (const field of dateFields) {
     if (input[field] && !safeDate(input[field])) return `Data invalida no campo ${field}.`;
   }
