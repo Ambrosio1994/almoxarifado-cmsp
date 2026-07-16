@@ -47,6 +47,10 @@ body {
   overflow-x: hidden;
 }
 
+body.auth-pending .auth-screen {
+  visibility: hidden;
+}
+
 button,
 input,
 select,

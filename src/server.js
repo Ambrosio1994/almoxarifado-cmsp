@@ -29,7 +29,7 @@ import {
   validateDocumentUpload,
   validateProcessDocumentUpload
 } from "./domain/processos.js";
-import { detectStoreBackend, readStore, writeStore } from "./storage.js";
+import { detectStoreBackend, readProcessesStore, readSettingsStore, readStore, readUsersStore, writeStore } from "./storage.js";
 import { cleanupExpiredSessions, createSession as createSessionRecord, resolveSession, revokeSession, revokeUserSessions } from "./repositories/sessions.js";
 import { claimEmailDispatch, completeEmailDispatch, failEmailDispatch } from "./repositories/email-dispatches.js";
 import { closePool } from "./db/postgres.js";
@@ -158,8 +158,10 @@ if (isMainModule()) {
 }
 
 async function handleAuth(req, res, url) {
-  const store = await readStore();
-  await ensureUsers(store);
+  const readOnlySessionRoute = (req.method === "GET" && url.pathname === "/auth/session")
+    || (req.method === "POST" && url.pathname === "/auth/logout");
+  const store = readOnlySessionRoute ? await readUsersStore() : await readStore();
+  if (!readOnlySessionRoute) await ensureUsers(store);
 
   if (req.method === "GET" && url.pathname === "/auth/session") {
     const user = await sessionUser(req, store);
@@ -236,8 +238,14 @@ async function handleAuth(req, res, url) {
 }
 
 async function handleApi(req, res, url) {
-  const store = await readStore();
-  await ensureUsers(store);
+  if (req.method === "GET" && url.pathname === "/api/meta") {
+    sendJson(res, 200, { status: STATUS, filtrosRapidos: QUICK_FILTERS });
+    return;
+  }
+
+  let store = req.method === "GET" && url.pathname === "/api/settings"
+    ? await readSettingsStore()
+    : await readUsersStore();
   const authenticatedUser = await sessionUser(req, store);
   if (mutationRequiresAuthenticatedUser(req.method) && !authenticatedUser) {
     sendJson(res, 401, { error: "Faca login para continuar." });
@@ -260,15 +268,43 @@ async function handleApi(req, res, url) {
     return;
   }
 
-  if (req.method === "GET" && url.pathname === "/api/meta") {
-    sendJson(res, 200, { status: STATUS, filtrosRapidos: QUICK_FILTERS });
-    return;
-  }
-
   if (req.method === "GET" && url.pathname === "/api/security-audit") {
     sendJson(res, 200, await listSecurityEvents(url.searchParams.get("limit")));
     return;
   }
+
+  if (req.method === "GET" && url.pathname === "/api/settings") {
+    sendJson(res, 200, settingsPayload(store));
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname.startsWith("/api/dashboard")) {
+    store = await readProcessesStore();
+    const processos = store.processos.map((processo) => enrichProcess(processo));
+    const year = Number(url.searchParams.get("ano") || new Date().getFullYear());
+    if (url.pathname === "/api/dashboard") sendJson(res, 200, dashboardMetrics(processos));
+    else if (url.pathname === "/api/dashboard/execucao-mensal") sendJson(res, 200, dashboardMonthlyExecution(processos, year));
+    else if (url.pathname === "/api/dashboard/distribuicao-status") sendJson(res, 200, dashboardStatusDistribution(processos, year));
+    else if (url.pathname === "/api/dashboard/charts") {
+      sendJson(res, 200, {
+        execucaoMensal: dashboardMonthlyExecution(processos, year),
+        distribuicaoStatus: dashboardStatusDistribution(processos, year)
+      });
+    } else sendJson(res, 404, { error: "Rota nao encontrada" });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/processes") {
+    store = await readProcessesStore();
+    const filtered = filterProcesses(store.processos, Object.fromEntries(url.searchParams));
+    const enriched = filtered.map((processo) => enrichProcess(processo));
+    const result = applyQuickFilter(enriched, url.searchParams.get("filtroRapido"));
+    sendJson(res, 200, authenticatedUser ? result : result.map(publicProcess));
+    return;
+  }
+
+  store = await readStore();
+  await ensureUsers(store);
 
   if (req.method === "POST" && url.pathname === "/api/admin/users") {
     const body = await readJson(req);
@@ -284,16 +320,18 @@ async function handleApi(req, res, url) {
       sendJson(res, 400, { error: passwordPolicyMessage() });
       return;
     }
-    if (store.usuarios.some((item) => normalizeEmail(item.email) === email)) {
+    const deletedUser = store.usuarios.find((item) => normalizeEmail(item.email) === email && item.origemCadastro === "excluido");
+    if (store.usuarios.some((item) => normalizeEmail(item.email) === email && item.origemCadastro !== "excluido")) {
       sendJson(res, 409, { error: "Ja existe um usuario com este e-mail." });
       return;
     }
     const managedUser = {
-      id: crypto.randomUUID(), nome, email, role: newRole, ativo: true,
+      id: deletedUser?.id || crypto.randomUUID(), nome, email, role: newRole, ativo: true,
       origemCadastro: "admin", senhaHash: hashPassword(password), precisaDefinirSenha: false,
-      criadoEm: new Date().toISOString()
+      criadoEm: deletedUser?.criadoEm || new Date().toISOString(), atualizadoEm: new Date().toISOString()
     };
-    store.usuarios.push(managedUser);
+    if (deletedUser) store.usuarios[store.usuarios.indexOf(deletedUser)] = managedUser;
+    else store.usuarios.push(managedUser);
     await writeStore(store);
     await recordSecurityEvent("user_created", { actorUserId: authenticatedUser.id, actorEmail: authenticatedUser.email, targetUserId: managedUser.id, metadata: { role: newRole } });
     sendJson(res, 201, publicUser(managedUser));
@@ -355,18 +393,15 @@ async function handleApi(req, res, url) {
       sendJson(res, 400, { error: "O ultimo administrador ativo nao pode ser excluido." });
       return;
     }
-    store.usuarios = store.usuarios.filter((item) => item.id !== managedUser.id);
+    managedUser.ativo = false;
+    managedUser.origemCadastro = "excluido";
+    managedUser.atualizadoEm = new Date().toISOString();
     await writeStore(store);
     await revokeUserSessions(managedUser.id);
     await recordSecurityEvent("user_deleted", {
       actorUserId: authenticatedUser.id, actorEmail: authenticatedUser.email, targetUserId: managedUser.id
     });
     sendJson(res, 200, { ok: true });
-    return;
-  }
-
-  if (req.method === "GET" && url.pathname === "/api/settings") {
-    sendJson(res, 200, settingsPayload(store));
     return;
   }
 
@@ -528,49 +563,11 @@ async function handleApi(req, res, url) {
     return;
   }
 
-  if (req.method === "GET" && url.pathname === "/api/dashboard") {
-    const processos = store.processos.map((processo) => enrichProcess(processo));
-    sendJson(res, 200, dashboardMetrics(processos));
-    return;
-  }
-
-  if (req.method === "GET" && url.pathname === "/api/dashboard/execucao-mensal") {
-    const year = Number(url.searchParams.get("ano") || new Date().getFullYear());
-    const processos = store.processos.map((processo) => enrichProcess(processo));
-    sendJson(res, 200, dashboardMonthlyExecution(processos, year));
-    return;
-  }
-
-  if (req.method === "GET" && url.pathname === "/api/dashboard/distribuicao-status") {
-    const year = Number(url.searchParams.get("ano") || new Date().getFullYear());
-    const processos = store.processos.map((processo) => enrichProcess(processo));
-    sendJson(res, 200, dashboardStatusDistribution(processos, year));
-    return;
-  }
-
-  if (req.method === "GET" && url.pathname === "/api/dashboard/charts") {
-    const year = Number(url.searchParams.get("ano") || new Date().getFullYear());
-    const processos = store.processos.map((processo) => enrichProcess(processo));
-    sendJson(res, 200, {
-      execucaoMensal: dashboardMonthlyExecution(processos, year),
-      distribuicaoStatus: dashboardStatusDistribution(processos, year)
-    });
-    return;
-  }
-
   if (req.method === "GET" && ["/api/processes/export", "/api/processes/export/", "/api/processes/download", "/api/processes/download/"].includes(url.pathname)) {
     const format = String(url.searchParams.get("format") || "csv").toLowerCase();
     const filtered = filterProcesses(store.processos, Object.fromEntries(url.searchParams));
     const enriched = applyQuickFilter(filtered.map((processo) => enrichProcess(processo)), url.searchParams.get("filtroRapido"));
     sendProcessesExport(res, enriched, format);
-    return;
-  }
-
-  if (req.method === "GET" && url.pathname === "/api/processes") {
-    const filtered = filterProcesses(store.processos, Object.fromEntries(url.searchParams));
-    const enriched = filtered.map((processo) => enrichProcess(processo));
-    const result = applyQuickFilter(enriched, url.searchParams.get("filtroRapido"));
-    sendJson(res, 200, authenticatedUser ? result : result.map(publicProcess));
     return;
   }
 
@@ -2083,7 +2080,7 @@ function settingsPayload(store) {
     ...settings,
     status: STATUS,
     filtrosRapidos: QUICK_FILTERS,
-    usuarios: (store.usuarios || []).map((user) => ({
+    usuarios: (store.usuarios || []).filter((user) => user.origemCadastro !== "excluido").map((user) => ({
       id: user.id,
       nome: user.nome,
       email: user.email,

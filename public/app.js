@@ -4,8 +4,11 @@ const state = {
   dashboardMetrics: {},
   allProcesses: [],
   fornecedores: [],
+  suppliersLoaded: false,
   auditoria: [],
+  auditLoaded: false,
   emailHistory: [],
+  emailHistoryLoaded: false,
   securityAudit: [],
   detailObservations: [],
   editing: null,
@@ -209,6 +212,7 @@ function setCurrentUser(user) {
 }
 
 function showAuth() {
+  document.body.classList.remove("auth-pending");
   authScreen.classList.remove("hidden");
   appShell.classList.add("hidden");
   sidebar.classList.add("hidden");
@@ -216,6 +220,7 @@ function showAuth() {
 }
 
 function showApp() {
+  document.body.classList.remove("auth-pending");
   authScreen.classList.add("hidden");
   appShell.classList.remove("hidden");
   sidebar.classList.remove("hidden");
@@ -277,10 +282,6 @@ function showAuthPanel(panel) {
 
 async function boot() {
   state.meta = await api("/api/meta");
-  state.fornecedores = await api("/api/suppliers");
-  state.auditoria = ["admin", "auditor"].includes(currentUser.role) ? await api("/api/audit") : [];
-  state.emailHistory = ["admin", "auditor"].includes(currentUser.role) ? await api("/api/emails/history") : [];
-  state.securityAudit = ["admin", "auditor"].includes(currentUser.role) ? await api("/api/security-audit") : [];
   fillSelect(statusSelect, state.meta.status, "Todos os status");
   fillSelect(statusFilter, state.meta.status, "Todos os status");
   fillSelect(quickFilter, state.meta.filtrosRapidos, "Filtros rapidos");
@@ -297,10 +298,14 @@ async function refresh() {
   if (quickFilter.value) params.set("filtroRapido", quickFilter.value);
   if (yearFilter?.value) params.set("ano", yearFilter.value);
   const processPath = `/api/processes?${params}`;
-  state.processos = await api(processPath);
-  state.allProcesses = params.toString() ? await api("/api/processes") : state.processos;
+  if (params.toString()) {
+    [state.processos, state.allProcesses] = await Promise.all([api(processPath), api("/api/processes")]);
+  } else {
+    state.processos = await api(processPath);
+    state.allProcesses = state.processos;
+  }
   renderTable();
-  state.dashboardMetrics = await api("/api/dashboard");
+  state.dashboardMetrics = calculateDashboardMetrics(state.allProcesses);
   renderMetrics(state.dashboardMetrics);
 }
 
@@ -442,9 +447,14 @@ table.addEventListener("click", async (event) => {
 backToProcesses.addEventListener("click", closeProcessDetail);
 
 detailTabs.forEach((tab) => {
-  tab.addEventListener("click", () => {
+  tab.addEventListener("click", async () => {
     state.detailTab = tab.dataset.detailTab;
     detailTabs.forEach((item) => item.classList.toggle("active", item === tab));
+    if (state.detailTab === "timeline" && !state.auditLoaded && ["admin", "auditor"].includes(currentUser.role)) await loadAuditData();
+    if (state.detailTab === "emails" && !state.emailHistoryLoaded && ["admin", "auditor"].includes(currentUser.role)) {
+      state.emailHistory = await api("/api/emails/history");
+      state.emailHistoryLoaded = true;
+    }
     renderDetailPanel();
   });
 });
@@ -628,6 +638,7 @@ async function sendTestEmail(processId) {
     }
     if (result.sent?.length) {
       state.emailHistory = await api("/api/emails/history");
+      state.emailHistoryLoaded = true;
       renderDetailPanel();
       alert(`E-mail de teste enviado para ${result.sent[0].destinatarios.join(", ")}.`);
       return;
@@ -971,7 +982,8 @@ async function loadDetailObservations(processId) {
 }
 
 async function refreshAudit() {
-  state.auditoria = ["admin", "auditor"].includes(currentUser.role) ? await api("/api/audit") : [];
+  if (!state.auditLoaded || !["admin", "auditor"].includes(currentUser.role)) return;
+  state.auditoria = await api("/api/audit");
 }
 
 async function attachDocument(documentKey) {
@@ -1260,7 +1272,7 @@ function openSection(section) {
   if (section === "settings") renderSettingsView();
 }
 
-async function renderDashboardView() {
+function renderDashboardView() {
   dashboardView.innerHTML = `
     <div class="content-header">
       <div>
@@ -1284,7 +1296,7 @@ async function renderDashboardView() {
     renderDashboardView();
   });
   const year = state.dashboardYear || yearSelect.value || new Date().getFullYear();
-  const charts = await api(`/api/dashboard/charts?ano=${year}`);
+  const charts = calculateDashboardCharts(state.allProcesses, year);
   const monthlyExecution = charts.execucaoMensal;
   const statusDistribution = charts.distribuicaoStatus;
 
@@ -1310,6 +1322,61 @@ async function renderDashboardView() {
     state.dashboardYear = event.target.value;
     renderDashboardView();
   });
+}
+
+function calculateDashboardMetrics(processos = []) {
+  const ativos = processos.filter((processo) => !processo.inativo);
+  const totalFor = (status) => ativos
+    .filter((processo) => processo.status === status)
+    .reduce((total, processo) => total + Number(processo.valorTotal || 0), 0);
+  return {
+    processosAtivos: ativos.length,
+    aguardandoEntrega: ativos.filter((processo) => processo.status === "Aguardando entrega").length,
+    atrasados: ativos.filter((processo) => processo.diasDecorridos > 30 && !["Entregue", "Liquidado", "Pago", "Anulado"].includes(processo.status)).length,
+    enviadosLiquidacao: ativos.filter((processo) => processo.status === "Enviado para liquidacao").length,
+    valorEmpenhado: ativos.reduce((total, processo) => total + Number(processo.valorTotal || 0), 0),
+    valorLiquidado: totalFor("Liquidado"),
+    valorPago: totalFor("Pago"),
+    porStatus: state.meta.status
+      .map((status) => [status, ativos.filter((processo) => processo.status === status).length])
+      .filter(([, count]) => count > 0)
+  };
+}
+
+function calculateDashboardCharts(processos = [], year = new Date().getFullYear()) {
+  const months = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"];
+  const execucaoMensal = months.map((mes) => ({ mes, empenhado: 0, liquidado: 0, pago: 0 }));
+  const totals = { Empenhado: 0, Liquidado: 0, Pago: 0 };
+  const addValue = (dateText, key, value) => {
+    if (!dateText) return;
+    const date = new Date(`${String(dateText).slice(0, 10)}T00:00:00`);
+    if (!Number.isNaN(date.getTime()) && String(date.getFullYear()) === String(year)) {
+      execucaoMensal[date.getMonth()][key] += Number(value || 0);
+    }
+  };
+
+  processos.filter((processo) => !processo.inativo).forEach((processo) => {
+    const referenceDate = deadlineDate(processo);
+    addValue(referenceDate, "empenhado", processo.valorTotal);
+    if (["Liquidado", "Pago"].includes(processo.status)) {
+      addValue(processo.dataLiquidacao || processo.dataEnvioLiquidacao || processo.atualizadoEm, "liquidado", processo.valorTotal);
+    }
+    if (processo.status === "Pago") addValue(processo.dataPagamento || processo.atualizadoEm, "pago", processo.valorTotal);
+
+    const referenceYear = referenceDate ? new Date(`${referenceDate}T00:00:00`).getFullYear() : NaN;
+    if (String(referenceYear) === String(year)) {
+      if (processo.status === "Pago") totals.Pago += 1;
+      else if (processo.status === "Liquidado") totals.Liquidado += 1;
+      else totals.Empenhado += 1;
+    }
+  });
+
+  return {
+    execucaoMensal,
+    distribuicaoStatus: Object.entries(totals)
+      .map(([status, quantidade]) => ({ status, quantidade }))
+      .filter((entry) => entry.quantidade > 0)
+  };
 }
 
 function dashboardYearOptions(selected = "") {
@@ -1623,7 +1690,12 @@ function canAttachDocumentInUi(processo, documentKey) {
   return true;
 }
 
-function renderSuppliersView() {
+async function renderSuppliersView() {
+  if (!state.suppliersLoaded) {
+    suppliersView.innerHTML = '<p class="empty-state">Carregando fornecedores...</p>';
+    state.fornecedores = await api("/api/suppliers");
+    state.suppliersLoaded = true;
+  }
   const suppliers = supplierDirectory();
   const query = state.supplierSearch.trim();
   const matches = query
@@ -1815,7 +1887,11 @@ function normalizeText(value = "") {
     .toLowerCase();
 }
 
-function renderAuditView() {
+async function renderAuditView() {
+  if (!state.auditLoaded) {
+    auditView.innerHTML = '<p class="empty-state">Carregando auditoria...</p>';
+    await loadAuditData();
+  }
   const processEvents = state.auditoria.map((entry) => ({
     date: entry.criadoEm,
     type: entry.acao,
@@ -1842,8 +1918,14 @@ function renderAuditView() {
 }
 
 async function refreshAuditView() {
-  [state.auditoria, state.securityAudit] = await Promise.all([api("/api/audit"), api("/api/security-audit")]);
+  await loadAuditData(true);
   renderAuditView();
+}
+
+async function loadAuditData(force = false) {
+  if (state.auditLoaded && !force) return;
+  [state.auditoria, state.securityAudit] = await Promise.all([api("/api/audit"), api("/api/security-audit")]);
+  state.auditLoaded = true;
 }
 
 async function renderSettingsView() {
@@ -2086,10 +2168,15 @@ async function editManagedUserPassword(userId) {
 }
 
 async function deleteManagedUser(userId) {
-  if (!confirm("Excluir este usuario permanentemente?")) return;
-  await api(`/api/admin/users/${encodeURIComponent(userId)}`, { method: "DELETE" });
-  state.settings = await api("/api/settings");
-  renderUsersView();
+  if (!confirm("Excluir este usuario?")) return;
+  try {
+    await api(`/api/admin/users/${encodeURIComponent(userId)}`, { method: "DELETE" });
+    state.settings.usuarios = state.settings.usuarios.filter((user) => user.id !== userId);
+    renderUsersView();
+    state.settings = await api("/api/settings");
+  } catch (error) {
+    alert(error.message || "Nao foi possivel excluir o usuario.");
+  }
 }
 
 async function saveEmailTemplates(event) {

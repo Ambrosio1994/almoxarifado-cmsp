@@ -27,6 +27,45 @@ export async function readStore() {
   }
 }
 
+export async function readUsersStore() {
+  if (!(await databaseStateReady())) return readStore();
+  const users = await query(usersSelectSql());
+  return { ...emptyStore(), usuarios: users.rows.map(deserializeUser) };
+}
+
+export async function readSettingsStore() {
+  if (!(await databaseStateReady())) return readStore();
+  const [users, settings] = await Promise.all([
+    query(usersSelectSql()),
+    query("SELECT value FROM app_settings WHERE key = 'configuracoes' LIMIT 1")
+  ]);
+  return {
+    ...emptyStore(),
+    usuarios: users.rows.map(deserializeUser),
+    configuracoes: settings.rows[0]?.value || {}
+  };
+}
+
+export async function readProcessesStore() {
+  if (!(await databaseStateReady())) return readStore();
+  const processes = await query(`
+    SELECT data
+    FROM app_processes
+    ORDER BY COALESCE(updated_at, created_at) DESC, id DESC
+  `);
+  return { ...emptyStore(), processos: processes.rows.map(deserializeRecord) };
+}
+
+function usersSelectSql() {
+  return `
+    SELECT id, nome, email, foto_url, google_sub, origem_cadastro, senha_hash,
+           precisa_definir_senha, ativo, role, access_justification, access_requested_at,
+           criado_em, atualizado_em
+    FROM app_users
+    ORDER BY criado_em ASC, id ASC
+  `;
+}
+
 export async function writeStore(store) {
   writeQueue = writeQueue.then(() => persistStore(store), () => persistStore(store));
   return writeQueue;
@@ -64,13 +103,7 @@ async function readDatabaseStore() {
     emailHistory,
     revision
   ] = await Promise.all([
-    query(`
-      SELECT id, nome, email, foto_url, google_sub, origem_cadastro, senha_hash,
-             precisa_definir_senha, ativo, role, access_justification, access_requested_at,
-             criado_em, atualizado_em
-      FROM app_users
-      ORDER BY criado_em ASC, id ASC
-    `),
+    query(usersSelectSql()),
     query(`
       SELECT value
       FROM app_settings
