@@ -8,6 +8,7 @@ import {
 
 const html = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
 const app = readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
+const styles = readFileSync(new URL("../public/styles.css", import.meta.url), "utf8");
 const passwordComponent = readFileSync(new URL("../public/password-fields.js", import.meta.url), "utf8");
 
 describe("contrato visual e de navegacao", () => {
@@ -50,6 +51,15 @@ describe("contrato visual e de navegacao", () => {
     assert.match(html, /<dialog id="deliveryDialog"[^>]*aria-labelledby="deliveryDialogTitle"[^>]*aria-describedby="deliveryDialogDescription"/);
     assert.match(html, /id="deliveryForm"/);
     assert.doesNotMatch(app, /\bprompt\s*\(/);
+  });
+
+  it("mantem os indicadores do Painel densos em tablets e legiveis no celular", () => {
+    const tabletRules = styles.slice(styles.indexOf("@media (max-width: 980px)"), styles.indexOf("@media (prefers-reduced-motion"));
+    const mobileRules = styles.slice(styles.indexOf("@media (max-width: 640px)"));
+    assert.doesNotMatch(tabletRules, /\.dashboard-grid\s*\{[\s\S]*?grid-template-columns:\s*1fr/);
+    assert.match(mobileRules, /\.dashboard-grid\s*\{\s*grid-template-columns:\s*1fr 1fr/);
+    assert.match(mobileRules, /\.dashboard-year\s*\{[\s\S]*?width:\s*100%/);
+    assert.match(mobileRules, /\.chart-row > \.bar-track\s*\{[\s\S]*?grid-column:\s*1 \/ -1/);
   });
 });
 

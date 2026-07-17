@@ -246,8 +246,8 @@ async function readDashboardSnapshot() {
     const processos = snapshot.processos.map((processo) => enrichProcess(processo));
     const value = {
       processos,
-      metrics: dashboardMetrics(processos),
-      anos: dashboardAvailableYears(processos)
+      anos: dashboardAvailableYears(processos),
+      aggregates: new Map()
     };
     if (dashboardCache.generation === generation) {
       dashboardCache.revision = snapshot.revision;
@@ -263,6 +263,21 @@ async function readDashboardSnapshot() {
   } finally {
     if (dashboardCache.pending === pending) dashboardCache.pending = null;
   }
+}
+
+function dashboardSnapshotForYear(snapshot, year) {
+  const cacheKey = String(year);
+  const cached = snapshot.aggregates?.get(cacheKey);
+  if (cached) return cached;
+  const value = {
+    metrics: dashboardMetrics(snapshot.processos, year),
+    charts: {
+      execucaoMensal: dashboardMonthlyExecution(snapshot.processos, year),
+      distribuicaoStatus: dashboardStatusDistribution(snapshot.processos, year)
+    }
+  };
+  snapshot.aggregates?.set(cacheKey, value);
+  return value;
 }
 
 function positiveAuthVersion(value) {
@@ -579,27 +594,21 @@ async function handleApi(req, res, url) {
 
   if (req.method === "GET" && url.pathname.startsWith("/api/dashboard")) {
     const snapshot = await readDashboardSnapshot();
-    const processos = snapshot.processos;
     const anos = snapshot.anos;
     const year = resolveDashboardYear(url.searchParams.get("ano"), anos);
+    const dashboard = dashboardSnapshotForYear(snapshot, year);
     if (url.pathname === "/api/dashboard") {
       sendJson(res, 200, {
-        metrics: snapshot.metrics,
-        charts: {
-          execucaoMensal: dashboardMonthlyExecution(processos, year),
-          distribuicaoStatus: dashboardStatusDistribution(processos, year)
-        },
+        metrics: dashboard.metrics,
+        charts: dashboard.charts,
         anos,
         ano: year
       });
     }
-    else if (url.pathname === "/api/dashboard/execucao-mensal") sendJson(res, 200, dashboardMonthlyExecution(processos, year));
-    else if (url.pathname === "/api/dashboard/distribuicao-status") sendJson(res, 200, dashboardStatusDistribution(processos, year));
+    else if (url.pathname === "/api/dashboard/execucao-mensal") sendJson(res, 200, dashboard.charts.execucaoMensal);
+    else if (url.pathname === "/api/dashboard/distribuicao-status") sendJson(res, 200, dashboard.charts.distribuicaoStatus);
     else if (url.pathname === "/api/dashboard/charts") {
-      sendJson(res, 200, {
-        execucaoMensal: dashboardMonthlyExecution(processos, year),
-        distribuicaoStatus: dashboardStatusDistribution(processos, year)
-      });
+      sendJson(res, 200, dashboard.charts);
     } else sendJson(res, 404, { error: "Rota nao encontrada" });
     return;
   }

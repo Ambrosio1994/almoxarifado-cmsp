@@ -5,6 +5,10 @@ import {
   canAttachDocument,
   calculateElapsedDays,
   canCancelProcess,
+  dashboardAvailableYears,
+  dashboardMetrics,
+  dashboardMonthlyExecution,
+  dashboardStatusDistribution,
   deadlineBand,
   detectDocumentMime,
   enrichProcess,
@@ -118,6 +122,74 @@ describe("regras de processo", () => {
     assert.equal(isProcessOverdue({ diasDecorridos: 45, status: "Liquidado" }), false);
     assert.equal(isProcessOverdue({ diasDecorridos: 45, status: "Pago" }), false);
     assert.equal(isProcessOverdue({ diasDecorridos: 45, status: "Anulado" }), false);
+  });
+
+  it("mantem indicadores anuais coerentes entre empenho, liquidacao e pagamento", () => {
+    const processos = [
+      {
+        status: "Pago", dataEnvioEmpenho: "2090-12-10", dataLiquidacao: "2091-02-10", dataPagamento: "2091-03-10",
+        valorTotal: 100, diasDecorridos: 0
+      },
+      {
+        status: "Liquidado", dataEnvioEmpenho: "2091-01-10", dataLiquidacao: "2091-04-10",
+        valorTotal: 50, diasDecorridos: 0
+      },
+      {
+        status: "Aguardando entrega", dataEnvioEmpenho: "2091-01-15",
+        valorTotal: 20, diasDecorridos: 31
+      },
+      {
+        status: "Anulado", dataEnvioEmpenho: "2091-01-20",
+        valorTotal: 300, diasDecorridos: 0
+      }
+    ];
+
+    const metrics = dashboardMetrics(processos, 2091);
+    assert.equal(metrics.processosAtivos, 2);
+    assert.equal(metrics.aguardandoEntrega, 1);
+    assert.equal(metrics.atrasados, 1);
+    assert.equal(metrics.valorEmpenhado, 70);
+    assert.equal(metrics.valorLiquidado, 150);
+    assert.equal(metrics.valorPago, 100);
+
+    const monthly = dashboardMonthlyExecution(processos, 2091);
+    assert.equal(monthly[0].empenhado, 70);
+    assert.equal(monthly[1].liquidado, 100);
+    assert.equal(monthly[2].pago, 100);
+    assert.equal(monthly[3].liquidado, 50);
+    assert.equal(monthly.reduce((total, row) => total + row.liquidado, 0), metrics.valorLiquidado);
+    assert.equal(monthly.reduce((total, row) => total + row.pago, 0), metrics.valorPago);
+  });
+
+  it("nao trata anulado como empenhado e preserva seu status na distribuicao", () => {
+    const processos = [
+      { status: "Anulado", dataEnvioEmpenho: "2092-02-10", valorTotal: 500 },
+      { status: "Pago", dataEnvioEmpenho: "2092-03-10", dataLiquidacao: "2092-04-10", dataPagamento: "2092-05-10", valorTotal: 80 }
+    ];
+
+    const metrics = dashboardMetrics(processos, 2092);
+    assert.equal(metrics.processosAtivos, 1);
+    assert.equal(metrics.valorEmpenhado, 80);
+    assert.equal(metrics.valorLiquidado, 80);
+    assert.equal(metrics.valorPago, 80);
+    assert.deepEqual(dashboardStatusDistribution(processos, 2092), [
+      { status: "Pago", quantidade: 1 },
+      { status: "Anulado", quantidade: 1 }
+    ]);
+  });
+
+  it("oferece anos de liquidacao e pagamento mesmo quando o empenho e anterior", () => {
+    const processos = [{
+      status: "Pago",
+      dataEnvioEmpenho: "2093-12-10",
+      dataLiquidacao: "2094-01-15",
+      dataPagamento: "2094-02-20",
+      valorTotal: 125
+    }];
+
+    assert.deepEqual(dashboardAvailableYears(processos), [2094, 2093]);
+    assert.equal(dashboardMonthlyExecution(processos, 2094)[0].liquidado, 125);
+    assert.equal(dashboardMonthlyExecution(processos, 2094)[1].pago, 125);
   });
 
   it("permite anulacao pelo criador ou administrador", () => {

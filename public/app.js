@@ -1935,29 +1935,34 @@ function renderDashboardView() {
     <div class="content-header">
       <div>
         <h1>Painel</h1>
+        <span class="dashboard-scope" id="dashboardScope">Processos pelo ano do empenho; valores pelo ano de cada movimentacao.</span>
       </div>
-      <select class="dashboard-year" id="dashboardYearSelect" aria-label="Ano do painel">
+      <select class="dashboard-year" id="dashboardYearSelect" aria-label="Ano do painel" aria-describedby="dashboardScope">
         ${dashboardYearOptions(year, state.dashboardYears)}
       </select>
     </div>
-    <div class="dashboard-grid">
+    <section class="dashboard-grid" aria-label="Indicadores operacionais">
       ${dashboardMetricsMarkup(state.dashboardMetrics)}
-    </div>
+    </section>
     <div class="charts-grid">
       ${executionGroupedChart(charts.execucaoMensal)}
-      ${budgetStatusChart(charts.distribuicaoStatus)}
+      ${statusDistributionChart(charts.distribuicaoStatus)}
       ${financialChart()}
     </div>
   `;
   dashboardView.querySelector("#dashboardYearSelect").addEventListener("change", async (event) => {
     const select = event.currentTarget;
+    const requestedYear = select.value;
     setControlBusy(select, true);
     dashboardView.setAttribute("aria-busy", "true");
     try {
-      const result = await loadDashboardData(select.value);
-      if (result && state.activeSection === "dashboard") renderDashboardView();
+      const result = await loadDashboardData(requestedYear);
+      if (result && state.activeSection === "dashboard") {
+        renderDashboardView();
+        focusDashboardYear();
+      }
     } catch (error) {
-      renderSectionError(dashboardView, error.message || "Nao foi possivel carregar o painel deste ano.", "dashboard");
+      renderDashboardLoadError(error.message || "Nao foi possivel carregar o painel deste ano.", requestedYear);
     } finally {
       setControlBusy(select, false);
       dashboardView.removeAttribute("aria-busy");
@@ -1966,13 +1971,18 @@ function renderDashboardView() {
 }
 
 function dashboardMetricsMarkup(data = {}) {
-  const items = (Array.isArray(data.porStatus) ? data.porStatus : []).filter((entry) => Array.isArray(entry) && Number(entry[1]) > 0);
-  return items.map(([label, value]) => `
-    <article class="metric">
+  const items = [
+    ["Processos do ano", data.processosAtivos],
+    ["Em atraso", data.atrasados, "attention"],
+    ["Aguardando entrega", data.aguardandoEntrega],
+    ["Pendentes de liquidacao", data.pendentesLiquidacao]
+  ];
+  return items.map(([label, value, tone = ""]) => `
+    <article class="metric ${tone}" aria-label="${escapeAttribute(`${label}: ${Number(value) || 0}`)}">
       <span>${escapeHtml(label)}</span>
-      <strong>${Number(value) || 0}</strong>
+      <strong aria-hidden="true">${Number(value) || 0}</strong>
     </article>
-  `).join("") || '<p class="empty-state">Nenhum processo contabilizado neste painel.</p>';
+  `).join("");
 }
 
 function dashboardYearOptions(selected, years = state.dashboardYears) {
@@ -1981,6 +1991,10 @@ function dashboardYearOptions(selected, years = state.dashboardYears) {
 }
 
 function executionGroupedChart(rows = []) {
+  const hasData = rows.some((row) => [row.empenhado, row.liquidado, row.pago].some((value) => Number(value) > 0));
+  if (!hasData) {
+    return emptyChartCard("Execucao mensal", "Nenhuma movimentacao financeira registrada neste ano.", "grouped-chart-card");
+  }
   const max = Math.max(...rows.flatMap((row) => [row.empenhado, row.liquidado, row.pago]), 1);
   const yTicks = [max, max * 0.75, max * 0.5, max * 0.25, 0];
   return `
@@ -1994,9 +2008,9 @@ function executionGroupedChart(rows = []) {
         </div>
       </div>
       ${monthlyExecutionTable(rows)}
-      <div class="chart-scroll" tabindex="0" aria-label="Grafico de execucao mensal; a tabela acessivel apresenta todos os valores">
-        <div class="grouped-chart" aria-hidden="true">
-          <div class="y-axis">
+      <div class="chart-scroll" tabindex="0" aria-label="Grafico de execucao mensal. Use Tab nas barras ou abra a tabela para consultar os valores.">
+        <div class="grouped-chart">
+          <div class="y-axis" aria-hidden="true">
             ${yTicks.map((tick) => `<span>${compactMoney(tick)}</span>`).join("")}
           </div>
           <div class="grouped-plot">
@@ -2013,11 +2027,16 @@ function executionGroupedChart(rows = []) {
 
 function monthlyExecutionTable(rows = []) {
   return `
-    <table class="sr-only chart-data-table">
-      <caption>Valores da execucao mensal</caption>
-      <thead><tr><th>Mes</th><th>Empenhado</th><th>Liquidado</th><th>Pago</th></tr></thead>
-      <tbody>${rows.map((row) => `<tr><th>${escapeHtml(row.mes)}</th><td>${escapeHtml(money(row.empenhado))}</td><td>${escapeHtml(money(row.liquidado))}</td><td>${escapeHtml(money(row.pago))}</td></tr>`).join("")}</tbody>
-    </table>
+    <details class="chart-data-details">
+      <summary>Ver valores mensais em tabela</summary>
+      <div class="chart-table-wrap">
+        <table class="chart-data-table">
+          <caption class="sr-only">Valores da execucao mensal</caption>
+          <thead><tr><th>Mes</th><th>Empenhado</th><th>Liquidado</th><th>Pago</th></tr></thead>
+          <tbody>${rows.map((row) => `<tr><th>${escapeHtml(row.mes)}</th><td>${escapeHtml(money(row.empenhado))}</td><td>${escapeHtml(money(row.liquidado))}</td><td>${escapeHtml(money(row.pago))}</td></tr>`).join("")}</tbody>
+        </table>
+      </div>
+    </details>
   `;
 }
 
@@ -2025,11 +2044,11 @@ function financialChart() {
   const committed = state.dashboardMetrics.valorEmpenhado || 0;
   const liquidated = state.dashboardMetrics.valorLiquidado || 0;
   const paid = state.dashboardMetrics.valorPago || 0;
-  return chartCard("Indicadores financeiros", [
+  return chartCard("Movimentacao financeira no ano", [
     ["Empenhado", committed],
     ["Liquidado", liquidated],
     ["Pago", paid]
-  ], money);
+  ], money, "Nenhum valor financeiro registrado neste ano.");
 }
 
 function groupedMonth(row, max) {
@@ -2041,33 +2060,42 @@ function groupedMonth(row, max) {
   return `
     <div class="month-group">
       <div class="group-bars">
-        ${series.map(([key, label, value]) => `
-          <div class="group-bar ${key}" style="height: ${Number(value) ? Math.max(6, (Number(value) / max) * 100) : 0}%">
-            <div class="column-tooltip">${escapeHtml(row.mes)} - ${label}: ${money(value)}</div>
-          </div>
-        `).join("")}
+        ${series.map(([key, label, value]) => groupedBar(row.mes, key, label, value, max)).join("")}
       </div>
-      <span>${escapeHtml(row.mes)}</span>
+      <span aria-hidden="true">${escapeHtml(row.mes)}</span>
     </div>
   `;
 }
 
-function budgetStatusChart(entries = []) {
-  const normalized = entries.map((entry) => [entry.status, entry.quantidade]);
-  return pieChartCard("Distribuicao por status", normalized);
+function groupedBar(month, key, label, value, max) {
+  const numericValue = Number(value) || 0;
+  if (numericValue <= 0) return `<span class="group-bar ${key}" style="height: 0" aria-hidden="true"></span>`;
+  const accessibleLabel = `${month}, ${label}: ${money(numericValue)}`;
+  return `
+    <button type="button" class="group-bar ${key}" style="height: ${Math.max(6, (numericValue / max) * 100)}%" aria-label="${escapeAttribute(accessibleLabel)}">
+      <span class="column-tooltip" aria-hidden="true">${escapeHtml(accessibleLabel)}</span>
+    </button>
+  `;
 }
 
-function chartCard(title, entries, formatter) {
+function statusDistributionChart(entries = []) {
+  const normalized = entries.map((entry) => [entry.status, entry.quantidade]);
+  return chartCard("Distribuicao dos processos por status", normalized, (value) => String(Number(value) || 0), "Nenhum processo associado a este ano.");
+}
+
+function chartCard(title, entries = [], formatter = String, emptyMessage = "Nenhum dado disponivel.") {
+  const hasData = entries.some(([, value]) => Number(value) > 0);
+  if (!hasData) return emptyChartCard(title, emptyMessage);
   const max = Math.max(...entries.map(([, value]) => Number(value)), 1);
   return `
     <article class="chart-card">
-      <h2>${title}</h2>
+      <h2>${escapeHtml(title)}</h2>
       <div class="chart-bars">
         ${entries.map(([label, value]) => `
           <div class="chart-row">
-            <span>${label}</span>
-            <div class="bar-track">
-              <div class="bar-fill ${chartKey(label)}" style="width: ${Math.max(4, (Number(value) / max) * 100)}%"></div>
+            <span title="${escapeAttribute(label)}">${escapeHtml(label)}</span>
+            <div class="bar-track" aria-hidden="true">
+              <div class="bar-fill ${chartKey(label) || "status"}" style="width: ${Number(value) > 0 ? Math.max(4, (Number(value) / max) * 100) : 0}%"></div>
             </div>
             <strong>${formatter(value)}</strong>
           </div>
@@ -2077,95 +2105,27 @@ function chartCard(title, entries, formatter) {
   `;
 }
 
-function pieChartCard(title, entries = []) {
-  const total = entries.reduce((sum, [, value]) => sum + Number(value), 0) || 1;
-  const fallbackColors = ["#14213a", "#6b7280", "#7c3aed", "#b42318"];
-  let cursor = -90;
-  const slices = entries.map(([label, value], index) => {
-    const percent = total ? (Number(value) / total) * 100 : 0;
-    const start = cursor;
-    const end = cursor + (percent / 100) * 360;
-    cursor = end;
-    return {
-      label,
-      value: Number(value),
-      percent,
-      color: chartColor(label, fallbackColors[index % fallbackColors.length]),
-      start,
-      end,
-      mid: start + (end - start) / 2
-    };
-  });
-
+function emptyChartCard(title, message, extraClass = "") {
   return `
-    <article class="chart-card pie-card">
+    <article class="chart-card ${extraClass}">
       <h2>${escapeHtml(title)}</h2>
-      <table class="sr-only chart-data-table">
-        <caption>${escapeHtml(title)}</caption>
-        <thead><tr><th>Status</th><th>Quantidade</th></tr></thead>
-        <tbody>${slices.map((slice) => `<tr><th>${escapeHtml(slice.label)}</th><td>${slice.value}</td></tr>`).join("")}</tbody>
-      </table>
-      <div class="pie-layout">
-        <svg class="external-pie" viewBox="0 0 620 360" role="img" aria-label="${escapeAttribute(`${title}: ${slices.map((slice) => `${slice.label} ${slice.value}`).join(", ") || "sem dados"}`)}">
-          ${slices.map((slice) => pieSlice(slice, total)).join("")}
-        </svg>
-      </div>
+      <p class="chart-empty-state" role="status">${escapeHtml(message)}</p>
     </article>
   `;
 }
 
-function pieSlice(slice, total) {
-  if (!slice.value) return "";
-  const center = { x: 310, y: 178 };
-  const radius = 112;
-  const labelRadius = 170;
-  const edge = polarPoint(center, radius, slice.mid);
-  const labelPoint = polarPoint(center, labelRadius, slice.mid);
-  const textAnchor = labelPoint.x >= center.x ? "start" : "end";
-  const labelX = labelPoint.x + (labelPoint.x >= center.x ? 14 : -14);
-  const label = `${slice.label}: ${slice.value}`;
-  const path = describeArcSector(center.x, center.y, radius, slice.start, slice.end);
-
-  return `
-    <g class="pie-slice">
-      <path class="pie-sector" d="${path}" fill="${slice.color}"></path>
-      <path class="pie-leader" d="M ${edge.x} ${edge.y} L ${labelPoint.x} ${labelPoint.y} L ${labelX} ${labelPoint.y}" stroke="${slice.color}"></path>
-      <text class="pie-label" x="${labelX}" y="${labelPoint.y + 4}" text-anchor="${textAnchor}">${escapeHtml(label)}</text>
-      <foreignObject class="pie-tooltip" x="${center.x - 86}" y="${center.y - 30}" width="172" height="60">
-        <div xmlns="http://www.w3.org/1999/xhtml">
-          <span>${escapeHtml(slice.label)}</span>
-          <strong>${slice.value} processos</strong>
-        </div>
-      </foreignObject>
-    </g>
-  `;
+function focusDashboardYear() {
+  dashboardView.querySelector("#dashboardYearSelect")?.focus();
 }
 
-function describeArcSector(cx, cy, radius, startAngle, endAngle) {
-  const start = polarPoint({ x: cx, y: cy }, radius, endAngle);
-  const end = polarPoint({ x: cx, y: cy }, radius, startAngle);
-  const largeArc = endAngle - startAngle <= 180 ? 0 : 1;
-  return [
-    `M ${cx} ${cy}`,
-    `L ${start.x} ${start.y}`,
-    `A ${radius} ${radius} 0 ${largeArc} 0 ${end.x} ${end.y}`,
-    "Z"
-  ].join(" ");
-}
-
-function polarPoint(center, radius, angle) {
-  const radians = (angle * Math.PI) / 180;
-  return {
-    x: center.x + radius * Math.cos(radians),
-    y: center.y + radius * Math.sin(radians)
-  };
-}
-
-function chartColor(label, fallback) {
-  if (label === "Empenhado") return "#2563eb";
-  if (label === "Liquidado") return "#b86e07";
-  if (label === "Pago") return "#17665d";
-  return fallback;
+function renderDashboardLoadError(message, requestedYear) {
+  renderSectionError(dashboardView, message, "dashboard", async () => {
+    const result = await loadDashboardData(requestedYear);
+    if (result && state.activeSection === "dashboard") {
+      renderDashboardView();
+      focusDashboardYear();
+    }
+  });
 }
 
 function chartKey(label) {
@@ -3436,7 +3396,7 @@ function renderInlineError(container, message) {
   container.append(error);
 }
 
-function renderSectionError(container, message, section) {
+function renderSectionError(container, message, section, retryAction) {
   if (!container) return;
   container.replaceChildren();
   const wrapper = document.createElement("section");
@@ -3448,7 +3408,17 @@ function renderSectionError(container, message, section) {
   retry.type = "button";
   retry.className = "secondary";
   retry.textContent = "Tentar novamente";
-  retry.addEventListener("click", () => openSection(section), { once: true });
+  retry.addEventListener("click", async () => {
+    setButtonBusy(retry, true, "Tentando...");
+    try {
+      if (retryAction) await retryAction();
+      else await openSection(section);
+    } catch (error) {
+      renderSectionError(container, error.message || message, section, retryAction);
+    } finally {
+      setButtonBusy(retry, false);
+    }
+  }, { once: true });
   wrapper.append(text, retry);
   container.append(wrapper);
 }
