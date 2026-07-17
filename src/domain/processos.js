@@ -288,22 +288,27 @@ export function applyQuickFilter(processos, quickFilter) {
   });
 }
 
-export function dashboardMetrics(processos) {
-  const ativos = processos.filter((processo) => !processo.inativo);
-  const sumByStatus = (status) => ativos
-    .filter((processo) => processo.status === status)
-    .reduce((total, processo) => total + processo.valorTotal, 0);
+export function dashboardMetrics(processos, year) {
+  const scoped = dashboardProcessesForYear(processos, year);
+  const ativos = scoped.filter((processo) => processo.status !== "Anulado");
+  const financialProcesses = processos.filter((processo) => !processo.inativo && processo.status !== "Anulado");
+  const liquidated = financialProcesses.filter((processo) =>
+    ["Liquidado", "Pago"].includes(processo.status)
+      && dashboardDateMatchesYear(liquidationDate(processo), year));
+  const paid = financialProcesses.filter((processo) =>
+    processo.status === "Pago" && dashboardDateMatchesYear(processo.dataPagamento, year));
 
   return {
     processosAtivos: ativos.length,
     aguardandoEntrega: ativos.filter((processo) => processo.status === "Aguardando entrega").length,
     atrasados: ativos.filter((processo) => isProcessOverdue(processo)).length,
     enviadosLiquidacao: ativos.filter((processo) => processo.status === "Enviado para liquidacao").length,
+    pendentesLiquidacao: ativos.filter((processo) => ["Entregue", "Aguardando envio para liquidacao"].includes(processo.status)).length,
     valorEmpenhado: ativos.reduce((total, processo) => total + processo.valorTotal, 0),
-    valorLiquidado: sumByStatus("Liquidado"),
-    valorPago: sumByStatus("Pago"),
+    valorLiquidado: liquidated.reduce((total, processo) => total + processo.valorTotal, 0),
+    valorPago: paid.reduce((total, processo) => total + processo.valorTotal, 0),
     porStatus: STATUS
-      .map((status) => [status, ativos.filter((processo) => processo.status === status).length])
+      .map((status) => [status, scoped.filter((processo) => processo.status === status).length])
       .filter(([, count]) => count > 0)
   };
 }
@@ -311,7 +316,12 @@ export function dashboardMetrics(processos) {
 export function dashboardAvailableYears(processos = []) {
   return [...new Set(processos
     .filter((processo) => !processo.inativo)
-    .map((processo) => String(processDeadlineDate(processo) || "").match(/^(\d{4})-\d{2}-\d{2}$/)?.[1])
+    .flatMap((processo) => [
+      processDeadlineDate(processo),
+      liquidationDate(processo),
+      processo.dataPagamento
+    ])
+    .map(dashboardDateYear)
     .filter(Boolean)
     .map(Number))]
     .sort((left, right) => right - left);
@@ -322,16 +332,16 @@ export function dashboardMonthlyExecution(processos, year = new Date().getFullYe
   const rows = months.map((mes) => ({ mes, empenhado: 0, liquidado: 0, pago: 0 }));
 
   processos
-    .filter((processo) => !processo.inativo)
+    .filter((processo) => !processo.inativo && processo.status !== "Anulado")
     .forEach((processo) => {
       addMonthlyValue(rows, processDeadlineDate(processo), year, "empenhado", processo.valorTotal);
 
       if (["Liquidado", "Pago"].includes(processo.status)) {
-        addMonthlyValue(rows, processo.dataLiquidacao || processo.dataEnvioLiquidacao || processo.atualizadoEm, year, "liquidado", processo.valorTotal);
+        addMonthlyValue(rows, liquidationDate(processo), year, "liquidado", processo.valorTotal);
       }
 
       if (processo.status === "Pago") {
-        addMonthlyValue(rows, processo.dataPagamento || processo.atualizadoEm, year, "pago", processo.valorTotal);
+        addMonthlyValue(rows, processo.dataPagamento, year, "pago", processo.valorTotal);
       }
     });
 
@@ -339,27 +349,44 @@ export function dashboardMonthlyExecution(processos, year = new Date().getFullYe
 }
 
 export function dashboardStatusDistribution(processos, year = new Date().getFullYear()) {
-  const totals = { Empenhado: 0, Liquidado: 0, Pago: 0 };
-
-  processos
+  const scoped = processos
     .filter((processo) => !processo.inativo)
-    .filter((processo) => String(new Date(`${processDeadlineDate(processo)}T00:00:00`).getFullYear()) === String(year))
-    .forEach((processo) => {
-      if (processo.status === "Pago") totals.Pago += 1;
-      else if (processo.status === "Liquidado") totals.Liquidado += 1;
-      else totals.Empenhado += 1;
-    });
+    .filter((processo) => dashboardDateMatchesYear(processDeadlineDate(processo), year));
 
-  return Object.entries(totals)
-    .map(([status, quantidade]) => ({ status, quantidade }))
+  return STATUS
+    .map((status) => ({
+      status,
+      quantidade: scoped.filter((processo) => processo.status === status).length
+    }))
     .filter((item) => item.quantidade > 0);
 }
 
 function addMonthlyValue(rows, dateText, year, key, value) {
   if (!dateText) return;
-  const date = new Date(`${String(dateText).slice(0, 10)}T00:00:00`);
-  if (Number.isNaN(date.getTime()) || String(date.getFullYear()) !== String(year)) return;
-  rows[date.getMonth()][key] += Number(value || 0);
+  const date = String(dateText).slice(0, 10).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!date || Number(date[1]) !== Number(year)) return;
+  const monthIndex = Number(date[2]) - 1;
+  if (monthIndex < 0 || monthIndex > 11) return;
+  rows[monthIndex][key] += Number(value || 0);
+}
+
+function dashboardProcessesForYear(processos = [], year) {
+  return processos
+    .filter((processo) => !processo.inativo)
+    .filter((processo) => dashboardDateMatchesYear(processDeadlineDate(processo), year));
+}
+
+function dashboardDateMatchesYear(value, year) {
+  return !year || dashboardDateYear(value) === Number(year);
+}
+
+function dashboardDateYear(value) {
+  const match = String(value || "").match(/^(\d{4})-\d{2}-\d{2}/);
+  return match ? Number(match[1]) : 0;
+}
+
+function liquidationDate(processo = {}) {
+  return processo.dataLiquidacao || processo.dataEnvioLiquidacao || "";
 }
 
 function normalize(value = "") {

@@ -273,11 +273,13 @@ describe("rotas http", () => {
     store.processos.push(
       {
         id: crypto.randomUUID(), numeroProcesso: "DASH-2040", status: "Liquidado",
-        dataEnvioEmpenho: "2040-03-10", materiais: [{ descricao: "Papel", valorUnitario: 10, quantidade: 2 }]
+        dataEnvioEmpenho: "2040-03-10", dataLiquidacao: "2040-05-10",
+        materiais: [{ descricao: "Papel", valorUnitario: 10, quantidade: 2 }]
       },
       {
         id: crypto.randomUUID(), numeroProcesso: "DASH-2041", status: "Pago",
-        dataEnvioEmpenho: "2041-04-10", materiais: [{ descricao: "Caneta", valorUnitario: 5, quantidade: 3 }]
+        dataEnvioEmpenho: "2041-04-10", dataLiquidacao: "2041-05-10", dataPagamento: "2041-06-10",
+        materiais: [{ descricao: "Caneta", valorUnitario: 5, quantidade: 3 }]
       }
     );
     await writeStore(store);
@@ -289,16 +291,26 @@ describe("rotas http", () => {
     assert.deepEqual(payload.anos.slice(0, 2), [2041, 2040]);
     assert.equal(payload.charts.execucaoMensal.length, 12);
     assert.deepEqual(payload.charts.distribuicaoStatus, [{ status: "Liquidado", quantidade: 1 }]);
-    assert.ok(payload.metrics.processosAtivos >= 2);
+    assert.equal(payload.metrics.processosAtivos, 1);
+    assert.equal(payload.metrics.valorEmpenhado, 20);
+    assert.equal(payload.metrics.valorLiquidado, 20);
+    assert.equal(payload.metrics.valorPago, 0);
+
+    const paidYear = await invokeRequest({ method: "GET", path: "/api/dashboard?ano=2041" });
+    assert.equal(paidYear.statusCode, 200);
+    assert.equal(paidYear.json().metrics.valorLiquidado, 15);
+    assert.equal(paidYear.json().metrics.valorPago, 15);
   });
 
   it("invalida imediatamente o cache do painel depois de uma mutacao", async () => {
     const { token } = await authenticatedAs("almoxarifado");
     const before = await invokeRequest({ method: "GET", path: "/api/dashboard" });
     assert.equal(before.statusCode, 200);
+    const selectedYear = before.json().ano;
 
     const created = await postJson("/api/processes", token, {
-      numeroProcesso: `CACHE-${crypto.randomUUID().slice(0, 12)}`
+      numeroProcesso: `CACHE-${crypto.randomUUID().slice(0, 12)}`,
+      dataEnvioEmpenho: `${selectedYear}-01-10`
     });
     assert.equal(created.statusCode, 201);
 

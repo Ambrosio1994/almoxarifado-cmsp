@@ -71,6 +71,7 @@ Pendencias atuais:
 
 - Consulta pública de processos.
 - Dashboard com indicadores principais.
+- Painel anual com processos agrupados pelo ano do empenho e valores financeiros reconhecidos no ano de cada evento; empenhos anulados nao compoem os totais financeiros.
 - Cadastro e edição inicial de processos.
 - Cadastro por modal a partir do botão **+ Novo**.
 - Múltiplos materiais por empenho no mesmo processo.
