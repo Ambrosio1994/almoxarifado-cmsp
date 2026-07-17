@@ -1158,42 +1158,6 @@ tbody td:nth-child(2) {
   margin-top: 2px;
 }
 
-.status-control,
-.new-data-panel {
-  align-items: center;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.status-control select,
-.new-data-panel select,
-.new-data-panel input {
-  min-height: 39px;
-  min-width: 230px;
-  text-transform: uppercase;
-}
-
-.new-data-panel {
-  background: #f8faf7;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  margin-top: 16px;
-  padding: 14px;
-}
-
-.new-data-panel label {
-  margin: 0;
-}
-
-.new-data-title {
-  color: var(--ink);
-  font-size: 13px;
-  font-weight: 800;
-  min-width: 260px;
-  text-transform: uppercase;
-}
-
 .danger-action,
 .danger-button {
   border-color: var(--red);
@@ -2026,7 +1990,6 @@ textarea {
 :root[data-theme="dark"] input,
 :root[data-theme="dark"] select,
 :root[data-theme="dark"] textarea,
-:root[data-theme="dark"] .new-data-panel,
 :root[data-theme="dark"] .note,
 :root[data-theme="dark"] .status-config-list li,
 :root[data-theme="dark"] button.secondary,
@@ -2076,7 +2039,6 @@ textarea {
 :root[data-theme="dark"] .money-cell,
 :root[data-theme="dark"] .detail-field strong,
 :root[data-theme="dark"] .chart-row strong,
-:root[data-theme="dark"] .new-data-title,
 :root[data-theme="dark"] .chart-legend span,
 :root[data-theme="dark"] .chart-row span {
   color: var(--ink);
@@ -2556,10 +2518,7 @@ dialog::backdrop {
     grid-column: 1 / -1;
   }
 
-  .filters select,
-  .status-control select,
-  .new-data-panel select,
-  .new-data-panel input {
+  .filters select {
     min-width: 0;
     width: 100%;
   }
