@@ -481,9 +481,7 @@ describe("rotas http", () => {
         itens: [{ materialId: "material-1", materialIndex: 0, descricao: "Papel", quantidade: 10 }]
       }],
       documentos: {
-        processoSped: { fileName: "processo.pdf" },
-        notaEmpenho: { fileName: "empenho.pdf" },
-        notaFiscal: { fileName: "fiscal.pdf" }
+        notaEmpenho: { fileName: "empenho.pdf" }
       },
       versao: 1, inativo: false
     };
@@ -689,6 +687,41 @@ describe("rotas http", () => {
     });
     assert.equal(longName.statusCode, 400);
     assert.match(longName.json().error, /nome do arquivo/i);
+  });
+
+  it("permite abrir PDF anexado em modo de previa autenticada", async () => {
+    const { token } = await authenticatedAs("almoxarifado");
+    const created = await postJson("/api/processes", token, {
+      numeroProcesso: `PREVIEW-${crypto.randomUUID().slice(0, 8)}`
+    });
+    assert.equal(created.statusCode, 201);
+
+    const attached = await postJson(`/api/processes/${created.json().id}/documents`, token, {
+      documentKey: "processoSped",
+      fileName: "processo-sped.pdf",
+      mimeType: "application/pdf",
+      contentBase64: Buffer.from("%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n%%EOF").toString("base64")
+    });
+    assert.equal(attached.statusCode, 200);
+    const path = attached.json().documentos.processoSped.path;
+
+    const preview = await invokeRequest({
+      method: "GET",
+      path: `${path}?inline=1`,
+      headers: { authorization: `Bearer ${token}` }
+    });
+    assert.equal(preview.statusCode, 200);
+    assert.match(preview.headers["content-disposition"], /^inline;/);
+    assert.equal(preview.headers["x-frame-options"], "SAMEORIGIN");
+    assert.equal(preview.headers["content-type"], "application/pdf");
+
+    const download = await invokeRequest({
+      method: "GET",
+      path,
+      headers: { authorization: `Bearer ${token}` }
+    });
+    assert.equal(download.statusCode, 200);
+    assert.match(download.headers["content-disposition"], /^attachment;/);
   });
 
   it("impede auditor de criar processos", async () => {

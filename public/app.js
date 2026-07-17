@@ -1054,7 +1054,7 @@ detailPanel.addEventListener("click", async (event) => {
 
     const openPath = event.target.dataset.openDocument;
     if (openPath) {
-      await downloadDocument(openPath);
+      openDocument(openPath);
     }
 
     const downloadPath = event.target.dataset.downloadDocument;
@@ -3173,6 +3173,29 @@ async function downloadDocument(path) {
   triggerBlobDownload(blobUrl);
 }
 
+function openDocument(path) {
+  const previewUrl = documentInlineUrl(path);
+  if (!previewUrl) throw new Error("Caminho de documento invalido.");
+  const link = document.createElement("a");
+  link.href = previewUrl;
+  link.target = "_blank";
+  link.rel = "noopener";
+  document.body.append(link);
+  link.click();
+  link.remove();
+}
+
+function documentInlineUrl(path) {
+  try {
+    const url = new URL(path, window.location.origin);
+    if (url.origin !== window.location.origin || !url.pathname.startsWith("/uploads/")) return "";
+    url.searchParams.set("inline", "1");
+    return `${url.pathname}${url.search}`;
+  } catch {
+    return "";
+  }
+}
+
 async function saveNotificationSettings(event) {
   event.preventDefault();
   if (settingsFallbackActive()) return;
@@ -3467,13 +3490,28 @@ function timelineEventClass(event) {
 function documentTimelinePreview(documento = {}) {
   const path = String(documento.path || "");
   const title = documento.nome || documento.fileName || "Documento anexado";
-  if (!path) return "";
+  const previewUrl = documentInlineUrl(path);
+  if (!previewUrl) return "";
   return `
     <div class="timeline-document-preview">
+      ${documentTimelinePreviewContent(documento, previewUrl, title)}
       <span>${escapeHtml(title)}</span>
-      <button type="button" class="secondary small-action" data-download-document="${escapeAttribute(path)}">Abrir documento</button>
+      <button type="button" class="secondary small-action" data-open-document="${escapeAttribute(path)}">Abrir documento</button>
     </div>
   `;
+}
+
+function documentTimelinePreviewContent(documento = {}, previewUrl = "", title = "") {
+  const mimeType = String(documento.mimeType || "").toLowerCase();
+  const fileName = String(documento.fileName || documento.nome || "").toLowerCase();
+  const accessibleTitle = `Previa da primeira pagina de ${title}`;
+  if (mimeType === "application/pdf" || fileName.endsWith(".pdf")) {
+    return `<iframe title="${escapeAttribute(accessibleTitle)}" src="${escapeAttribute(`${previewUrl}#page=1&view=FitH`)}" loading="lazy" referrerpolicy="no-referrer"></iframe>`;
+  }
+  if (["image/png", "image/jpeg"].includes(mimeType) || /\.(png|jpe?g)$/.test(fileName)) {
+    return `<img src="${escapeAttribute(previewUrl)}" alt="${escapeAttribute(accessibleTitle)}" loading="lazy" referrerpolicy="no-referrer">`;
+  }
+  return '<span class="timeline-document-preview-unavailable">Previa disponivel para PDF ou imagem.</span>';
 }
 
 function documentFromAuditEntry(processo = {}, entry = {}) {

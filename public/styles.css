@@ -1896,10 +1896,12 @@ button.group-bar:focus-visible {
   padding: 8px;
 }
 
-.timeline-document-preview iframe {
+.timeline-document-preview iframe,
+.timeline-document-preview img {
   aspect-ratio: 3 / 4;
   border: 0;
   height: 190px;
+  object-fit: contain;
   width: 100%;
 }
 
@@ -1910,6 +1912,11 @@ button.group-bar:focus-visible {
   line-height: 1.25;
   margin: 0;
   overflow-wrap: anywhere;
+}
+
+.timeline-document-preview .timeline-document-preview-unavailable {
+  color: var(--muted);
+  font-weight: 500;
 }
 
 .template-attachments {
