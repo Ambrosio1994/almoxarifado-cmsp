@@ -2,9 +2,21 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { Readable } from "node:stream";
-import { requestHandler, contentTypeForPath, errorResponsePayload, isValidPassword, resolveEmailConfiguration } from "../src/server.js";
+import {
+  requestHandler,
+  contentTypeForPath,
+  createWorkLimiter,
+  emailSchedulerHealthStatus,
+  errorResponsePayload,
+  isValidPassword,
+  publicProcess,
+  requiresAdmin,
+  resolveEmailConfiguration,
+  roleCanMutate,
+  validateProcessBody
+} from "../src/server.js";
 import { createSession } from "../src/repositories/sessions.js";
-import { closePool } from "../src/db/postgres.js";
+import { hashPassword, verifyPassword } from "../src/security/password-policy.js";
 import { readStore, writeStore } from "../src/storage.js";
 
 describe("respostas de erro do servidor", () => {
@@ -44,8 +56,26 @@ describe("politica de senhas", () => {
     assert.equal(isValidPassword("Almox123"), false, "sem caractere especial");
   });
 
-  it("aceita letras maiusculas Unicode e espaco como especial", () => {
-    assert.equal(isValidPassword("Álmox 12"), true);
+  it("aceita maiusculas Unicode, mas nao considera espaco um caractere especial", () => {
+    assert.equal(isValidPassword("Álmox@12"), true);
+    assert.equal(isValidPassword("Álmox 12"), false);
+  });
+});
+
+describe("limite de trabalho criptografico", () => {
+  it("limita concorrencia e rejeita excedente da fila", async () => {
+    const limiter = createWorkLimiter(1, 1);
+    let releaseFirst;
+    const first = limiter.run(() => new Promise((resolve) => {
+      releaseFirst = resolve;
+    }));
+    await new Promise((resolve) => setImmediate(resolve));
+    const second = limiter.run(() => "segunda");
+
+    await assert.rejects(() => limiter.run(() => "terceira"), (error) => error.code === "WORK_QUEUE_FULL");
+    assert.deepEqual(limiter.stats(), { active: 1, queued: 1, concurrency: 1, queueLimit: 1 });
+    releaseFirst("primeira");
+    assert.deepEqual(await Promise.all([first, second]), ["primeira", "segunda"]);
   });
 });
 
@@ -97,9 +127,8 @@ describe("rotas http", () => {
   it("permite carregar o login antes de existir um usuario no frontend", () => {
     const appSource = readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
     const apiSource = appSource.slice(appSource.indexOf("async function api("), appSource.indexOf("function documentCell("));
-    assert.match(appSource, /const identityHeaders = currentUser\s*\?/);
-    assert.match(apiSource, /\.\.\.identityHeaders/);
-    assert.doesNotMatch(apiSource, /"x-user-email": currentUser\.email,\s*"x-user-name": currentUser\.name,\s*\.\.\.\(authToken/);
+    assert.match(apiSource, /credentials:\s*"same-origin"/);
+    assert.doesNotMatch(apiSource, /"x-user-email"|"x-user-name"/);
   });
 
   it("mantem a busca como componente unico nos temas claro e escuro", () => {
@@ -118,6 +147,54 @@ describe("rotas http", () => {
     assert.ok(response.body.length > 0);
   });
 
+  it("revalida assets estaticos por ETag sem cachear indefinidamente o HTML", async () => {
+    const asset = await invokeRequest({ method: "GET", path: "/app.js" });
+    assert.equal(asset.statusCode, 200);
+    assert.match(asset.headers["cache-control"] || "", /public, max-age=60, must-revalidate/);
+    assert.ok(asset.headers.etag);
+
+    const revalidated = await invokeRequest({
+      method: "GET",
+      path: "/app.js",
+      headers: { "if-none-match": asset.headers.etag }
+    });
+    assert.equal(revalidated.statusCode, 304);
+    assert.equal(revalidated.body.length, 0);
+
+    const index = await invokeRequest({ method: "GET", path: "/" });
+    assert.equal(index.headers["cache-control"], "no-cache");
+    assert.ok(index.headers.etag);
+  });
+
+  it("expoe readiness e telemetria sanitizada do scheduler sem ler o store completo", async () => {
+    const response = await invokeRequest({ method: "GET", path: "/health/ready" });
+    const payload = response.json();
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(payload.degraded, true);
+    assert.equal(payload.checks.storage, true);
+    assert.equal(payload.checks.scheduler.running, false);
+    assert.equal(payload.checks.scheduler.status, "stopped");
+    assert.equal(Object.hasOwn(payload.checks.scheduler, "error"), false);
+    assert.equal(Object.hasOwn(payload.checks, "storageError"), false);
+  });
+
+  it("marca scheduler parado, atrasado e com erro persistente como degradado", () => {
+    const now = Date.parse("2026-07-16T12:00:00.000Z");
+    assert.equal(emailSchedulerHealthStatus({}, now, false).degraded, true);
+    assert.equal(emailSchedulerHealthStatus({
+      startedAt: "2026-07-16T10:00:00.000Z",
+      lastRunStartedAt: null,
+      consecutiveErrors: 0
+    }, now, true).status, "degraded");
+    assert.equal(emailSchedulerHealthStatus({
+      startedAt: "2026-07-16T10:00:00.000Z",
+      lastRunStartedAt: "2026-07-16T11:59:30.000Z",
+      lastErrorAt: "2026-07-16T11:58:00.000Z",
+      consecutiveErrors: 1
+    }, now, true).status, "degraded");
+  });
+
   it("retorna 404 para arquivo estatico inexistente", async () => {
     const response = await invokeRequest({ method: "GET", path: "/arquivo-que-nao-existe.txt" });
 
@@ -134,6 +211,20 @@ describe("rotas http", () => {
     assert.match(response.text(), /"Processo";"Empenho";"Fornecedor";"Materiais"/);
   });
 
+  it("mantem o alias de download protegido por autenticacao", async () => {
+    const anonymous = await invokeRequest({ method: "GET", path: "/api/processes/download" });
+    assert.equal(anonymous.statusCode, 401);
+
+    const { token } = await authenticatedAs("almoxarifado");
+    const authenticated = await invokeRequest({
+      method: "GET",
+      path: "/api/processes/download",
+      headers: { authorization: `Bearer ${token}` }
+    });
+    assert.equal(authenticated.statusCode, 200);
+    assert.match(authenticated.headers["content-type"] || "", /text\/csv/);
+  });
+
   it("gera relatorios publicos em PDF e Excel", async () => {
     const pdf = await invokeRequest({ method: "GET", path: "/api/processes/export?format=pdf" });
     assert.equal(pdf.statusCode, 200);
@@ -146,22 +237,97 @@ describe("rotas http", () => {
     assert.match(excel.text(), /<table>/);
   });
 
-  it("remove caminhos de documentos e autoria da consulta publica", async () => {
+  it("neutraliza formulas nas exportacoes CSV e Excel", async () => {
+    const { token } = await authenticatedAs("almoxarifado");
+    const suffix = Date.now().toString().slice(-6);
+    const dangerousValues = {
+      numeroProcesso: `=1+${suffix}`,
+      numeroEmpenho: `+1+${suffix}`,
+      fornecedor: `-1+${suffix}`,
+      material: `@SUM(${suffix})`
+    };
+    const created = await postJson("/api/processes", token, {
+      numeroProcesso: dangerousValues.numeroProcesso,
+      numeroEmpenho: dangerousValues.numeroEmpenho,
+      fornecedor: dangerousValues.fornecedor,
+      materiais: [{ descricao: dangerousValues.material, valorUnitario: 1, quantidade: 1 }]
+    });
+    assert.equal(created.statusCode, 201);
+
+    const csv = await invokeRequest({ method: "GET", path: "/api/processes/export" });
+    assert.equal(csv.statusCode, 200);
+    const excel = await invokeRequest({ method: "GET", path: "/api/processes/export?format=excel" });
+    assert.equal(excel.statusCode, 200);
+
+    for (const value of Object.values(dangerousValues)) {
+      assert.match(csv.text(), new RegExp(`"'${escapeRegExp(value)}"`));
+      assert.doesNotMatch(csv.text(), new RegExp(`"${escapeRegExp(value)}"`));
+      assert.match(excel.text(), new RegExp(`>'${escapeRegExp(value)}<`));
+      assert.doesNotMatch(excel.text(), new RegExp(`>${escapeRegExp(value)}<`));
+    }
+    assert.match(excel.text(), /mso-number-format/);
+  });
+
+  it("entrega metricas, graficos, anos e ano do painel em uma unica resposta", async () => {
+    const store = await readStore();
+    store.processos.push(
+      {
+        id: crypto.randomUUID(), numeroProcesso: "DASH-2040", status: "Liquidado",
+        dataEnvioEmpenho: "2040-03-10", materiais: [{ descricao: "Papel", valorUnitario: 10, quantidade: 2 }]
+      },
+      {
+        id: crypto.randomUUID(), numeroProcesso: "DASH-2041", status: "Pago",
+        dataEnvioEmpenho: "2041-04-10", materiais: [{ descricao: "Caneta", valorUnitario: 5, quantidade: 3 }]
+      }
+    );
+    await writeStore(store);
+
+    const response = await invokeRequest({ method: "GET", path: "/api/dashboard?ano=2040" });
+    const payload = response.json();
+    assert.equal(response.statusCode, 200);
+    assert.equal(payload.ano, 2040);
+    assert.deepEqual(payload.anos.slice(0, 2), [2041, 2040]);
+    assert.equal(payload.charts.execucaoMensal.length, 12);
+    assert.deepEqual(payload.charts.distribuicaoStatus, [{ status: "Liquidado", quantidade: 1 }]);
+    assert.ok(payload.metrics.processosAtivos >= 2);
+  });
+
+  it("invalida imediatamente o cache do painel depois de uma mutacao", async () => {
+    const { token } = await authenticatedAs("almoxarifado");
+    const before = await invokeRequest({ method: "GET", path: "/api/dashboard" });
+    assert.equal(before.statusCode, 200);
+
+    const created = await postJson("/api/processes", token, {
+      numeroProcesso: `CACHE-${crypto.randomUUID().slice(0, 12)}`
+    });
+    assert.equal(created.statusCode, 201);
+
+    const after = await invokeRequest({ method: "GET", path: "/api/dashboard" });
+    assert.equal(after.statusCode, 200);
+    assert.equal(after.json().metrics.processosAtivos, before.json().metrics.processosAtivos + 1);
+  });
+
+  it("publica somente campos permitidos e remove PII", async () => {
     const store = await readStore();
     const process = {
       id: crypto.randomUUID(), numeroProcesso: `PUBLIC-${crypto.randomUUID()}`,
       status: "Enviado para SALC", materiais: [], criadoPor: "Interno",
       criadoPorEmail: "interno@example.com", documentos: { notaEmpenho: { path: "/uploads/segredo.pdf" } },
+      entregas: [{ recebidoPorEmail: "interno@example.com" }],
+      observacoes: [{ usuarioEmail: "interno@example.com" }],
       criadoEm: new Date().toISOString(), atualizadoEm: new Date().toISOString()
     };
     store.processos.push(process);
     await writeStore(store);
     const response = await invokeRequest({ method: "GET", path: `/api/processes?q=${encodeURIComponent(process.numeroProcesso)}` });
     assert.equal(response.statusCode, 200);
-    const [publicProcess] = response.json();
-    assert.equal(Object.hasOwn(publicProcess, "documentos"), false);
-    assert.equal(Object.hasOwn(publicProcess, "criadoPorEmail"), false);
-    assert.deepEqual(publicProcess.documentosDisponiveis, ["notaEmpenho"]);
+    const [result] = response.json();
+    assert.deepEqual(result, publicProcess({ ...process, valorTotal: 0, diasDecorridos: 0 }));
+    assert.equal(Object.hasOwn(result, "documentos"), false);
+    assert.equal(Object.hasOwn(result, "criadoPorEmail"), false);
+    assert.equal(Object.hasOwn(result, "entregas"), false);
+    assert.equal(Object.hasOwn(result, "observacoes"), false);
+    assert.deepEqual(result.documentosDisponiveis, ["notaEmpenho"]);
   });
 
   it("exige autenticacao para o alias de download", async () => {
@@ -172,43 +338,16 @@ describe("rotas http", () => {
   });
 
   it("serve o alias de download com autenticacao", async () => {
-    await withEnv({ DATABASE_URL: undefined }, async () => {
-      await closePool();
-      const store = await readStore();
-
-      if (!Array.isArray(store.usuarios)) {
-        store.usuarios = [];
-      }
-
-      const user = store.usuarios[0] || {
-        id: "test-user",
-        nome: "Usuario Teste",
-        email: "teste@cmsp.local",
-        senhaHash: "",
-        precisaDefinirSenha: false,
-        ativo: true,
-        role: "admin",
-        criadoEm: new Date().toISOString()
-      };
-
-      if (!store.usuarios.some((item) => item.id === user.id)) {
-        store.usuarios.push(user);
-        await writeStore(store);
-      }
-
-      const token = await createSession(user.id);
-      const response = await invokeRequest({
-        method: "GET",
-        path: "/api/processes/download?format=csv",
-        headers: {
-          authorization: `Bearer ${token}`
-        }
-      });
-
-      assert.equal(response.statusCode, 200);
-      assert.match(response.headers["content-type"] || "", /text\/csv/);
-      assert.match(response.text(), /"Processo";"Empenho";"Fornecedor";"Materiais"/);
+    const { token } = await authenticatedAs("almoxarifado");
+    const response = await invokeRequest({
+      method: "GET",
+      path: "/api/processes/download?format=csv",
+      headers: { authorization: `Bearer ${token}` }
     });
+
+    assert.equal(response.statusCode, 200);
+    assert.match(response.headers["content-type"] || "", /text\/csv/);
+    assert.match(response.text(), /"Processo";"Empenho";"Fornecedor";"Materiais"/);
   });
 
   it("nao oferece login Google nem solicitacao publica de acesso", async () => {
@@ -223,7 +362,15 @@ describe("rotas http", () => {
     assert.equal(response.statusCode, 404);
   });
 
-  it("impede usuario comum de alterar configuracoes", async () => {
+  it("reserva configuracoes ao admin e impede mutacoes do auditor", () => {
+    assert.equal(requiresAdmin("PUT", "/api/settings/notifications"), true);
+    assert.equal(requiresAdmin("GET", "/api/security-audit"), false);
+    assert.equal(roleCanMutate("admin"), true);
+    assert.equal(roleCanMutate("almoxarifado"), true);
+    assert.equal(roleCanMutate("auditor"), false);
+  });
+
+  it("impede usuario comum de alterar configuracoes e ler auditoria de seguranca", async () => {
     const { token } = await authenticatedAs("almoxarifado");
     const response = await invokeRequest({
       method: "PUT",
@@ -241,13 +388,107 @@ describe("rotas http", () => {
     assert.equal(auditResponse.statusCode, 403);
   });
 
+  it("cria processo somente com processo, somente com empenho ou com ambos", async () => {
+    const { token } = await authenticatedAs("almoxarifado");
+    const suffix = crypto.randomUUID().slice(0, 8);
+    const cases = [
+      { numeroProcesso: `P-${suffix}` },
+      { numeroEmpenho: `E-${suffix}` },
+      { numeroProcesso: `PB-${suffix}`, numeroEmpenho: `EB-${suffix}` }
+    ];
+
+    for (const body of cases) {
+      const response = await postJson("/api/processes", token, body);
+      assert.equal(response.statusCode, 201);
+      assert.equal(response.json().numeroProcesso, body.numeroProcesso || "");
+      assert.equal(response.json().numeroEmpenho, body.numeroEmpenho || "");
+    }
+
+    const persisted = await readStore();
+    for (const body of cases) {
+      assert.ok(persisted.processos.some((processo) => (
+        processo.numeroProcesso === (body.numeroProcesso || "")
+          && processo.numeroEmpenho === (body.numeroEmpenho || "")
+      )));
+    }
+  });
+
+  it("rejeita identificadores vazios e limites excedidos", async () => {
+    const { token } = await authenticatedAs("almoxarifado");
+    const cases = [
+      { body: { numeroProcesso: " ", numeroEmpenho: "" }, expected: /processo.*empenho|empenho.*processo/i },
+      { body: { numeroProcesso: "P".repeat(21) }, expected: /20 caracteres/i },
+      { body: { numeroEmpenho: "E".repeat(21) }, expected: /20 caracteres/i },
+      { body: { numeroProcesso: `FORN-${crypto.randomUUID().slice(0, 6)}`, fornecedor: "F".repeat(101) }, expected: /100 caracteres/i },
+      {
+        body: {
+          numeroProcesso: `MAT-${crypto.randomUUID().slice(0, 6)}`,
+          materiais: [{ descricao: "M".repeat(101), valorUnitario: 1, quantidade: 1 }]
+        },
+        expected: /100 caracteres/i
+      }
+    ];
+
+    for (const entry of cases) {
+      const response = await postJson("/api/processes", token, entry.body);
+      assert.equal(response.statusCode, 400);
+      assert.match(response.json().error, entry.expected);
+    }
+  });
+
+  it("rejeita data DD-MM-AAAA invalida e persiste data valida em ISO", async () => {
+    const { token } = await authenticatedAs("almoxarifado");
+    const invalid = await postJson("/api/processes", token, {
+      numeroProcesso: `DATA-INV-${crypto.randomUUID().slice(0, 5)}`,
+      dataProcesso: "31-02-2024"
+    });
+    assert.equal(invalid.statusCode, 400);
+    assert.match(invalid.json().error, /Data invalida/);
+
+    const processNumber = `DATA-OK-${crypto.randomUUID().slice(0, 5)}`;
+    const valid = await postJson("/api/processes", token, {
+      numeroProcesso: processNumber,
+      dataProcesso: "29-02-2024"
+    });
+    assert.equal(valid.statusCode, 201);
+    assert.equal(valid.json().dataProcesso, "2024-02-29");
+    const persisted = await readStore();
+    assert.equal(persisted.processos.find((processo) => processo.numeroProcesso === processNumber)?.dataProcesso, "2024-02-29");
+  });
+
+  it("valida observacoes entre 1 e 350 caracteres", async () => {
+    const { token } = await authenticatedAs("almoxarifado");
+    const processResponse = await postJson("/api/processes", token, {
+      numeroProcesso: `OBS-${crypto.randomUUID().slice(0, 8)}`
+    });
+    assert.equal(processResponse.statusCode, 201);
+    const processId = processResponse.json().id;
+
+    const empty = await postJson(`/api/processes/${processId}/observations`, token, { conteudo: " " });
+    assert.equal(empty.statusCode, 400);
+    const tooLong = await postJson(`/api/processes/${processId}/observations`, token, { conteudo: "O".repeat(351) });
+    assert.equal(tooLong.statusCode, 400);
+
+    const content = "O".repeat(350);
+    const valid = await postJson(`/api/processes/${processId}/observations`, token, { conteudo: content });
+    assert.equal(valid.statusCode, 201);
+    assert.equal(valid.json().conteudo, content);
+    const persisted = await readStore();
+    assert.ok(persisted.observacoes.some((observacao) => observacao.id === valid.json().id && observacao.conteudo === content));
+  });
+
+  it("rejeita status e datas invalidas sem tocar no armazenamento", () => {
+    assert.match(validateProcessBody({ numeroProcesso: "P-1", status: "Status inventado" }), /Status invalido/);
+    assert.match(validateProcessBody({ numeroProcesso: "P-1", dataEnvioEmpenho: "2026-02-31" }), /Data invalida/);
+  });
+
   it("rejeita status e datas invalidas recebidas pela API", async () => {
     const { token } = await authenticatedAs("almoxarifado");
     const invalidStatus = await invokeRequest({
       method: "POST",
       path: "/api/processes",
       headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-      body: JSON.stringify({ status: "Status inventado" })
+      body: JSON.stringify({ numeroProcesso: "P-1", status: "Status inventado" })
     });
     assert.equal(invalidStatus.statusCode, 400);
 
@@ -255,9 +496,307 @@ describe("rotas http", () => {
       method: "POST",
       path: "/api/processes",
       headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-      body: JSON.stringify({ dataEnvioEmpenho: "2026-02-31" })
+      body: JSON.stringify({ numeroProcesso: "P-1", dataEnvioEmpenho: "2026-02-31" })
     });
     assert.equal(invalidDate.statusCode, 400);
+  });
+
+  it("retorna 400 para JSON malformado sem registrar a query string", async () => {
+    const { token } = await authenticatedAs("almoxarifado");
+    const originalConsoleError = console.error;
+    const errorLogs = [];
+    console.error = (...parts) => errorLogs.push(parts.join(" "));
+    let response;
+    try {
+      response = await invokeRequest({
+        method: "POST",
+        path: "/api/processes?segredo=nao-deve-ir-ao-log",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: "{json-incompleto"
+      });
+    } finally {
+      console.error = originalConsoleError;
+    }
+
+    assert.equal(response.statusCode, 400);
+    assert.deepEqual(response.json(), { error: "JSON invalido." });
+    assert.match(errorLogs.join("\n"), /"path":"\/api\/processes"/);
+    assert.doesNotMatch(errorLogs.join("\n"), /segredo=|nao-deve-ir-ao-log/);
+  });
+
+  it("rejeita tipo, metadados e Base64 invalidos em uploads", async () => {
+    const { token } = await authenticatedAs("almoxarifado");
+    const created = await postJson("/api/processes", token, {
+      numeroProcesso: `UP-${crypto.randomUUID().slice(0, 12)}`
+    });
+    assert.equal(created.statusCode, 201);
+    const processId = created.json().id;
+
+    const invalidType = await postJson(`/api/processes/${processId}/documents`, token, {
+      documentKey: "naoPermitido",
+      fileName: "nota.pdf",
+      mimeType: "application/pdf",
+      contentBase64: Buffer.from("%PDF-1.4\n").toString("base64")
+    });
+    assert.equal(invalidType.statusCode, 400);
+    assert.match(invalidType.json().error, /tipo de documento/i);
+
+    const invalidBase64 = await postJson(`/api/processes/${processId}/documents`, token, {
+      documentKey: "processoSped",
+      fileName: "nota.pdf",
+      mimeType: "application/pdf",
+      contentBase64: "!!!!"
+    });
+    assert.equal(invalidBase64.statusCode, 400);
+    assert.match(invalidBase64.json().error, /Base64/i);
+
+    const longName = await postJson(`/api/processes/${processId}/documents`, token, {
+      documentKey: "complementares",
+      titulo: "Complemento",
+      fileName: `${"a".repeat(256)}.pdf`,
+      mimeType: "application/pdf",
+      contentBase64: Buffer.from("%PDF-1.4\n").toString("base64")
+    });
+    assert.equal(longName.statusCode, 400);
+    assert.match(longName.json().error, /nome do arquivo/i);
+  });
+
+  it("impede auditor de criar processos", async () => {
+    const { token } = await authenticatedAs("auditor");
+    const response = await invokeRequest({
+      method: "POST",
+      path: "/api/processes",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ numeroProcesso: "AUDITOR-1" })
+    });
+    assert.equal(response.statusCode, 403);
+    assert.match(response.json().error, /somente para consulta/i);
+  });
+
+  it("bloqueia mutacoes ate a troca da senha temporaria", async () => {
+    const { token } = await authenticatedAs("almoxarifado", { precisaDefinirSenha: true });
+    const response = await invokeRequest({
+      method: "POST",
+      path: "/api/processes",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ numeroProcesso: "TEMP-1" })
+    });
+    assert.equal(response.statusCode, 403);
+    assert.match(response.json().error, /senha temporaria/i);
+  });
+
+  it("migra Bearer para cookie e exige origem em mutacoes por cookie", async () => {
+    const { token } = await authenticatedAs("admin");
+    const session = await invokeRequest({
+      method: "GET",
+      path: "/auth/session",
+      headers: { authorization: `Bearer ${token}` }
+    });
+    assert.equal(session.statusCode, 200);
+    assert.match(session.headers["set-cookie"] || "", /almox_session=.*HttpOnly.*SameSite=Strict/);
+    const cookie = String(session.headers["set-cookie"]).split(";")[0];
+
+    const reloadedSession = await invokeRequest({
+      method: "GET",
+      path: "/auth/session",
+      headers: { cookie }
+    });
+    assert.equal(reloadedSession.statusCode, 200);
+    assert.equal(reloadedSession.json().email, "teste-admin@cmsp.local");
+    assert.match(reloadedSession.headers["set-cookie"] || "", /almox_session=.*HttpOnly/);
+
+    const blocked = await invokeRequest({
+      method: "PUT",
+      path: "/api/settings/notifications",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ diasAvisoInterno: [7], diaOficioFornecedor: 30 })
+    });
+    assert.equal(blocked.statusCode, 403);
+    assert.match(blocked.json().error, /Origem/);
+
+    const allowed = await invokeRequest({
+      method: "PUT",
+      path: "/api/settings/notifications",
+      headers: { cookie, origin: "http://localhost", "content-type": "application/json" },
+      body: JSON.stringify({ diasAvisoInterno: [7], diaOficioFornecedor: 30 })
+    });
+    assert.equal(allowed.statusCode, 200);
+  });
+
+  it("mantem tokens de sessao somente no cookie HttpOnly", async () => {
+    const password = "Atual@123";
+    const { token } = await authenticatedAs("almoxarifado", { password });
+    const login = await invokeRequest({
+      method: "POST",
+      path: "/auth/login",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: "teste-almoxarifado@cmsp.local", senha: password })
+    });
+    assert.equal(login.statusCode, 200);
+    assertSensitiveCredentialsAbsent(login.json(), password);
+    assert.match(login.headers["set-cookie"] || "", /almox_session=.*HttpOnly.*SameSite=Strict/);
+    const maxAge = Number(String(login.headers["set-cookie"]).match(/Max-Age=(\d+)/)?.[1]);
+    assert.ok(maxAge > 30 * 60);
+
+    const changed = await invokeRequest({
+      method: "POST",
+      path: "/auth/change-password",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ senhaAtual: password, novaSenha: "Nova@456", confirmacao: "Nova@456" })
+    });
+    assert.equal(changed.statusCode, 200);
+    assertSensitiveCredentialsAbsent(changed.json(), "Nova@456");
+    assert.match(changed.headers["set-cookie"] || "", /almox_session=.*HttpOnly/);
+
+    const oldSession = await invokeRequest({
+      method: "GET",
+      path: "/auth/session",
+      headers: { authorization: `Bearer ${token}` }
+    });
+    assert.equal(oldSession.statusCode, 401);
+  });
+
+  it("rejeita corpo de login grande antes da verificacao de senha", async () => {
+    const response = await invokeRequest({
+      method: "POST",
+      path: "/auth/login",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: "teste@example.com", senha: `A1@${"x".repeat(5_000)}` })
+    });
+    assert.equal(response.statusCode, 413);
+    assert.deepEqual(response.json(), { error: "Payload muito grande." });
+  });
+
+  it("invalida sessao pela versao persistida sem depender da lista de revogacao", async () => {
+    const { user, token } = await authenticatedAs("auditor");
+    const store = await readStore();
+    const persistedUser = store.usuarios.find((item) => item.id === user.id);
+    persistedUser.authVersion = 2;
+    await writeStore(store);
+
+    const response = await invokeRequest({
+      method: "GET",
+      path: "/auth/session",
+      headers: { authorization: `Bearer ${token}` }
+    });
+    assert.equal(response.statusCode, 401);
+  });
+
+  it("nao ecoa senha, hash nem token na redefinicao administrativa", async () => {
+    const { token } = await authenticatedAs("admin");
+    const { user, token: oldUserToken } = await authenticatedAs("almoxarifado");
+    const newPassword = "Redef@789";
+    const response = await invokeRequest({
+      method: "PATCH",
+      path: `/api/admin/users/${user.id}`,
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ senha: newPassword })
+    });
+    assert.equal(response.statusCode, 200);
+    assertSensitiveCredentialsAbsent(response.json(), newPassword);
+    const invalidated = await invokeRequest({
+      method: "GET",
+      path: "/auth/session",
+      headers: { authorization: `Bearer ${oldUserToken}` }
+    });
+    assert.equal(invalidated.statusCode, 401);
+    const persisted = await readStore();
+    assert.equal(persisted.usuarios.find((item) => item.id === user.id).authVersion, 2);
+  });
+
+  it("rejeita booleanos ambiguos na administracao de usuarios", async () => {
+    const { token } = await authenticatedAs("admin");
+    const { user } = await authenticatedAs("auditor");
+    const response = await invokeRequest({
+      method: "PATCH",
+      path: `/api/admin/users/${user.id}`,
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ ativo: "false", revogarSessoes: "true" })
+    });
+    assert.equal(response.statusCode, 400);
+    assert.match(response.json().error, /booleanos/i);
+  });
+
+  it("permite ao admin alterar perfil e senha, excluir usuario e remove-lo das configuracoes", async () => {
+    const { token } = await authenticatedAs("admin");
+    const suffix = crypto.randomUUID().slice(0, 8);
+    const email = `gerenciado-${suffix}@cmsp.local`;
+    const created = await postJson("/api/admin/users", token, {
+      nome: "Usuario Gerenciado",
+      email,
+      role: "almoxarifado",
+      senhaTemporaria: "Inicial@123"
+    });
+    assert.equal(created.statusCode, 201);
+
+    const initialSettings = await invokeRequest({
+      method: "GET",
+      path: "/api/settings",
+      headers: { authorization: `Bearer ${token}` }
+    });
+    assert.equal(initialSettings.statusCode, 200);
+    const target = initialSettings.json().usuarios.find((user) => user.email === email);
+    assert.ok(target?.id);
+
+    const newPassword = "Alterada@456";
+    const updated = await invokeRequest({
+      method: "PATCH",
+      path: `/api/admin/users/${target.id}`,
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ role: "auditor", senha: newPassword })
+    });
+    assert.equal(updated.statusCode, 200);
+    assert.equal(updated.json().role, "auditor");
+    assert.equal(updated.json().precisaDefinirSenha, true);
+    assertSensitiveCredentialsAbsent(updated.json(), newPassword);
+    const persisted = await readStore();
+    const persistedUser = persisted.usuarios.find((user) => user.id === target.id);
+    assert.equal(persistedUser.role, "auditor");
+    assert.equal(await verifyPassword(newPassword, persistedUser.senhaHash), true);
+
+    const deleted = await invokeRequest({
+      method: "DELETE",
+      path: `/api/admin/users/${target.id}`,
+      headers: { authorization: `Bearer ${token}` }
+    });
+    assert.equal(deleted.statusCode, 200);
+
+    const refreshedSettings = await invokeRequest({
+      method: "GET",
+      path: "/api/settings",
+      headers: { authorization: `Bearer ${token}` }
+    });
+    assert.equal(refreshedSettings.statusCode, 200);
+    assert.equal(refreshedSettings.json().usuarios.some((user) => user.id === target.id), false);
+  });
+
+  it("impede desativacao, perda de perfil e exclusao do ultimo administrador ativo", async () => {
+    const { user, token } = await authenticatedAs("admin", { onlyActiveAdmin: true });
+    const deactivate = await invokeRequest({
+      method: "PATCH",
+      path: `/api/admin/users/${user.id}`,
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ ativo: false })
+    });
+    assert.equal(deactivate.statusCode, 400);
+    assert.match(deactivate.json().error, /ultimo administrador/i);
+
+    const demote = await invokeRequest({
+      method: "PATCH",
+      path: `/api/admin/users/${user.id}`,
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ role: "almoxarifado" })
+    });
+    assert.equal(demote.statusCode, 400);
+    assert.match(demote.json().error, /ultimo administrador/i);
+
+    const remove = await invokeRequest({
+      method: "DELETE",
+      path: `/api/admin/users/${user.id}`,
+      headers: { authorization: `Bearer ${token}` }
+    });
+    assert.equal(remove.statusCode, 400);
+    assert.match(remove.json().error, /ultimo administrador/i);
   });
 
   it("protege arquivos de upload contra acesso anonimo", async () => {
@@ -267,25 +806,50 @@ describe("rotas http", () => {
   });
 });
 
-async function authenticatedAs(role) {
-  await closePool();
+async function authenticatedAs(role, options = {}) {
   const store = await readStore();
+  if (!Array.isArray(store.usuarios)) store.usuarios = [];
+  if (options.onlyActiveAdmin) {
+    for (const existing of store.usuarios) {
+      if (existing.role === "admin") existing.ativo = false;
+    }
+  }
   const user = {
     id: `test-${role}`,
     nome: `Teste ${role}`,
     email: `teste-${role}@cmsp.local`,
-    senhaHash: "",
-    precisaDefinirSenha: false,
+    senhaHash: options.password ? await hashPassword(options.password) : "",
+    precisaDefinirSenha: Boolean(options.precisaDefinirSenha),
+    authVersion: 1,
     ativo: true,
     role,
     criadoEm: new Date().toISOString()
   };
-  const index = (store.usuarios || []).findIndex((item) => item.id === user.id);
-  if (!Array.isArray(store.usuarios)) store.usuarios = [];
+  const index = store.usuarios.findIndex((item) => item.id === user.id);
   if (index >= 0) store.usuarios[index] = user;
   else store.usuarios.push(user);
   await writeStore(store);
   return { user, token: await createSession(user.id) };
+}
+
+function assertSensitiveCredentialsAbsent(payload, plainPassword) {
+  for (const field of ["token", "senha", "senhaHash", "senhaTemporaria", "novaSenha", "confirmacao"]) {
+    assert.equal(Object.hasOwn(payload, field), false, `${field} nao deve ser retornado`);
+  }
+  assert.doesNotMatch(JSON.stringify(payload), new RegExp(escapeRegExp(plainPassword)));
+}
+
+function escapeRegExp(value = "") {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function postJson(path, token, body) {
+  return invokeRequest({
+    method: "POST",
+    path,
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify(body)
+  });
 }
 
 async function invokeRequest({ method = "GET", path = "/", headers = {}, body = "" }) {
@@ -330,28 +894,4 @@ function createResponseRecorder() {
       return JSON.parse(this.text());
     }
   };
-}
-
-async function withEnv(values, callback) {
-  const previous = {};
-  for (const key of Object.keys(values)) {
-    previous[key] = process.env[key];
-    if (values[key] === undefined) {
-      delete process.env[key];
-    } else {
-      process.env[key] = values[key];
-    }
-  }
-
-  try {
-    return await callback();
-  } finally {
-    for (const key of Object.keys(values)) {
-      if (previous[key] === undefined) {
-        delete process.env[key];
-      } else {
-        process.env[key] = previous[key];
-      }
-    }
-  }
 }

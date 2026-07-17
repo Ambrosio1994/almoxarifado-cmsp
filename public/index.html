@@ -12,13 +12,13 @@
       <main class="auth-card">
         <section class="auth-panel" id="loginPanel">
           <form id="loginForm" class="auth-form">
-            <label class="email-only"><input name="email" type="email" autocomplete="email" placeholder="Digite seu e-mail" required></label>
-            <label class="password-step" id="passwordStep"><input name="senha" type="password" autocomplete="current-password" placeholder="Digite sua senha" required></label>
+            <label class="email-only"><span class="sr-only">E-mail</span><input name="email" type="email" autocomplete="email" placeholder="Digite seu e-mail" required></label>
+            <label class="password-step" id="passwordStep"><span class="sr-only">Senha</span><input name="senha" type="password" autocomplete="current-password" maxlength="256" placeholder="Digite sua senha" required></label>
             <button type="submit" class="email-submit" id="emailSubmitButton">Entrar</button>
           </form>
           <p class="auth-note">Ao continuar, voce reconhece a Politica de Privacidade do Almoxarifado CMSP.</p>
           <p class="auth-note">O acesso deve ser cadastrado previamente por um administrador.</p>
-          <p class="auth-message" id="authMessage"></p>
+          <p class="auth-message" id="authMessage" role="alert" aria-live="assertive"></p>
         </section>
 
       </main>
@@ -43,12 +43,12 @@
         </div>
       </section>
       <nav class="side-nav" aria-label="Navegacao principal">
-        <a href="#" class="nav-item active" data-section="dashboard"><span>▦</span>Painel</a>
-        <a href="#" class="nav-item" data-section="processes"><span>▱</span>Empenhos</a>
-        <a href="#" class="nav-item" data-section="suppliers"><span>▤</span>Fornecedores</a>
-        <a href="#" class="nav-item hidden" data-section="audit"><span>◫</span>Auditoria</a>
-        <a href="#" class="nav-item hidden" data-section="users"><span>♙</span>Usuarios e permissoes</a>
-        <a href="#" class="nav-item hidden" data-section="settings"><span>⚙</span>Templates</a>
+        <a href="#" class="nav-item active" data-section="dashboard" aria-current="page"><span aria-hidden="true">▦</span>Painel</a>
+        <a href="#" class="nav-item" data-section="processes"><span aria-hidden="true">▱</span>Empenhos</a>
+        <a href="#" class="nav-item" data-section="suppliers"><span aria-hidden="true">▤</span>Fornecedores</a>
+        <a href="#" class="nav-item hidden" data-section="audit"><span aria-hidden="true">◫</span>Auditoria</a>
+        <a href="#" class="nav-item hidden" data-section="users"><span aria-hidden="true">♙</span>Usuarios e permissoes</a>
+        <a href="#" class="nav-item hidden" data-section="settings"><span aria-hidden="true">⚙</span>Templates</a>
       </nav>
       <button type="button" class="sidebar-logout" id="logoutButton">Sair</button>
     </aside>
@@ -67,7 +67,7 @@
       </header>
 
       <main>
-        <section class="metrics" id="metrics"></section>
+        <section class="app-status hidden" id="appStatus" role="status" aria-live="polite"></section>
 
         <section class="workspace hidden" id="processListView">
           <section class="content">
@@ -99,6 +99,7 @@
 
             <div class="table-wrap">
               <table class="process-table">
+                <caption class="sr-only">Lista de processos e empenhos</caption>
                 <thead>
                   <tr>
                     <th>Nº Processo no SPED</th>
@@ -138,21 +139,21 @@
             <button type="button" class="download-button" id="downloadProcessButton">Baixar processo completo</button>
           </div>
 
-          <nav class="detail-tabs" aria-label="Modulos do processo">
-            <button type="button" class="detail-tab active" data-detail-tab="general">Dados gerais</button>
-            <button type="button" class="detail-tab" data-detail-tab="documents">Documentos</button>
-            <button type="button" class="detail-tab" data-detail-tab="timeline">Linha do tempo</button>
-            <button type="button" class="detail-tab" data-detail-tab="deliveries">Entregas</button>
-            <button type="button" class="detail-tab" data-detail-tab="observations">Observacoes</button>
-            <button type="button" class="detail-tab" data-detail-tab="emails">E-mails</button>
+          <nav class="detail-tabs" aria-label="Modulos do processo" role="tablist">
+            <button type="button" class="detail-tab active" id="detailTabGeneral" data-detail-tab="general" role="tab" aria-controls="detailPanel" aria-selected="true">Dados gerais</button>
+            <button type="button" class="detail-tab" id="detailTabDocuments" data-detail-tab="documents" role="tab" aria-controls="detailPanel" aria-selected="false">Documentos</button>
+            <button type="button" class="detail-tab" id="detailTabTimeline" data-detail-tab="timeline" role="tab" aria-controls="detailPanel" aria-selected="false">Linha do tempo</button>
+            <button type="button" class="detail-tab" id="detailTabDeliveries" data-detail-tab="deliveries" role="tab" aria-controls="detailPanel" aria-selected="false">Entregas</button>
+            <button type="button" class="detail-tab" id="detailTabObservations" data-detail-tab="observations" role="tab" aria-controls="detailPanel" aria-selected="false">Observacoes</button>
+            <button type="button" class="detail-tab" id="detailTabEmails" data-detail-tab="emails" role="tab" aria-controls="detailPanel" aria-selected="false">E-mails</button>
           </nav>
 
-          <section class="detail-card" id="detailPanel"></section>
+          <section class="detail-card" id="detailPanel" role="tabpanel" aria-labelledby="detailTabGeneral"></section>
         </section>
       </main>
     </div>
 
-    <dialog id="processDialog">
+    <dialog id="processDialog" aria-labelledby="processDialogTitle">
       <form method="dialog" class="dialog-header">
         <strong id="processDialogTitle">Novo processo</strong>
         <button type="submit" class="secondary">Fechar</button>
@@ -180,25 +181,62 @@
           <button type="submit">Salvar</button>
           <button type="button" id="clearForm">Limpar</button>
         </div>
-        <p class="form-message" id="formMessage"></p>
+        <p class="form-message" id="formMessage" role="status" aria-live="polite"></p>
       </form>
     </dialog>
 
-    <dialog id="observationsDialog">
+    <dialog id="observationsDialog" aria-labelledby="observationsDialogTitle">
       <form method="dialog" class="dialog-header">
-        <strong>Observacoes</strong>
+        <strong id="observationsDialogTitle">Observacoes</strong>
         <button>Fechar</button>
       </form>
       <div id="observationsList"></div>
       <form id="observationForm" class="observation-form">
         <textarea name="conteudo" rows="4" minlength="1" maxlength="350" required placeholder="Nova observacao (ate 350 caracteres)"></textarea>
         <button>Registrar</button>
+        <p class="form-message" id="observationMessage" role="status" aria-live="polite"></p>
       </form>
     </dialog>
 
-    <dialog id="downloadDialog" class="small-dialog">
+    <dialog id="editObservationDialog" class="small-dialog" aria-labelledby="editObservationDialogTitle">
       <form method="dialog" class="dialog-header">
-        <strong>Baixar processo completo</strong>
+        <strong id="editObservationDialogTitle">Alterar observacao</strong>
+        <button type="submit" class="secondary">Fechar</button>
+      </form>
+      <form id="editObservationForm" class="process-form">
+        <input type="hidden" name="processId">
+        <input type="hidden" name="observationId">
+        <label>Observacao <textarea name="conteudo" rows="5" minlength="1" maxlength="350" required></textarea></label>
+        <div class="actions"><button type="submit">Salvar alteracao</button></div>
+        <p class="form-message" id="editObservationMessage" role="status" aria-live="polite"></p>
+      </form>
+    </dialog>
+
+    <dialog id="deliveryDialog" aria-labelledby="deliveryDialogTitle" aria-describedby="deliveryDialogDescription">
+      <form method="dialog" class="dialog-header">
+        <strong id="deliveryDialogTitle">Registrar entrega</strong>
+        <button type="submit" class="secondary">Fechar</button>
+      </form>
+      <form id="deliveryForm" class="process-form" novalidate>
+        <p class="selected-file" id="deliveryDialogDescription">Informe a data e as quantidades recebidas de cada material.</p>
+        <label>Data da entrega
+          <input name="data" type="text" inputmode="numeric" autocomplete="off" placeholder="DD-MM-AAAA" pattern="\d{2}-\d{2}-\d{4}" maxlength="10" required>
+        </label>
+        <fieldset class="delivery-fieldset">
+          <legend>Materiais recebidos</legend>
+          <div class="delivery-materials" id="deliveryMaterials"></div>
+        </fieldset>
+        <div class="actions">
+          <button type="button" class="secondary" id="cancelDelivery">Cancelar</button>
+          <button type="submit">Salvar entrega</button>
+        </div>
+        <p class="form-message" id="deliveryMessage" role="alert" aria-live="assertive"></p>
+      </form>
+    </dialog>
+
+    <dialog id="downloadDialog" class="small-dialog" aria-labelledby="downloadDialogTitle">
+      <form method="dialog" class="dialog-header">
+        <strong id="downloadDialogTitle">Baixar processo completo</strong>
         <button type="submit" class="secondary">Fechar</button>
       </form>
       <div class="download-options">
@@ -213,9 +251,9 @@
       </div>
     </dialog>
 
-    <dialog id="documentMetadataDialog" class="small-dialog">
+    <dialog id="documentMetadataDialog" class="small-dialog" aria-labelledby="documentMetadataDialogTitle">
       <form method="dialog" class="dialog-header">
-        <strong>Novo documento</strong>
+        <strong id="documentMetadataDialogTitle">Novo documento</strong>
         <button type="submit" class="secondary">Fechar</button>
       </form>
       <form id="documentMetadataForm" class="process-form document-metadata-form">
@@ -229,9 +267,9 @@
       </form>
     </dialog>
 
-    <dialog id="supplierInfoDialog" class="small-dialog">
+    <dialog id="supplierInfoDialog" class="small-dialog" aria-labelledby="supplierInfoDialogTitle">
       <form method="dialog" class="dialog-header">
-        <strong>Informacoes do fornecedor</strong>
+        <strong id="supplierInfoDialogTitle">Informacoes do fornecedor</strong>
         <button type="submit" class="secondary">Fechar</button>
       </form>
       <form id="supplierInfoForm" class="process-form">
@@ -244,20 +282,36 @@
           <button type="submit">Salvar informacoes</button>
           <button type="button" class="secondary" id="cancelSupplierInfo">Cancelar</button>
         </div>
+        <p class="form-message" id="supplierInfoMessage" role="status" aria-live="polite"></p>
       </form>
     </dialog>
 
-    <dialog id="changePasswordDialog" class="small-dialog">
+    <dialog id="changePasswordDialog" class="small-dialog" aria-labelledby="changePasswordDialogTitle">
       <form method="dialog" class="dialog-header">
-        <strong>Alterar minha senha</strong>
-        <button type="submit" class="secondary">Fechar</button>
+        <strong id="changePasswordDialogTitle">Alterar minha senha</strong>
+        <button type="submit" class="secondary" id="changePasswordCloseButton">Fechar</button>
       </form>
       <form id="changePasswordForm" class="process-form">
-        <label>Senha atual <input name="senhaAtual" type="password" autocomplete="current-password" required></label>
-        <label>Nova senha <input name="novaSenha" type="password" autocomplete="new-password" minlength="8" required title="Minimo de 8 caracteres, com maiuscula, numero e caractere especial"></label>
-        <label>Confirmar nova senha <input name="confirmacao" type="password" autocomplete="new-password" minlength="8" required></label>
+        <label>Senha atual <input name="senhaAtual" type="password" autocomplete="current-password" maxlength="256" required></label>
+        <label>Nova senha <input name="novaSenha" type="password" autocomplete="new-password" minlength="8" maxlength="256" required title="Minimo de 8 caracteres, com maiuscula, numero e caractere especial que nao seja espaco"></label>
+        <label>Confirmar nova senha <input name="confirmacao" type="password" autocomplete="new-password" minlength="8" maxlength="256" required></label>
         <div class="actions"><button type="submit">Alterar senha</button></div>
-        <p class="form-message" id="changePasswordMessage"></p>
+        <p class="form-message" id="changePasswordMessage" role="status" aria-live="polite"></p>
+      </form>
+    </dialog>
+
+    <dialog id="adminPasswordDialog" class="small-dialog" aria-labelledby="adminPasswordDialogTitle">
+      <form method="dialog" class="dialog-header">
+        <strong id="adminPasswordDialogTitle">Redefinir senha do usuario</strong>
+        <button type="submit" class="secondary">Fechar</button>
+      </form>
+      <form id="adminPasswordForm" class="process-form">
+        <input type="hidden" name="userId">
+        <p class="selected-file" id="adminPasswordUser"></p>
+        <label>Nova senha <input name="senha" type="password" autocomplete="new-password" minlength="8" maxlength="256" required title="Minimo de 8 caracteres, com maiuscula, numero e caractere especial que nao seja espaco"></label>
+        <label>Confirmar nova senha <input name="confirmacao" type="password" autocomplete="new-password" minlength="8" maxlength="256" required></label>
+        <div class="actions"><button type="submit">Redefinir senha</button></div>
+        <p class="form-message" id="adminPasswordMessage" role="status" aria-live="polite"></p>
       </form>
     </dialog>
 

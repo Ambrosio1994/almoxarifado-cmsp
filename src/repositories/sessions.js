@@ -1,16 +1,18 @@
 import crypto from "node:crypto";
-import { databaseConfigured, query, transaction } from "../db/postgres.js";
+import { databaseConfigured, query } from "../db/postgres.js";
+import { readUserById } from "../storage.js";
 
 const MEMORY_SESSIONS = new Map();
 
-export async function createSession(userId, ttlMs = 30 * 60 * 1000) {
+export async function createSession(userId, ttlMs = 30 * 60 * 1000, authVersion = 1) {
   const token = crypto.randomBytes(32).toString("hex");
   const now = Date.now();
   const session = {
     userId,
     createdAt: now,
     lastActivityAt: now,
-    expiresAt: now + ttlMs
+    expiresAt: now + ttlMs,
+    authVersion: positiveAuthVersion(authVersion)
   };
 
   if (!databaseConfigured()) {
@@ -18,21 +20,39 @@ export async function createSession(userId, ttlMs = 30 * 60 * 1000) {
     return token;
   }
 
-  await query(`
-    INSERT INTO user_sessions (token_hash, user_id, created_at, last_activity_at, expires_at)
-    VALUES ($1, $2, to_timestamp($3 / 1000.0), to_timestamp($4 / 1000.0), to_timestamp($5 / 1000.0))
+  const result = await query(`
+    INSERT INTO user_sessions (token_hash, user_id, created_at, last_activity_at, expires_at, auth_version)
+    SELECT $1, $2, to_timestamp($3 / 1000.0), to_timestamp($4 / 1000.0), to_timestamp($5 / 1000.0), auth_version
+    FROM app_users
+    WHERE id = $2
     ON CONFLICT (token_hash) DO UPDATE SET
       user_id = EXCLUDED.user_id,
       created_at = EXCLUDED.created_at,
       last_activity_at = EXCLUDED.last_activity_at,
       expires_at = EXCLUDED.expires_at,
+      auth_version = EXCLUDED.auth_version,
       revoked_at = NULL
+    RETURNING user_id
   `, [hashToken(token), userId, session.createdAt, session.lastActivityAt, session.expiresAt]);
+  if (!result.rowCount) throw new Error("Usuario da sessao nao encontrado.");
 
   return token;
 }
 
 export async function resolveSession(token, ttlMs = 30 * 60 * 1000) {
+  const session = await resolveSessionContext(token, ttlMs);
+  return session?.userId || null;
+}
+
+export async function resolveSessionUser(token, ttlMs = 30 * 60 * 1000) {
+  const session = await resolveSessionContext(token, ttlMs);
+  if (!session) return null;
+  const user = await readUserById(session.userId);
+  if (!user || user.ativo === false || positiveAuthVersion(user.authVersion) !== session.authVersion) return null;
+  return user;
+}
+
+async function resolveSessionContext(token, ttlMs) {
   if (!token) return null;
   if (!databaseConfigured()) {
     const session = MEMORY_SESSIONS.get(hashToken(token));
@@ -42,37 +62,65 @@ export async function resolveSession(token, ttlMs = 30 * 60 * 1000) {
       return null;
     }
     session.lastActivityAt = Date.now();
-    return session.userId;
+    session.expiresAt = session.lastActivityAt + ttlMs;
+    return { userId: session.userId, authVersion: positiveAuthVersion(session.authVersion) };
   }
 
-  return transaction(async (client) => {
-    const result = await client.query(`
-      SELECT s.user_id, s.last_activity_at, s.expires_at, s.revoked_at
-      FROM user_sessions s
-      WHERE s.token_hash = $1
-      FOR UPDATE
-    `, [hashToken(token)]);
-    const session = result.rows[0];
-    if (!session || session.revoked_at) return null;
+  const tokenHash = hashToken(token);
+  const result = await query(`
+    SELECT sessions.user_id, sessions.auth_version, sessions.last_activity_at
+    FROM user_sessions AS sessions
+    JOIN app_users AS users ON users.id = sessions.user_id
+    WHERE sessions.token_hash = $1
+      AND sessions.revoked_at IS NULL
+      AND sessions.expires_at > now()
+      AND sessions.last_activity_at > now() - make_interval(secs => $2::double precision / 1000.0)
+      AND sessions.auth_version = users.auth_version
+      AND users.ativo = true
+  `, [tokenHash, ttlMs]);
+  const session = result.rows[0];
+  if (!session) return null;
 
-    const now = Date.now();
-    const lastActivity = new Date(session.last_activity_at).getTime();
-    const expiresAt = new Date(session.expires_at).getTime();
-    if (Number.isNaN(lastActivity) || Number.isNaN(expiresAt)) return null;
-    if (expiresAt <= now || now - lastActivity > ttlMs) {
-      await client.query(
-        "UPDATE user_sessions SET revoked_at = now() WHERE token_hash = $1",
-        [hashToken(token)]
-      );
-      return null;
+  const lastActivity = new Date(session.last_activity_at).getTime();
+  const touchIntervalMs = Math.max(1_000, Math.min(60_000, Math.floor(ttlMs / 4)));
+  if (Number.isFinite(lastActivity) && Date.now() - lastActivity >= touchIntervalMs) {
+    const touched = await query(`
+      UPDATE user_sessions AS sessions
+      SET last_activity_at = now(),
+          expires_at = now() + make_interval(secs => $2::double precision / 1000.0)
+      FROM app_users AS users
+      WHERE sessions.token_hash = $1
+        AND users.id = sessions.user_id
+        AND sessions.auth_version = users.auth_version
+        AND users.ativo = true
+        AND sessions.revoked_at IS NULL
+        AND sessions.expires_at > now()
+        AND sessions.last_activity_at <= now() - make_interval(secs => $3::double precision / 1000.0)
+      RETURNING sessions.user_id, sessions.auth_version
+    `, [tokenHash, ttlMs, touchIntervalMs]);
+    if (touched.rowCount) {
+      return {
+        userId: touched.rows[0].user_id,
+        authVersion: positiveAuthVersion(touched.rows[0].auth_version)
+      };
     }
-
-    await client.query(
-      "UPDATE user_sessions SET last_activity_at = now() WHERE token_hash = $1",
-      [hashToken(token)]
-    );
-    return session.user_id;
-  });
+    const refreshed = await query(`
+      SELECT sessions.user_id, sessions.auth_version
+      FROM user_sessions AS sessions
+      JOIN app_users AS users ON users.id = sessions.user_id
+      WHERE sessions.token_hash = $1
+        AND sessions.revoked_at IS NULL
+        AND sessions.expires_at > now()
+        AND sessions.last_activity_at > now() - make_interval(secs => $2::double precision / 1000.0)
+        AND sessions.auth_version = users.auth_version
+        AND users.ativo = true
+    `, [tokenHash, ttlMs]);
+    return refreshed.rows[0] ? {
+      userId: refreshed.rows[0].user_id,
+      authVersion: positiveAuthVersion(refreshed.rows[0].auth_version)
+    } : null;
+  }
+  return { userId: session.user_id, authVersion: positiveAuthVersion(session.auth_version) };
 }
 
 export async function revokeSession(token) {
@@ -118,4 +166,9 @@ export async function cleanupExpiredSessions(retentionDays = 7) {
 
 function hashToken(token) {
   return crypto.createHash("sha256").update(String(token)).digest("hex");
+}
+
+function positiveAuthVersion(value) {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 1;
 }

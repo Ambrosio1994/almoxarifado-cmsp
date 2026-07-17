@@ -44,9 +44,9 @@ Producao oficial: [https://sapgestao.dpdns.org](https://sapgestao.dpdns.org), us
 Itens ja aplicados:
 
 - `.env` protegido por `.gitignore`; use `.env.example` como referencia sem segredos reais.
-- Escrita do `data/store.json` serializada e atomica, reduzindo risco de corrupcao no armazenamento local restante.
+- Escrita do `data/store.json` serializada, atomica, sincronizada em disco e restrita a permissoes 0600; testes usam armazenamento temporario.
 - Schema PostgreSQL versionado para usuarios, sessoes, processos, auditoria e operacao.
-- Importador do `data/store.json` para usuarios e configuracoes, validado em producao.
+- Importador do `data/store.json` em dry-run por padrao, com merge por ID e confirmacoes explicitas para producao.
 - Endpoint `/health` com checagem de storage, configuracao de e-mail e scheduler.
 - Logs estruturados em JSON para falhas de request e rotina de e-mail.
 - Historico de e-mail com reserva distribuida, chave de idempotencia, tentativas, erro e data de envio.
@@ -56,8 +56,8 @@ Itens ja aplicados:
 Validacoes ja concluidas em 2026-07-08:
 
 - `NODE_ENV=production npm run db:migrate` apontou para o Neon correto e ficou idempotente.
-- `NODE_ENV=production npm run db:import-store` gravou o estado completo do aplicativo no Neon.
-- `POST /auth/login` em producao retornou `200` com token.
+- A importacao legada inicial foi concluida; novas execucoes exigem dry-run, backup e confirmacao do database alvo.
+- `POST /auth/login` em producao retornou `200` com cookie de sessao `HttpOnly`.
 - `GET /auth/session` em producao retornou `200`.
 - `GET /api/processes` em producao retornou `200` lendo do Postgres.
 
@@ -72,7 +72,7 @@ Pendencias atuais:
 - Consulta pública de processos.
 - Dashboard com indicadores principais.
 - Cadastro e edição inicial de processos.
-- Cadastro por modal a partir do botão **Novo processo**.
+- Cadastro por modal a partir do botão **+ Novo**.
 - Múltiplos materiais por empenho no mesmo processo.
 - Filtros rápidos e pesquisa por processo, empenho, fornecedor, material, ano e status.
 - Regras de bloqueio por status:

@@ -35,7 +35,10 @@ export async function runMigrations(options = {}) {
   logger.log(formatDatabaseTarget(databaseUrl, databaseUrlSource));
   const client = createClient(databaseUrl);
   await client.connect();
+  let migrationLockHeld = false;
   try {
+    await client.query("SELECT pg_advisory_lock(hashtext('almoxarifado_cmsp_schema_migrations'))");
+    migrationLockHeld = true;
     const appliedMigrations = await loadAppliedMigrations(client);
     const result = { applied: [], skipped: [] };
 
@@ -49,12 +52,16 @@ export async function runMigrations(options = {}) {
 
       const fullPath = join(migrationsDir, migration);
       logger.log(`Aplicando ${migration}`);
+      await client.query("BEGIN");
       try {
-        await client.query(readFileSync(fullPath, "utf8"));
+        const migrationSql = withoutOuterTransaction(readFileSync(fullPath, "utf8"), migration);
+        await client.query(migrationSql);
+        await recordAppliedMigration(client, migrationVersion);
+        await client.query("COMMIT");
       } catch (error) {
+        await client.query("ROLLBACK").catch(() => null);
         throw new Error(`Falha ao aplicar ${migration}: ${error.message}`);
       }
-      await recordAppliedMigration(client, migrationVersion);
       appliedMigrations.add(migrationVersion);
       result.applied.push(migrationVersion);
     }
@@ -62,8 +69,31 @@ export async function runMigrations(options = {}) {
     logger.log("Migracoes aplicadas com sucesso.");
     return result;
   } finally {
+    if (migrationLockHeld) {
+      await client.query("SELECT pg_advisory_unlock(hashtext('almoxarifado_cmsp_schema_migrations'))").catch(() => null);
+    }
     await client.end();
   }
+}
+
+function withoutOuterTransaction(sql, migrationName) {
+  const lines = String(sql).split(/\r?\n/);
+  const meaningful = lines
+    .map((line, index) => ({ line: line.trim(), index }))
+    .filter(({ line }) => line && !line.startsWith("--"));
+  const first = meaningful[0];
+  const last = meaningful.at(-1);
+  const startsTransaction = /^BEGIN(?:\s+TRANSACTION)?;$/i.test(first?.line || "");
+  const endsTransaction = /^COMMIT;$/i.test(last?.line || "");
+
+  if (startsTransaction !== endsTransaction) {
+    throw new Error(`${migrationName} possui controle de transacao incompleto.`);
+  }
+  if (startsTransaction) {
+    lines[first.index] = "";
+    lines[last.index] = "";
+  }
+  return lines.join("\n");
 }
 
 async function loadAppliedMigrations(client) {

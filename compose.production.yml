@@ -18,11 +18,16 @@ services:
       - almoxarifado_uploads:/data/uploads
     read_only: true
     tmpfs:
-      - /tmp:size=64m,noexec,nosuid,nodev
+      - /tmp:size=${TMPFS_SIZE:-256m},noexec,nosuid,nodev
     security_opt:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/health/ready"]
       interval: 30s

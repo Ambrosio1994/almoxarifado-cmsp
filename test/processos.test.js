@@ -127,6 +127,8 @@ describe("regras de processo", () => {
     assert.equal(canCancelProcess(processo, { email: "admin@cmsp.local", role: "admin" }), true);
     assert.equal(canCancelProcess({ ...processo, status: "Pago" }, { email: "admin@cmsp.local", role: "admin" }), false);
     assert.equal(canCancelProcess({ ...processo, status: "Pago" }, { email: "usuario@cmsp.local", role: "almoxarifado" }), false);
+    assert.equal(canCancelProcess({ ...processo, criadoPorId: "user-1" }, { id: "user-1", email: "novo@cmsp.local", role: "almoxarifado" }), true);
+    assert.equal(canCancelProcess({ ...processo, criadoPorId: "user-1" }, { id: "user-2", email: "usuario@cmsp.local", role: "almoxarifado" }), false);
   });
 
   it("identifica documentos PDF para compilacao", () => {
@@ -189,6 +191,7 @@ describe("regras de processo", () => {
     assert.equal(isPublicConsultation("GET", "/api/processes"), true);
     assert.equal(isPublicConsultation("GET", "/api/dashboard"), true);
     assert.equal(isPublicConsultation("GET", "/health"), true);
+    assert.equal(isPublicConsultation("GET", "/api/processes/export"), true);
     assert.equal(isPublicConsultation("GET", "/api/settings"), false);
     assert.equal(isPublicConsultation("GET", "/api/audit"), false);
     assert.equal(isPublicConsultation("GET", "/api/processes/abc/download"), false);
@@ -204,6 +207,25 @@ describe("regras de processo", () => {
       assert.equal(await resolveSession(token, 30 * 60 * 1000), "user-1");
       await revokeSession(token);
       assert.equal(await resolveSession(token, 30 * 60 * 1000), null);
+    });
+  });
+
+  it("renova o TTL da sessao enquanto houver atividade", async () => {
+    await withEnv({ DATABASE_URL: undefined }, async () => {
+      const originalNow = Date.now;
+      let now = 1_700_000_000_000;
+      Date.now = () => now;
+      try {
+        const token = await createSession("user-sliding", 1_000);
+        now += 900;
+        assert.equal(await resolveSession(token, 1_000), "user-sliding");
+        now += 900;
+        assert.equal(await resolveSession(token, 1_000), "user-sliding");
+        now += 1_001;
+        assert.equal(await resolveSession(token, 1_000), null);
+      } finally {
+        Date.now = originalNow;
+      }
     });
   });
 });

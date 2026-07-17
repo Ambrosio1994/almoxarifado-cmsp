@@ -1,12 +1,19 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createPoolConfig } from "../../src/db/postgres.js";
+import { assertSafeTestDatabaseUrl, createPoolConfig } from "../../src/db/postgres.js";
 import { runMigrations } from "../../scripts/db-migrate.js";
 
 describe("configuracao PostgreSQL", () => {
+  it("inclui versao de autenticacao em usuarios e sessoes", () => {
+    const migration = readFileSync(new URL("../../db/migrations/010_auth_session_version.sql", import.meta.url), "utf8");
+    assert.match(migration, /ALTER TABLE app_users[\s\S]*auth_version/i);
+    assert.match(migration, /ALTER TABLE user_sessions[\s\S]*auth_version/i);
+    assert.match(migration, /UPDATE user_sessions[\s\S]*users\.auth_version/i);
+  });
+
   it("exige SSL em producao", () => {
     withEnv({
       DATABASE_URL: "postgres://user:pass@db.example.com:5432/app",
@@ -17,15 +24,18 @@ describe("configuracao PostgreSQL", () => {
     });
   });
 
-  it("nao exige CA quando SSL esta habilitado e a URL ja define verify-full", () => {
+  it("mantem verificacao do certificado sem CA customizada", () => {
     withEnv({
-      DATABASE_URL: "postgresql://user:pass@db.example.com:5432/app?sslmode=verify-full&channel_binding=require",
+      DATABASE_URL: "postgresql://user:pass@db.example.com:5432/app?sslmode=verify-full&ssl=false&channel_binding=require",
       NODE_ENV: "production",
       DB_SSL: "true",
       DB_CA_CERT_PATH: ""
     }, () => {
       const config = createPoolConfig();
-      assert.equal(config.ssl, undefined);
+      assert.deepEqual(config.ssl, { rejectUnauthorized: true });
+      assert.doesNotMatch(config.connectionString, /sslmode=/);
+      assert.doesNotMatch(config.connectionString, /ssl=false/);
+      assert.match(config.connectionString, /channel_binding=require/);
     });
   });
 
@@ -35,8 +45,9 @@ describe("configuracao PostgreSQL", () => {
       NODE_ENV: "production",
       DB_SSL: "true"
     }, () => {
-      const config = createPoolConfig("postgres://user:pass@migration.example.com:5432/app");
-      assert.equal(config.connectionString, "postgres://user:pass@migration.example.com:5432/app");
+      const config = createPoolConfig("postgres://user:pass@migration.example.com:5432/app?sslmode=require");
+      assert.equal(new URL(config.connectionString).hostname, "migration.example.com");
+      assert.equal(new URL(config.connectionString).searchParams.has("sslmode"), false);
     });
   });
 
@@ -47,7 +58,7 @@ describe("configuracao PostgreSQL", () => {
 
     try {
       withEnv({
-      DATABASE_URL: "postgres://user:pass@db.example.com:5432/app",
+      DATABASE_URL: "postgres://user:pass@db.example.com:5432/app?sslmode=verify-full",
       NODE_ENV: "production",
       DB_SSL: "true",
       DB_CA_CERT_PATH: caPath,
@@ -113,6 +124,24 @@ describe("configuracao PostgreSQL", () => {
       assert.throws(() => createPoolConfig(), /DB_QUERY_TIMEOUT_MS/);
     });
   });
+
+  it("impede que o banco de teste seja o banco de producao", () => {
+    withEnv({
+      DATABASE_URL: "postgres://user:pass@db.example.com/app_test?sslmode=require",
+      DATABASE_URL_MIGRATION: "",
+      TEST_DATABASE_URL: "postgres://test:pass@db.example.com/app_test?sslmode=require"
+    }, () => {
+      assert.throws(() => assertSafeTestDatabaseUrl(), /mesmo banco de DATABASE_URL/);
+    });
+
+    withEnv({
+      DATABASE_URL: "postgres://user:pass@db.example.com/app?sslmode=require",
+      DATABASE_URL_MIGRATION: "",
+      TEST_DATABASE_URL: "postgres://test:pass@db.example.com/app_test?sslmode=require"
+    }, () => {
+      assert.equal(assertSafeTestDatabaseUrl(), process.env.TEST_DATABASE_URL);
+    });
+  });
 });
 
 describe("runner de migracoes PostgreSQL", () => {
@@ -142,6 +171,8 @@ describe("runner de migracoes PostgreSQL", () => {
       assert.deepEqual(secondRun.skipped, ["001_initial_schema"]);
       assert.equal(fakeDatabase.appliedSql.length, 1);
       assert.deepEqual([...fakeDatabase.appliedVersions], ["001_initial_schema"]);
+      assert.equal(fakeDatabase.controlSql.filter((sql) => /pg_advisory_lock/.test(sql)).length, 2);
+      assert.equal(fakeDatabase.controlSql.filter((sql) => /pg_advisory_unlock/.test(sql)).length, 2);
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
@@ -163,6 +194,36 @@ describe("runner de migracoes PostgreSQL", () => {
 
       assert.equal(fakeDatabase.appliedSql.length, 1);
       assert.equal(fakeDatabase.appliedVersions.size, 0);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("reverte a migracao se o registro da versao falhar", async () => {
+    const tempDir = createMigrationsDir({
+      "001_initial_schema.sql": "BEGIN;\nCREATE TABLE example (id text PRIMARY KEY);\nCOMMIT;"
+    });
+    const fakeDatabase = createFakeDatabase({ failRecordOnce: true });
+
+    try {
+      await assert.rejects(() => runMigrations({
+        databaseUrl: "postgres://user:pass@localhost:5432/app",
+        migrationsDir: tempDir,
+        createClient: fakeDatabase.createClient,
+        logger: silentLogger
+      }), /Falha ao aplicar 001_initial_schema.sql/);
+
+      assert.equal(fakeDatabase.appliedVersions.size, 0);
+      assert.equal(fakeDatabase.controlSql.includes("ROLLBACK"), true);
+
+      const retry = await runMigrations({
+        databaseUrl: "postgres://user:pass@localhost:5432/app",
+        migrationsDir: tempDir,
+        createClient: fakeDatabase.createClient,
+        logger: silentLogger
+      });
+      assert.deepEqual(retry.applied, ["001_initial_schema"]);
+      assert.deepEqual([...fakeDatabase.appliedVersions], ["001_initial_schema"]);
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
@@ -259,21 +320,49 @@ function createMigrationsDir(files) {
 function createFakeDatabase(options = {}) {
   const appliedVersions = new Set();
   const appliedSql = [];
+  const controlSql = [];
   const failOnSql = options.failOnSql;
+  let failRecordOnce = Boolean(options.failRecordOnce);
+  let pendingVersions = [];
 
   return {
     appliedVersions,
     appliedSql,
+    controlSql,
     createClient() {
       return {
         async connect() {},
         async end() {},
         async query(sql, params = []) {
+          if (/pg_advisory_(?:un)?lock/.test(sql)) {
+            controlSql.push(sql);
+            return { rows: [] };
+          }
+          if (sql === "BEGIN") {
+            controlSql.push(sql);
+            pendingVersions = [];
+            return { rows: [] };
+          }
+          if (sql === "COMMIT") {
+            controlSql.push(sql);
+            pendingVersions.forEach((version) => appliedVersions.add(version));
+            pendingVersions = [];
+            return { rows: [] };
+          }
+          if (sql === "ROLLBACK") {
+            controlSql.push(sql);
+            pendingVersions = [];
+            return { rows: [] };
+          }
           if (/SELECT version FROM app_schema_migrations/.test(sql)) {
             return { rows: [...appliedVersions].map((version) => ({ version })) };
           }
           if (/INSERT INTO app_schema_migrations/.test(sql)) {
-            appliedVersions.add(params[0]);
+            if (failRecordOnce) {
+              failRecordOnce = false;
+              throw new Error("migration record failed");
+            }
+            pendingVersions.push(params[0]);
             return { rows: [] };
           }
           appliedSql.push(sql);
