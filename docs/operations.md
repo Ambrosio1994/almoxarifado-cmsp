@@ -48,7 +48,7 @@ NODE_ENV=production npm run uploads:cleanup -- --expect-backend=postgres --confi
 3. Execute `npm test`, `npm run check` e o build da imagem. `npm test` usa store/uploads temporarios e ignora URLs de banco de runtime; a integracao PostgreSQL e opt-in com `TEST_DATABASE_URL` apontando para um database separado cujo nome contenha `test`.
 4. Execute `NODE_ENV=production npm run db:migrate` com `DATABASE_URL_MIGRATION` somente depois que o build passar.
 5. Suba a nova imagem e aguarde `/health/ready` retornar `200`.
-6. Valide login, consulta, criacao controlada, download autenticado e fila de e-mail.
+6. Valide login, consulta autenticada, criacao controlada, download autenticado e fila de e-mail.
 7. Mantenha a imagem anterior disponivel para rollback da aplicacao. Migracoes devem ser aditivas; nao reverta schema sem um procedimento testado.
 
 O fluxo acima esta automatizado, com gates seguros, em `scripts/deploy-production.sh`. O deploy pausa a aplicacao, cria o backup consistente **antes** de executar testes ou migracoes, volta a instancia atual e somente depois continua o release. Execute `check` antes da janela e `deploy` para backup, testes isolados, migracao, build, start, readiness e smoke test.

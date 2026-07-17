@@ -17,6 +17,7 @@ describe("contrato visual e de navegacao", () => {
     assert.match(loginForm, /name="email"[^>]*type="email"/);
     assert.match(loginForm, /name="senha"[^>]*type="password"/);
     assert.match(loginForm, />Entrar<\/button>/);
+    assert.doesNotMatch(loginForm, /consultar empenhos/i);
   });
 
   it("abre no Painel sem carregar a lista completa de processos no boot", () => {
@@ -53,12 +54,18 @@ describe("contrato visual e de navegacao", () => {
     assert.doesNotMatch(app, /\bprompt\s*\(/);
   });
 
-  it("oferece consulta publica, atualizacao explicita e anulacao motivada", () => {
-    assert.match(html, /id="publicConsultButton"/);
+  it("oferece atualizacao explicita e anulacao motivada", () => {
+    assert.doesNotMatch(html, /id="publicConsultButton"/);
+    assert.doesNotMatch(app, /\bpublico\b/);
     assert.match(html, /id="refreshProcessesButton"/);
     assert.match(html, /id="cancelProcessDialog"/);
     assert.match(html, /name="motivo"[^>]*maxlength="1000"[^>]*required/);
-    assert.match(app, /currentUser\?\.publico \? "\/api\/processes\/export"/);
+  });
+
+  it("carrega a auditoria do processo para a linha do tempo", () => {
+    assert.match(app, /loadDetailAudit\(processo\.id/);
+    assert.match(app, /\/api\/processes\/\$\{processId\}\/audit/);
+    assert.match(app, /return state\.detailAudit/);
   });
 
   it("preserva IDs dos materiais e mostra o historico das entregas", () => {

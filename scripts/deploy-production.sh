@@ -94,7 +94,6 @@ smoke() {
   curl --fail --silent --show-error "https://${DOMAIN}/health/live" >/dev/null
   curl --fail --silent --show-error "https://${DOMAIN}/health/ready" >/dev/null
   curl --fail --silent --show-error "https://${DOMAIN}/" >/dev/null
-  curl --fail --silent --show-error "https://${DOMAIN}/api/processes" >/dev/null
   echo "Smoke test HTTPS aprovado em https://${DOMAIN}."
 }
 

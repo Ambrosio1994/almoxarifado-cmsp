@@ -9,7 +9,6 @@ import {
   emailSchedulerHealthStatus,
   errorResponsePayload,
   isValidPassword,
-  publicProcess,
   requiresAdmin,
   resolveEmailConfiguration,
   roleCanMutate,
@@ -203,9 +202,19 @@ describe("rotas http", () => {
     assert.match(response.text(), /Arquivo nao encontrado/);
   });
 
-  it("mantem exportacao publica em csv", async () => {
-    const response = await invokeRequest({ method: "GET", path: "/api/processes/export" });
+  it("exige autenticacao para consultar ou baixar empenhos", async () => {
+    for (const path of ["/api/meta", "/api/dashboard", "/api/processes", "/api/processes/download"]) {
+      const anonymous = await invokeRequest({ method: "GET", path });
+      assert.equal(anonymous.statusCode, 401, path);
+      assert.deepEqual(anonymous.json(), { error: "Faca login para continuar." });
+    }
 
+    const { token } = await authenticatedAs("almoxarifado");
+    const response = await invokeRequest({
+      method: "GET",
+      path: "/api/processes/download",
+      headers: { authorization: `Bearer ${token}` }
+    });
     assert.equal(response.statusCode, 200);
     assert.match(response.headers["content-type"] || "", /text\/csv/);
     assert.match(response.text(), /"Processo";"Empenho";"Fornecedor";"Materiais"/);
@@ -225,13 +234,15 @@ describe("rotas http", () => {
     assert.match(authenticated.headers["content-type"] || "", /text\/csv/);
   });
 
-  it("gera relatorios publicos em PDF e Excel", async () => {
-    const pdf = await invokeRequest({ method: "GET", path: "/api/processes/export?format=pdf" });
+  it("gera relatorios autenticados em PDF e Excel", async () => {
+    const { token } = await authenticatedAs("almoxarifado");
+    const headers = { authorization: `Bearer ${token}` };
+    const pdf = await invokeRequest({ method: "GET", path: "/api/processes/download?format=pdf", headers });
     assert.equal(pdf.statusCode, 200);
     assert.equal(pdf.headers["content-type"], "application/pdf");
     assert.equal(pdf.body.subarray(0, 4).toString(), "%PDF");
 
-    const excel = await invokeRequest({ method: "GET", path: "/api/processes/export?format=excel" });
+    const excel = await invokeRequest({ method: "GET", path: "/api/processes/download?format=excel", headers });
     assert.equal(excel.statusCode, 200);
     assert.match(excel.headers["content-type"] || "", /application\/vnd\.ms-excel/);
     assert.match(excel.text(), /<table>/);
@@ -254,9 +265,10 @@ describe("rotas http", () => {
     });
     assert.equal(created.statusCode, 201);
 
-    const csv = await invokeRequest({ method: "GET", path: "/api/processes/export" });
+    const headers = { authorization: `Bearer ${token}` };
+    const csv = await invokeRequest({ method: "GET", path: "/api/processes/download", headers });
     assert.equal(csv.statusCode, 200);
-    const excel = await invokeRequest({ method: "GET", path: "/api/processes/export?format=excel" });
+    const excel = await invokeRequest({ method: "GET", path: "/api/processes/download?format=excel", headers });
     assert.equal(excel.statusCode, 200);
 
     for (const value of Object.values(dangerousValues)) {
@@ -284,7 +296,12 @@ describe("rotas http", () => {
     );
     await writeStore(store);
 
-    const response = await invokeRequest({ method: "GET", path: "/api/dashboard?ano=2040" });
+    const { token } = await authenticatedAs("almoxarifado");
+    const response = await invokeRequest({
+      method: "GET",
+      path: "/api/dashboard?ano=2040",
+      headers: { authorization: `Bearer ${token}` }
+    });
     const payload = response.json();
     assert.equal(response.statusCode, 200);
     assert.equal(payload.ano, 2040);
@@ -296,7 +313,11 @@ describe("rotas http", () => {
     assert.equal(payload.metrics.valorLiquidado, 20);
     assert.equal(payload.metrics.valorPago, 0);
 
-    const paidYear = await invokeRequest({ method: "GET", path: "/api/dashboard?ano=2041" });
+    const paidYear = await invokeRequest({
+      method: "GET",
+      path: "/api/dashboard?ano=2041",
+      headers: { authorization: `Bearer ${token}` }
+    });
     assert.equal(paidYear.statusCode, 200);
     assert.equal(paidYear.json().metrics.valorLiquidado, 15);
     assert.equal(paidYear.json().metrics.valorPago, 15);
@@ -305,7 +326,8 @@ describe("rotas http", () => {
   it("invalida imediatamente o cache do painel depois de uma mutacao", async () => {
     const { token } = await authenticatedAs("almoxarifado");
     const currentYear = new Date().getFullYear();
-    const before = await invokeRequest({ method: "GET", path: `/api/dashboard?ano=${currentYear}` });
+    const headers = { authorization: `Bearer ${token}` };
+    const before = await invokeRequest({ method: "GET", path: `/api/dashboard?ano=${currentYear}`, headers });
     assert.equal(before.statusCode, 200);
     const selectedYear = before.json().ano;
 
@@ -315,39 +337,9 @@ describe("rotas http", () => {
     });
     assert.equal(created.statusCode, 201);
 
-    const after = await invokeRequest({ method: "GET", path: `/api/dashboard?ano=${currentYear}` });
+    const after = await invokeRequest({ method: "GET", path: `/api/dashboard?ano=${currentYear}`, headers });
     assert.equal(after.statusCode, 200);
     assert.equal(after.json().metrics.processosAtivos, before.json().metrics.processosAtivos + 1);
-  });
-
-  it("publica somente campos permitidos e remove PII", async () => {
-    const store = await readStore();
-    const process = {
-      id: crypto.randomUUID(), numeroProcesso: `PUBLIC-${crypto.randomUUID()}`,
-      status: "Enviado para SALC", materiais: [], criadoPor: "Interno",
-      criadoPorEmail: "interno@example.com", documentos: { notaEmpenho: { path: "/uploads/segredo.pdf" } },
-      entregas: [{ recebidoPorEmail: "interno@example.com" }],
-      observacoes: [{ usuarioEmail: "interno@example.com" }],
-      criadoEm: new Date().toISOString(), atualizadoEm: new Date().toISOString()
-    };
-    store.processos.push(process);
-    await writeStore(store);
-    const response = await invokeRequest({ method: "GET", path: `/api/processes?q=${encodeURIComponent(process.numeroProcesso)}` });
-    assert.equal(response.statusCode, 200);
-    const [result] = response.json();
-    assert.deepEqual(result, publicProcess({ ...process, valorTotal: 0, diasDecorridos: 0 }));
-    assert.equal(Object.hasOwn(result, "documentos"), false);
-    assert.equal(Object.hasOwn(result, "criadoPorEmail"), false);
-    assert.equal(Object.hasOwn(result, "entregas"), false);
-    assert.equal(Object.hasOwn(result, "observacoes"), false);
-    assert.deepEqual(result.documentosDisponiveis, ["notaEmpenho"]);
-  });
-
-  it("exige autenticacao para o alias de download", async () => {
-    const response = await invokeRequest({ method: "GET", path: "/api/processes/download" });
-
-    assert.equal(response.statusCode, 401);
-    assert.deepEqual(response.json(), { error: "Faca login para continuar." });
   });
 
   it("serve o alias de download com autenticacao", async () => {
@@ -399,6 +391,29 @@ describe("rotas http", () => {
       headers: { authorization: `Bearer ${token}` }
     });
     assert.equal(auditResponse.statusCode, 403);
+  });
+
+  it("permite Almoxarifado consultar a auditoria do processo para a linha do tempo", async () => {
+    const { token } = await authenticatedAs("almoxarifado");
+    const created = await postJson("/api/processes", token, {
+      numeroProcesso: `AT-${crypto.randomUUID().slice(0, 8)}`
+    });
+    assert.equal(created.statusCode, 201);
+
+    const response = await invokeRequest({
+      method: "GET",
+      path: `/api/processes/${created.json().id}/audit`,
+      headers: { authorization: `Bearer ${token}` }
+    });
+    assert.equal(response.statusCode, 200);
+    assert.ok(response.json().some((entry) => entry.acao === "Criacao de processo"));
+
+    const globalAudit = await invokeRequest({
+      method: "GET",
+      path: "/api/audit",
+      headers: { authorization: `Bearer ${token}` }
+    });
+    assert.equal(globalAudit.statusCode, 403);
   });
 
   it("cria processo somente com processo, somente com empenho ou com ambos", async () => {

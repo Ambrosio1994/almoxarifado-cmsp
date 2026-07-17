@@ -34,7 +34,7 @@ Alvo oficial: `https://sapgestao.dpdns.org`, com PostgreSQL de producao no Neon.
 
 - [ ] Confirmar `200` em `/health/live` e `/health/ready`, localmente e por HTTPS.
 - [ ] Executar `npm run smoke:production`.
-- [ ] Validar login, consulta publica, criacao/edicao controlada, download autenticado e envio de e-mail de teste.
+- [ ] Validar login, consulta autenticada, criacao/edicao controlada, download autenticado e envio de e-mail de teste.
 - [ ] Conferir logs por `requestId`, erros de banco, falhas SMTP, limites de login e espaco do volume de uploads.
 - [ ] Manter monitor externo em `https://sapgestao.dpdns.org/health/ready` e alerta separado para expiração TLS.
 
