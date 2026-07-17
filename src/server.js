@@ -1,11 +1,12 @@
 import { createServer } from "node:http";
 import { connect as connectTls } from "node:tls";
 import { spawn } from "node:child_process";
-import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { extname, join, normalize, sep } from "node:path";
+import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import {
   applyQuickFilter,
@@ -13,6 +14,7 @@ import {
   canCancelProcess,
   canEditProcess,
   createAuditEntry,
+  dashboardAvailableYears,
   dashboardMetrics,
   dashboardMonthlyExecution,
   dashboardStatusDistribution,
@@ -24,17 +26,50 @@ import {
   processDeadlineDate,
   processHasRequiredDocuments,
   QUICK_FILTERS,
+  REQUIRED_DOCUMENT_KEYS,
   summarizeMaterials,
   STATUS,
   validateDocumentUpload,
   validateProcessDocumentUpload
 } from "./domain/processos.js";
-import { detectStoreBackend, readProcessesStore, readSettingsStore, readStore, readUsersStore, writeStore } from "./storage.js";
-import { cleanupExpiredSessions, createSession as createSessionRecord, resolveSession, revokeSession, revokeUserSessions } from "./repositories/sessions.js";
+import {
+  detectStoreBackend,
+  readProcessesSnapshot,
+  readProcessesStore,
+  readSettingsStore,
+  readStore,
+  readStoreRevision,
+  readUserByEmail,
+  writeStore as persistStore
+} from "./storage.js";
+import {
+  cleanupExpiredSessions,
+  createSession as createSessionRecord,
+  resolveSessionUser,
+  revokeSession,
+  revokeUserSessions
+} from "./repositories/sessions.js";
 import { claimEmailDispatch, completeEmailDispatch, failEmailDispatch } from "./repositories/email-dispatches.js";
-import { closePool } from "./db/postgres.js";
-import { cleanupRateLimits, clearRateLimit, isRateLimited, recordRateLimitFailure } from "./repositories/rate-limits.js";
+import { closePool, databaseConfigured, query } from "./db/postgres.js";
+import { cleanupRateLimits, clearRateLimit, consumeRateLimitAttempt } from "./repositories/rate-limits.js";
 import { listSecurityEvents, recordSecurityEvent } from "./repositories/security-audit.js";
+import {
+  hashPassword,
+  isValidPassword,
+  MAX_PASSWORD_LENGTH,
+  PASSWORD_POLICY_MESSAGE,
+  verifyPassword
+} from "./security/password-policy.js";
+import {
+  createPrivateFile,
+  ensurePrivateDirectory,
+  FileSizeLimitError,
+  hardenPrivateTree,
+  openRegularFileNoFollow,
+  privateFileMetadata,
+  readRegularFileLimited,
+  UnsafeFilePathError
+} from "./security/private-files.js";
 
 loadLocalEnv();
 
@@ -48,25 +83,78 @@ const ADMIN_EMAILS = new Set(parseList(process.env.ADMIN_EMAILS));
 const LOCAL_ADMIN_EMAIL = normalizeEmail(process.env.LOCAL_ADMIN_EMAIL);
 const LOCAL_ADMIN_PASSWORD = process.env.LOCAL_ADMIN_PASSWORD || "";
 const SMTP_HOST = process.env.SMTP_HOST || "smtp.gmail.com";
-const SMTP_PORT = Number(process.env.SMTP_PORT || 465);
+const SMTP_PORT = positiveRuntimeInteger(process.env.SMTP_PORT, 465);
 const EMAIL_TEST_RECIPIENT = normalizeEmail(process.env.EMAIL_TEST_RECIPIENT || "");
 const EMAIL_CONFIGURATION = resolveEmailConfiguration(process.env);
 const SMTP_AUTH_USER = EMAIL_CONFIGURATION.authUser;
 const SMTP_AUTH_PASSWORD = EMAIL_CONFIGURATION.authPassword;
 const EMAIL_FROM_ADDRESS = EMAIL_CONFIGURATION.fromAddress;
 const EMAIL_FROM_NAME = process.env.EMAIL_FROM_NAME || "Almoxarifado CMSP";
-const EMAIL_CHECK_INTERVAL_MS = Number(process.env.EMAIL_CHECK_INTERVAL_MS || 60 * 60 * 1000);
-const SESSION_TIMEOUT_MS = Number(process.env.SESSION_TIMEOUT_MS || 30 * 60 * 1000);
-const LOGIN_RATE_LIMIT_WINDOW_MS = Number(process.env.LOGIN_RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000);
-const LOGIN_RATE_LIMIT_MAX = Number(process.env.LOGIN_RATE_LIMIT_MAX || 5);
+const EMAIL_CHECK_INTERVAL_MS = positiveRuntimeInteger(process.env.EMAIL_CHECK_INTERVAL_MS, 60 * 60 * 1000);
+const EMAIL_SCHEDULER_START_DELAY_MS = 10_000;
+const EMAIL_SCHEDULER_GRACE_PERIOD_MS = Math.max(60_000, EMAIL_SCHEDULER_START_DELAY_MS * 2);
+const EMAIL_SCHEDULER_STALE_AFTER_MS = EMAIL_CHECK_INTERVAL_MS + EMAIL_SCHEDULER_GRACE_PERIOD_MS;
+const EMAIL_SCHEDULER_PERSISTENT_ERROR_COUNT = 3;
+const SESSION_TIMEOUT_MS = positiveRuntimeInteger(process.env.SESSION_TIMEOUT_MS, 30 * 60 * 1000);
+const SESSION_COOKIE_MAX_AGE_MS = Math.max(
+  SESSION_TIMEOUT_MS,
+  positiveRuntimeInteger(process.env.SESSION_COOKIE_MAX_AGE_MS, 7 * 24 * 60 * 60 * 1000)
+);
+const LOGIN_RATE_LIMIT_WINDOW_MS = positiveRuntimeInteger(process.env.LOGIN_RATE_LIMIT_WINDOW_MS, 15 * 60 * 1000);
+const LOGIN_RATE_LIMIT_MAX = positiveRuntimeInteger(process.env.LOGIN_RATE_LIMIT_MAX, 5);
 const TRUST_PROXY = process.env.TRUST_PROXY === "true";
-const MAX_JSON_BODY_BYTES = Number(process.env.MAX_JSON_BODY_BYTES || 24 * 1024 * 1024);
-const MAX_UPLOAD_BYTES = Number(process.env.MAX_UPLOAD_BYTES || 15 * 1024 * 1024);
+const MAX_JSON_BODY_BYTES = positiveRuntimeInteger(process.env.MAX_JSON_BODY_BYTES, 24 * 1024 * 1024);
+const AUTH_MAX_BODY_BYTES = Math.min(
+  MAX_JSON_BODY_BYTES,
+  positiveRuntimeInteger(process.env.AUTH_MAX_BODY_BYTES, 4 * 1024)
+);
+const ADMIN_MAX_BODY_BYTES = Math.min(
+  MAX_JSON_BODY_BYTES,
+  positiveRuntimeInteger(process.env.ADMIN_MAX_BODY_BYTES, 64 * 1024)
+);
+const LOGIN_SCRYPT_CONCURRENCY = positiveRuntimeInteger(process.env.LOGIN_SCRYPT_CONCURRENCY, 4);
+const LOGIN_SCRYPT_MAX_QUEUE = positiveRuntimeInteger(process.env.LOGIN_SCRYPT_MAX_QUEUE, 16);
+const DASHBOARD_CACHE_TTL_MS = positiveRuntimeInteger(process.env.DASHBOARD_CACHE_TTL_MS, 5_000);
+const MAX_UPLOAD_BYTES = positiveRuntimeInteger(process.env.MAX_UPLOAD_BYTES, 15 * 1024 * 1024);
+const MAX_PROCESS_UPLOAD_BYTES = positiveRuntimeInteger(process.env.MAX_PROCESS_UPLOAD_BYTES, 75 * 1024 * 1024);
+const MAX_TEMPLATE_UPLOAD_BYTES = positiveRuntimeInteger(process.env.MAX_TEMPLATE_UPLOAD_BYTES, 50 * 1024 * 1024);
+const MAX_EMAIL_ATTACHMENT_BYTES = positiveRuntimeInteger(process.env.MAX_EMAIL_ATTACHMENT_BYTES, 15 * 1024 * 1024);
+const MAX_PROCESS_DOCUMENTS = positiveRuntimeInteger(process.env.MAX_PROCESS_DOCUMENTS, 50);
+const MAX_TEMPLATE_ATTACHMENTS = positiveRuntimeInteger(process.env.MAX_TEMPLATE_ATTACHMENTS, 20);
+const MAX_UPLOAD_FILENAME_LENGTH = 255;
+const MAX_UPLOAD_MIME_LENGTH = 100;
+const MAX_COMPLEMENT_TITLE_LENGTH = 150;
+const MAX_COMPLEMENT_DESCRIPTION_LENGTH = 1_000;
+const MAX_COMPILED_DOWNLOAD_BYTES = positiveRuntimeInteger(process.env.MAX_COMPILED_DOWNLOAD_BYTES, MAX_PROCESS_UPLOAD_BYTES);
+const MAX_CONCURRENT_COMPILED_DOWNLOADS = positiveRuntimeInteger(
+  process.env.MAX_COMPILED_DOWNLOADS || process.env.MAX_CONCURRENT_COMPILED_DOWNLOADS,
+  2
+);
+const PDF_COMMAND_TIMEOUT_MS = positiveRuntimeInteger(process.env.PDF_COMMAND_TIMEOUT_MS, 10_000);
+const SMTP_CONNECT_TIMEOUT_MS = positiveRuntimeInteger(process.env.SMTP_CONNECT_TIMEOUT_MS, 10_000);
+const SMTP_COMMAND_TIMEOUT_MS = positiveRuntimeInteger(process.env.SMTP_COMMAND_TIMEOUT_MS, 15_000);
 let emailSchedulerRunning = false;
 let emailSchedulerTimeout;
 let emailSchedulerInterval;
+let emailSchedulerPromise;
+const emailSchedulerState = {
+  startedAt: null,
+  lastRunStartedAt: null,
+  lastSuccessAt: null,
+  lastErrorAt: null,
+  consecutiveErrors: 0
+};
 let maintenanceInterval;
 let localAdminBootstrapped = false;
+let activeCompiledDownloads = 0;
+const loginScryptLimiter = createWorkLimiter(LOGIN_SCRYPT_CONCURRENCY, LOGIN_SCRYPT_MAX_QUEUE);
+const dashboardCache = {
+  generation: 0,
+  revision: null,
+  expiresAt: 0,
+  value: null,
+  pending: null
+};
 
 const DEFAULT_SETTINGS = {
   emailTemplates: {
@@ -88,9 +176,117 @@ const DEFAULT_SETTINGS = {
   responsaveis: []
 };
 
+export function createWorkLimiter(maxConcurrency = 1, maxQueue = 1) {
+  const concurrency = Math.max(1, Math.floor(Number(maxConcurrency) || 1));
+  const queueLimit = Math.max(0, Math.floor(Number(maxQueue) || 0));
+  const queue = [];
+  let active = 0;
+
+  function drain() {
+    while (active < concurrency && queue.length) {
+      const entry = queue.shift();
+      active += 1;
+      Promise.resolve()
+        .then(entry.task)
+        .then(entry.resolve, entry.reject)
+        .finally(() => {
+          active -= 1;
+          drain();
+        });
+    }
+  }
+
+  return {
+    run(task) {
+      if (typeof task !== "function") return Promise.reject(new TypeError("A tarefa deve ser uma funcao."));
+      if (active >= concurrency && queue.length >= queueLimit) {
+        const error = new Error("Fila de autenticacao temporariamente cheia.");
+        error.code = "WORK_QUEUE_FULL";
+        return Promise.reject(error);
+      }
+      return new Promise((resolve, reject) => {
+        queue.push({ task, resolve, reject });
+        drain();
+      });
+    },
+    stats() {
+      return { active, queued: queue.length, concurrency, queueLimit };
+    }
+  };
+}
+
+async function writeStore(store, securityEvents = []) {
+  await persistStore(store, { securityEvents });
+  invalidateDashboardCache();
+}
+
+function transactionalSecurityEvent(eventType, event = {}) {
+  return { eventType, ...event };
+}
+
+export function invalidateDashboardCache() {
+  dashboardCache.generation += 1;
+  dashboardCache.revision = null;
+  dashboardCache.expiresAt = 0;
+  dashboardCache.value = null;
+  dashboardCache.pending = null;
+}
+
+async function readDashboardSnapshot() {
+  const revision = await readStoreRevision();
+  const now = Date.now();
+  if (dashboardCache.value && dashboardCache.revision === revision && dashboardCache.expiresAt > now) {
+    return dashboardCache.value;
+  }
+  if (dashboardCache.pending?.revision === revision) return dashboardCache.pending.promise;
+
+  const generation = dashboardCache.generation;
+  const promise = readProcessesSnapshot().then((snapshot) => {
+    const processos = snapshot.processos.map((processo) => enrichProcess(processo));
+    const value = {
+      processos,
+      metrics: dashboardMetrics(processos),
+      anos: dashboardAvailableYears(processos)
+    };
+    if (dashboardCache.generation === generation) {
+      dashboardCache.revision = snapshot.revision;
+      dashboardCache.expiresAt = Date.now() + DASHBOARD_CACHE_TTL_MS;
+      dashboardCache.value = value;
+    }
+    return value;
+  });
+  const pending = { revision, promise };
+  dashboardCache.pending = pending;
+  try {
+    return await promise;
+  } finally {
+    if (dashboardCache.pending === pending) dashboardCache.pending = null;
+  }
+}
+
+function positiveAuthVersion(value) {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 1;
+}
+
+function nextAuthVersion(value) {
+  const current = positiveAuthVersion(value);
+  if (current >= Number.MAX_SAFE_INTEGER) throw new RangeError("Versao de autenticacao esgotada.");
+  return current + 1;
+}
+
+async function revokeUserSessionsBestEffort(userId, reason) {
+  try {
+    await revokeUserSessions(userId);
+  } catch (error) {
+    logError("session_revocation_failed", { userId, reason, message: error.message });
+  }
+}
+
 export async function requestHandler(req, res) {
   const startedAt = Date.now();
   const requestId = randomBytes(8).toString("hex");
+  const requestPathname = sanitizedRequestPath(req);
   try {
     applySecurityHeaders(res);
     res.setHeader("x-request-id", requestId);
@@ -117,24 +313,32 @@ export async function requestHandler(req, res) {
     }
 
     if (url.pathname === "/favicon.svg" || url.pathname === "/favicon.ico" || url.pathname === "/my-fav.webp") {
-      await serveFavicon(res);
+      await serveFavicon(req, res);
       return;
     }
 
-    await serveStatic(res, url.pathname);
+    await serveStatic(req, res, url.pathname);
   } catch (error) {
-    logError("request_error", { requestId, method: req.method, path: req.url, message: error.message, stack: error.stack });
+    logError("request_error", { requestId, method: req.method, path: requestPathname, message: error.message, stack: error.stack });
     sendJson(res, error.statusCode || 500, errorResponsePayload(error));
   } finally {
     if (req.url !== "/health/live") {
       logInfo("request_completed", {
         requestId,
         method: req.method,
-        path: String(req.url || "").split("?")[0],
+        path: requestPathname,
         statusCode: res.statusCode,
         durationMs: Date.now() - startedAt
       });
     }
+  }
+}
+
+function sanitizedRequestPath(req = {}) {
+  try {
+    return new URL(String(req.url || "/"), `http://${req.headers?.host || "localhost"}`).pathname;
+  } catch {
+    return String(req.url || "/").split(/[?#]/, 1)[0] || "/";
   }
 }
 
@@ -145,6 +349,7 @@ if (isMainModule()) {
   if (process.env.NODE_ENV === "production" && storeBackend !== "postgres") {
     throw new Error("A aplicacao exige PostgreSQL migrado em producao.");
   }
+  await hardenPrivateTree(UPLOAD_ROOT);
   console.log(`Storage backend ativo: ${storeBackend}`);
   console.log(`Upload root ativo: ${UPLOAD_ROOT}`);
   server.listen(PORT, () => {
@@ -158,55 +363,103 @@ if (isMainModule()) {
 }
 
 async function handleAuth(req, res, url) {
-  const readOnlySessionRoute = (req.method === "GET" && url.pathname === "/auth/session")
-    || (req.method === "POST" && url.pathname === "/auth/logout");
-  const store = readOnlySessionRoute ? await readUsersStore() : await readStore();
-  if (!readOnlySessionRoute) await ensureUsers(store);
+  const loginRoute = req.method === "POST" && url.pathname === "/auth/login";
 
   if (req.method === "GET" && url.pathname === "/auth/session") {
-    const user = await sessionUser(req, store);
+    const user = await sessionUser(req);
     if (!user) {
       sendJson(res, 401, { error: "Sessao nao encontrada" });
       return;
     }
+    setSessionCookie(res, bearerToken(req));
     sendJson(res, 200, publicUser(user));
     return;
   }
 
-  if (req.method === "POST" && url.pathname === "/auth/login") {
-    const body = await readJson(req);
-    const email = normalizeEmail(body.email);
-    if (await isLoginRateLimited(req, email)) {
+  if (loginRoute) {
+    const body = await readJson(req, AUTH_MAX_BODY_BYTES);
+    const rawEmail = String(body.email || "");
+    const rawPassword = String(body.senha || "");
+    const credentialsWithinLimits = rawEmail.length <= 254 && rawPassword.length <= MAX_PASSWORD_LENGTH;
+    const email = normalizeEmail(rawEmail.slice(0, 254));
+    if (!(await reserveLoginAttempt(req, email))) {
+      await recordSecurityEventSafely("login_rate_limited", { actorEmail: email, metadata: { ip: clientIp(req) } });
       sendJson(res, 429, { error: "Muitas tentativas de login. Tente novamente em alguns minutos." });
       return;
     }
-    const user = store.usuarios.find((item) => item.email === email && item.ativo !== false);
-    if (!user || !user.senhaHash || !verifyPassword(body.senha || "", user.senhaHash)) {
-      await recordFailedLogin(req, email);
-      await recordSecurityEvent("login_failed", { actorEmail: email, metadata: { ip: clientIp(req) } });
+    let user = null;
+    if (credentialsWithinLimits) {
+      const localBootstrapRequired = !localAdminBootstrapped
+        && Boolean(LOCAL_ADMIN_EMAIL && LOCAL_ADMIN_PASSWORD);
+      if (localBootstrapRequired) {
+        const store = await readStore();
+        await ensureUsers(store);
+        user = store.usuarios.find((item) => normalizeEmail(item.email) === email) || null;
+      } else {
+        user = await readUserByEmail(email);
+      }
+    }
+    let passwordMatches;
+    try {
+      passwordMatches = await loginScryptLimiter.run(() => verifyPassword(
+        rawPassword.slice(0, MAX_PASSWORD_LENGTH),
+        user?.ativo !== false ? user?.senhaHash : ""
+      ));
+    } catch (error) {
+      if (error.code !== "WORK_QUEUE_FULL") throw error;
+      await recordSecurityEventSafely("login_rate_limited", {
+        actorEmail: email,
+        metadata: { ip: clientIp(req), reason: "password_work_queue_full" }
+      });
+      sendJson(res, 429, { error: "Muitas tentativas de login. Tente novamente em alguns minutos." });
+      return;
+    }
+    if (!credentialsWithinLimits || !user || user.ativo === false || !passwordMatches) {
+      await recordSecurityEventSafely("login_failed", { actorEmail: email, metadata: { ip: clientIp(req) } });
       sendJson(res, 401, { error: "E-mail ou senha invalidos." });
       return;
     }
-    await clearFailedLogin(req, email);
-    await recordSecurityEvent("login_succeeded", { actorUserId: user.id, actorEmail: user.email, metadata: { ip: clientIp(req) } });
+    await clearSuccessfulLogin(req, email);
+    await recordSecurityEventSafely("login_succeeded", { actorUserId: user.id, actorEmail: user.email, metadata: { ip: clientIp(req) } });
     const token = await createSession(user);
-    sendJson(res, 200, { token, user: publicUser(user) });
+    setSessionCookie(res, token);
+    sendJson(res, 200, { user: publicUser(user) });
     return;
   }
 
   if (req.method === "POST" && url.pathname === "/auth/change-password") {
-    const user = await sessionUser(req, store);
-    if (!user) {
+    if (usesCookieSession(req) && !isSameOriginMutation(req)) {
+      sendJson(res, 403, { error: "Origem da requisicao nao autorizada." });
+      return;
+    }
+    const authenticatedUser = await sessionUser(req);
+    if (!authenticatedUser) {
       sendJson(res, 401, { error: "Faca login para alterar a senha." });
       return;
     }
-    const body = await readJson(req);
+    const body = await readJson(req, AUTH_MAX_BODY_BYTES);
+    const currentPassword = String(body.senhaAtual || "");
     const newPassword = String(body.novaSenha || "");
-    if (!user.senhaHash || !verifyPassword(body.senhaAtual || "", user.senhaHash)) {
+    const confirmation = String(body.confirmacao || "");
+    const store = await readStore();
+    const user = store.usuarios.find((item) => item.id === authenticatedUser.id && item.ativo !== false);
+    if (!user || positiveAuthVersion(user.authVersion) !== positiveAuthVersion(authenticatedUser.authVersion)) {
+      sendJson(res, 401, { error: "Sessao nao encontrada" });
+      return;
+    }
+    const currentPasswordMatches = await verifyPassword(
+      currentPassword.slice(0, MAX_PASSWORD_LENGTH),
+      currentPassword.length <= MAX_PASSWORD_LENGTH ? user.senhaHash : ""
+    );
+    if (!user.senhaHash || !currentPasswordMatches) {
+      await recordSecurityEventSafely("password_change_failed", {
+        actorUserId: authenticatedUser.id, actorEmail: authenticatedUser.email, targetUserId: authenticatedUser.id,
+        metadata: { reason: "invalid_current_password", ip: clientIp(req) }
+      });
       sendJson(res, 401, { error: "Senha atual invalida." });
       return;
     }
-    if (newPassword !== body.confirmacao) {
+    if (newPassword !== confirmation) {
       sendJson(res, 400, { error: "A confirmacao da nova senha deve ser identica." });
       return;
     }
@@ -214,22 +467,32 @@ async function handleAuth(req, res, url) {
       sendJson(res, 400, { error: passwordPolicyMessage() });
       return;
     }
-    user.senhaHash = hashPassword(newPassword);
+    user.senhaHash = await hashPassword(newPassword);
     user.precisaDefinirSenha = false;
+    user.authVersion = nextAuthVersion(user.authVersion);
     user.atualizadoEm = new Date().toISOString();
-    await writeStore(store);
-    await revokeUserSessions(user.id);
-    await recordSecurityEvent("password_changed", { actorUserId: user.id, actorEmail: user.email, targetUserId: user.id });
+    await writeStore(store, [transactionalSecurityEvent("password_changed", {
+      actorUserId: user.id,
+      actorEmail: user.email,
+      targetUserId: user.id
+    })]);
+    await revokeUserSessionsBestEffort(user.id, "password_change");
     const token = await createSession(user);
-    sendJson(res, 200, { token, user: publicUser(user) });
+    setSessionCookie(res, token);
+    sendJson(res, 200, { user: publicUser(user) });
     return;
   }
 
   if (req.method === "POST" && url.pathname === "/auth/logout") {
+    if (usesCookieSession(req) && !isSameOriginMutation(req)) {
+      sendJson(res, 403, { error: "Origem da requisicao nao autorizada." });
+      return;
+    }
     const token = bearerToken(req);
-    const user = token ? await sessionUser(req, store) : null;
+    const user = token ? await sessionUser(req) : null;
     if (token) await revokeSession(token);
-    if (user) await recordSecurityEvent("logout", { actorUserId: user.id, actorEmail: user.email, targetUserId: user.id });
+    clearSessionCookie(res);
+    if (user) await recordSecurityEventSafely("logout", { actorUserId: user.id, actorEmail: user.email, targetUserId: user.id });
     sendJson(res, 200, { ok: true });
     return;
   }
@@ -243,10 +506,12 @@ async function handleApi(req, res, url) {
     return;
   }
 
-  let store = req.method === "GET" && url.pathname === "/api/settings"
-    ? await readSettingsStore()
-    : await readUsersStore();
-  const authenticatedUser = await sessionUser(req, store);
+  if (mutationRequiresAuthenticatedUser(req.method) && usesCookieSession(req) && !isSameOriginMutation(req)) {
+    sendJson(res, 403, { error: "Origem da requisicao nao autorizada." });
+    return;
+  }
+
+  const authenticatedUser = await sessionUser(req);
   if (mutationRequiresAuthenticatedUser(req.method) && !authenticatedUser) {
     sendJson(res, 401, { error: "Faca login para continuar." });
     return;
@@ -255,9 +520,36 @@ async function handleApi(req, res, url) {
     sendJson(res, 401, { error: "Faca login para continuar." });
     return;
   }
-  const user = await currentUser(req, store);
+  const user = authenticatedUser
+    ? {
+        id: authenticatedUser.id,
+        email: authenticatedUser.email,
+        name: authenticatedUser.nome,
+        role: resolveRole(authenticatedUser)
+      }
+    : publicUserContext();
   const role = user.role;
   const usuario = user.name;
+  const auditActor = { usuario, usuarioEmail: user.email, usuarioId: user.id };
+  const securityActor = authenticatedUser
+    ? { actorUserId: authenticatedUser.id, actorEmail: authenticatedUser.email }
+    : { actorEmail: user.email };
+
+  if (!roleCanMutate(role) && mutationRequiresAuthenticatedUser(req.method)) {
+    sendJson(res, 403, { error: "O perfil de auditor possui acesso somente para consulta." });
+    return;
+  }
+
+  if (authenticatedUser?.precisaDefinirSenha && mutationRequiresAuthenticatedUser(req.method)) {
+    await recordSecurityEventSafely("first_password_required", {
+      actorUserId: authenticatedUser.id,
+      actorEmail: authenticatedUser.email,
+      targetUserId: authenticatedUser.id,
+      metadata: { path: url.pathname }
+    });
+    sendJson(res, 403, { error: "Altere a senha temporaria antes de realizar alteracoes." });
+    return;
+  }
 
   if (requiresAdmin(req.method, url.pathname) && role !== "admin") {
     sendJson(res, 403, { error: "Esta operacao exige perfil de administrador." });
@@ -274,15 +566,32 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === "GET" && url.pathname === "/api/settings") {
+    const store = await readSettingsStore();
     sendJson(res, 200, settingsPayload(store));
     return;
   }
 
+  if (req.method === "GET" && url.pathname === "/api/emails/status") {
+    sendJson(res, 200, emailStatusPayload());
+    return;
+  }
+
   if (req.method === "GET" && url.pathname.startsWith("/api/dashboard")) {
-    store = await readProcessesStore();
-    const processos = store.processos.map((processo) => enrichProcess(processo));
-    const year = Number(url.searchParams.get("ano") || new Date().getFullYear());
-    if (url.pathname === "/api/dashboard") sendJson(res, 200, dashboardMetrics(processos));
+    const snapshot = await readDashboardSnapshot();
+    const processos = snapshot.processos;
+    const anos = snapshot.anos;
+    const year = resolveDashboardYear(url.searchParams.get("ano"), anos);
+    if (url.pathname === "/api/dashboard") {
+      sendJson(res, 200, {
+        metrics: snapshot.metrics,
+        charts: {
+          execucaoMensal: dashboardMonthlyExecution(processos, year),
+          distribuicaoStatus: dashboardStatusDistribution(processos, year)
+        },
+        anos,
+        ano: year
+      });
+    }
     else if (url.pathname === "/api/dashboard/execucao-mensal") sendJson(res, 200, dashboardMonthlyExecution(processos, year));
     else if (url.pathname === "/api/dashboard/distribuicao-status") sendJson(res, 200, dashboardStatusDistribution(processos, year));
     else if (url.pathname === "/api/dashboard/charts") {
@@ -295,7 +604,7 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === "GET" && url.pathname === "/api/processes") {
-    store = await readProcessesStore();
+    const store = await readProcessesStore();
     const filtered = filterProcesses(store.processos, Object.fromEntries(url.searchParams));
     const enriched = filtered.map((processo) => enrichProcess(processo));
     const result = applyQuickFilter(enriched, url.searchParams.get("filtroRapido"));
@@ -303,16 +612,25 @@ async function handleApi(req, res, url) {
     return;
   }
 
-  store = await readStore();
+  if (req.method === "GET" && ["/api/processes/export", "/api/processes/export/", "/api/processes/download", "/api/processes/download/"].includes(url.pathname)) {
+    const store = await readProcessesStore();
+    const format = String(url.searchParams.get("format") || "csv").toLowerCase();
+    const filtered = filterProcesses(store.processos, Object.fromEntries(url.searchParams));
+    const enriched = applyQuickFilter(filtered.map((processo) => enrichProcess(processo)), url.searchParams.get("filtroRapido"));
+    sendProcessesExport(res, enriched, format);
+    return;
+  }
+
+  let store = await readStore();
   await ensureUsers(store);
 
   if (req.method === "POST" && url.pathname === "/api/admin/users") {
-    const body = await readJson(req);
+    const body = await readJson(req, ADMIN_MAX_BODY_BYTES);
     const email = normalizeEmail(body.email);
     const nome = String(body.nome || "").trim();
     const password = String(body.senhaTemporaria || "");
     const newRole = normalizeManagedRole(body.role);
-    if (!nome || !isSafeEmailAddress(email) || !newRole) {
+    if (!nome || nome.length > 100 || String(body.email || "").length > 254 || !isSafeEmailAddress(email) || !newRole) {
       sendJson(res, 400, { error: "Informe nome, e-mail valido e perfil." });
       return;
     }
@@ -327,20 +645,34 @@ async function handleApi(req, res, url) {
     }
     const managedUser = {
       id: deletedUser?.id || crypto.randomUUID(), nome, email, role: newRole, ativo: true,
-      origemCadastro: "admin", senhaHash: hashPassword(password), precisaDefinirSenha: false,
+      origemCadastro: "admin", senhaHash: await hashPassword(password), precisaDefinirSenha: true,
+      authVersion: deletedUser ? nextAuthVersion(deletedUser.authVersion) : 1,
       criadoEm: deletedUser?.criadoEm || new Date().toISOString(), atualizadoEm: new Date().toISOString()
     };
     if (deletedUser) store.usuarios[store.usuarios.indexOf(deletedUser)] = managedUser;
     else store.usuarios.push(managedUser);
-    await writeStore(store);
-    await recordSecurityEvent("user_created", { actorUserId: authenticatedUser.id, actorEmail: authenticatedUser.email, targetUserId: managedUser.id, metadata: { role: newRole } });
+    await writeStore(store, [transactionalSecurityEvent("user_created", {
+      actorUserId: authenticatedUser.id,
+      actorEmail: authenticatedUser.email,
+      targetUserId: managedUser.id,
+      metadata: { role: newRole }
+    })]);
     sendJson(res, 201, publicUser(managedUser));
     return;
   }
 
   const adminUserMatch = url.pathname.match(/^\/api\/admin\/users\/([^/]+)$/);
   if (adminUserMatch && req.method === "PATCH") {
-    const body = await readJson(req);
+    if (adminUserMatch[1].length > 200) {
+      sendJson(res, 400, { error: "Identificador de usuario invalido." });
+      return;
+    }
+    const body = await readJson(req, ADMIN_MAX_BODY_BYTES);
+    if ((Object.prototype.hasOwnProperty.call(body, "ativo") && typeof body.ativo !== "boolean")
+      || (Object.prototype.hasOwnProperty.call(body, "revogarSessoes") && typeof body.revogarSessoes !== "boolean")) {
+      sendJson(res, 400, { error: "Os campos ativo e revogarSessoes devem ser booleanos." });
+      return;
+    }
     const managedUser = store.usuarios.find((item) => item.id === adminUserMatch[1]);
     if (!managedUser) {
       sendJson(res, 404, { error: "Usuario nao encontrado." });
@@ -361,29 +693,50 @@ async function handleApi(req, res, url) {
       }
       managedUser.role = newRole;
     }
-    if (Object.prototype.hasOwnProperty.call(body, "senha")) {
+    const passwordReset = Object.prototype.hasOwnProperty.call(body, "senha");
+    if (passwordReset) {
       const newPassword = String(body.senha || "");
       if (!isValidPassword(newPassword)) {
         sendJson(res, 400, { error: passwordPolicyMessage() });
         return;
       }
-      managedUser.senhaHash = hashPassword(newPassword);
-      managedUser.precisaDefinirSenha = false;
+      managedUser.senhaHash = await hashPassword(newPassword);
+      managedUser.precisaDefinirSenha = true;
       body.revogarSessoes = true;
     }
     if (Object.prototype.hasOwnProperty.call(body, "ativo")) managedUser.ativo = body.ativo === true;
+    const invalidateSessions = passwordReset || managedUser.ativo === false || body.revogarSessoes === true;
+    if (invalidateSessions) managedUser.authVersion = nextAuthVersion(managedUser.authVersion);
     managedUser.atualizadoEm = new Date().toISOString();
-    await writeStore(store);
-    if (managedUser.ativo === false || body.revogarSessoes === true) await revokeUserSessions(managedUser.id);
-    await recordSecurityEvent("user_updated", {
-      actorUserId: authenticatedUser.id, actorEmail: authenticatedUser.email, targetUserId: managedUser.id,
-      metadata: { role: managedUser.role, ativo: managedUser.ativo, sessoesRevogadas: body.revogarSessoes === true }
-    });
+    const userSecurityEvents = [transactionalSecurityEvent("user_updated", {
+      actorUserId: authenticatedUser.id,
+      actorEmail: authenticatedUser.email,
+      targetUserId: managedUser.id,
+      metadata: {
+        role: managedUser.role,
+        ativo: managedUser.ativo,
+        sessoesRevogadas: body.revogarSessoes === true
+      }
+    })];
+    if (passwordReset) {
+      userSecurityEvents.push(transactionalSecurityEvent("user_password_reset", {
+        actorUserId: authenticatedUser.id,
+        actorEmail: authenticatedUser.email,
+        targetUserId: managedUser.id,
+        metadata: { sessionsInvalidated: true, firstPasswordRequired: true }
+      }));
+    }
+    await writeStore(store, userSecurityEvents);
+    if (invalidateSessions) await revokeUserSessionsBestEffort(managedUser.id, "admin_user_update");
     sendJson(res, 200, publicUser(managedUser));
     return;
   }
 
   if (adminUserMatch && req.method === "DELETE") {
+    if (adminUserMatch[1].length > 200) {
+      sendJson(res, 400, { error: "Identificador de usuario invalido." });
+      return;
+    }
     const managedUser = store.usuarios.find((item) => item.id === adminUserMatch[1]);
     if (!managedUser) {
       sendJson(res, 404, { error: "Usuario nao encontrado." });
@@ -395,18 +748,15 @@ async function handleApi(req, res, url) {
     }
     managedUser.ativo = false;
     managedUser.origemCadastro = "excluido";
+    managedUser.authVersion = nextAuthVersion(managedUser.authVersion);
     managedUser.atualizadoEm = new Date().toISOString();
-    await writeStore(store);
-    await revokeUserSessions(managedUser.id);
-    await recordSecurityEvent("user_deleted", {
-      actorUserId: authenticatedUser.id, actorEmail: authenticatedUser.email, targetUserId: managedUser.id
-    });
+    await writeStore(store, [transactionalSecurityEvent("user_deleted", {
+      actorUserId: authenticatedUser.id,
+      actorEmail: authenticatedUser.email,
+      targetUserId: managedUser.id
+    })]);
+    await revokeUserSessionsBestEffort(managedUser.id, "admin_user_delete");
     sendJson(res, 200, { ok: true });
-    return;
-  }
-
-  if (req.method === "GET" && url.pathname === "/api/emails/status") {
-    sendJson(res, 200, emailStatusPayload());
     return;
   }
 
@@ -416,7 +766,7 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === "POST" && url.pathname === "/api/emails/run-due") {
-    const body = await readJson(req);
+    const body = await readJson(req, ADMIN_MAX_BODY_BYTES);
     const forcedTestRecipient = normalizeEmail(body.testRecipient || EMAIL_TEST_RECIPIENT);
     if (body.force && !forcedTestRecipient) {
       sendJson(res, 400, { error: "Configure EMAIL_TEST_RECIPIENT para executar um envio de teste." });
@@ -429,15 +779,32 @@ async function handleApi(req, res, url) {
       tipo: String(body.tipo || ""),
       testRecipient: body.force ? forcedTestRecipient : ""
     });
+    await recordSecurityEventSafely("email_dispatch_run", {
+      ...securityActor,
+      metadata: {
+        forced: Boolean(body.force),
+        processId: String(body.processId || ""),
+        type: String(body.tipo || ""),
+        candidates: result.candidates,
+        sent: result.sent.length,
+        failed: result.failed.length
+      }
+    });
     sendJson(res, 200, result);
     return;
   }
 
   if (req.method === "PUT" && url.pathname === "/api/settings/email-templates") {
-    const body = await readJson(req);
+    const body = await readJson(req, ADMIN_MAX_BODY_BYTES);
+    const templatesInput = body.emailTemplates || body;
+    const templatesError = emailTemplatesValidationError(templatesInput);
+    if (templatesError) {
+      sendJson(res, 400, { error: templatesError });
+      return;
+    }
     const settings = ensureSettings(store);
-    settings.emailTemplates = sanitizeEmailTemplates(body.emailTemplates || body);
-    await writeStore(store);
+    settings.emailTemplates = sanitizeEmailTemplates(templatesInput);
+    await writeStore(store, [transactionalSecurityEvent("email_templates_updated", securityActor)]);
     sendJson(res, 200, settingsPayload(store));
     return;
   }
@@ -445,6 +812,10 @@ async function handleApi(req, res, url) {
   const templateAttachmentMatch = url.pathname.match(/^\/api\/settings\/email-templates\/([^/]+)\/attachments$/);
   if (templateAttachmentMatch && req.method === "POST") {
     const templateKey = decodeURIComponent(templateAttachmentMatch[1]);
+    if (templateKey.length > 100) {
+      sendJson(res, 400, { error: "Identificador de template invalido." });
+      return;
+    }
     const settings = ensureSettings(store);
     const template = settings.emailTemplates[templateKey];
     if (!template) {
@@ -457,30 +828,58 @@ async function handleApi(req, res, url) {
       sendJson(res, 400, { error: "Documento, nome do arquivo e conteudo sao obrigatorios" });
       return;
     }
+    const metadataError = uploadMetadataError(body);
+    if (metadataError) {
+      sendJson(res, 400, { error: metadataError });
+      return;
+    }
+    const fileName = String(body.fileName).trim();
+    const mimeType = String(body.mimeType || "").trim();
 
     const content = decodeUploadContent(body.contentBase64);
-    if (!validateDocumentUpload(body.fileName, body.mimeType, content)) {
+    if (!validateDocumentUpload(fileName, mimeType, content)) {
       sendJson(res, 400, { error: "Formato de documento nao aceito. Use PDF, Excel, CSV, Word, texto ou imagem." });
+      return;
+    }
+
+    const existingAttachments = Array.isArray(template.anexos) ? template.anexos : [];
+    if (existingAttachments.length >= MAX_TEMPLATE_ATTACHMENTS) {
+      sendJson(res, 413, { error: `Cada template aceita no maximo ${MAX_TEMPLATE_ATTACHMENTS} anexos.` });
+      return;
+    }
+    if (await totalStoredAttachmentBytes(existingAttachments, MAX_TEMPLATE_UPLOAD_BYTES) + content.length > MAX_TEMPLATE_UPLOAD_BYTES) {
+      sendJson(res, 413, { error: "O limite total de anexos deste template foi atingido." });
       return;
     }
 
     const safeTemplateKey = safeName(templateKey);
     const attachmentId = crypto.randomUUID();
-    const safeFileName = `${attachmentId}-${safeName(body.fileName)}`;
+    const safeFileName = `${attachmentId}-${safeName(fileName)}`;
     const dir = join(UPLOAD_ROOT, "email-templates", safeTemplateKey);
-    await mkdir(dir, { recursive: true });
-    await writeFile(join(dir, safeFileName), content);
+    const fullPath = join(dir, safeFileName);
+    await createPrivateFile(fullPath, content, { root: UPLOAD_ROOT, mode: 0o600 });
 
     const attachment = {
       id: attachmentId,
-      fileName: body.fileName,
+      fileName,
       path: `/uploads/email-templates/${safeTemplateKey}/${safeFileName}`,
-      mimeType: body.mimeType || contentTypeForPath(safeFileName),
+      mimeType: mimeType || contentTypeForPath(safeFileName),
+      sizeBytes: content.length,
       uploadedAt: new Date().toISOString(),
-      uploadedBy: usuario
+      uploadedBy: usuario,
+      uploadedByEmail: user.email,
+      uploadedById: user.id
     };
-    template.anexos = [...(Array.isArray(template.anexos) ? template.anexos : []), attachment];
-    await writeStore(store);
+    template.anexos = [...existingAttachments, attachment];
+    try {
+      await writeStore(store, [transactionalSecurityEvent("email_template_attachment_added", {
+        ...securityActor,
+        metadata: { templateKey, attachmentId, sizeBytes: content.length }
+      })]);
+    } catch (error) {
+      await rm(fullPath, { force: true }).catch(() => null);
+      throw error;
+    }
     sendJson(res, 200, settingsPayload(store));
     return;
   }
@@ -504,53 +903,70 @@ async function handleApi(req, res, url) {
       sendJson(res, 404, { error: "Anexo nao encontrado" });
       return;
     }
-    await writeStore(store);
-    await removeUploadedFile(removedAttachment?.path);
+    await writeStore(store, [transactionalSecurityEvent("email_template_attachment_removed", {
+      ...securityActor,
+      metadata: { templateKey, attachmentId }
+    })]);
+    await removeUploadedFile(removedAttachment?.path).catch((error) => {
+      logError("removed_upload_cleanup_failed", { path: removedAttachment?.path, message: error.message });
+    });
     sendJson(res, 200, settingsPayload(store));
     return;
   }
 
   if (req.method === "PUT" && url.pathname === "/api/settings/notifications") {
-    const body = await readJson(req);
+    const body = await readJson(req, ADMIN_MAX_BODY_BYTES);
     const settings = ensureSettings(store);
     settings.notificationRules = sanitizeNotificationRules(body.notificationRules || body);
-    await writeStore(store);
+    await writeStore(store, [transactionalSecurityEvent("notification_rules_updated", securityActor)]);
     sendJson(res, 200, settingsPayload(store));
     return;
   }
 
   if (req.method === "POST" && url.pathname === "/api/settings/users") {
-    const body = await readJson(req);
+    const body = await readJson(req, ADMIN_MAX_BODY_BYTES);
     const settings = ensureSettings(store);
     const nome = String(body.nome || "").trim();
     const email = normalizeEmail(body.email);
-    if (!nome || !email) {
-      sendJson(res, 400, { error: "Nome e e-mail sao obrigatorios." });
+    const funcao = String(body.funcao || "").trim();
+    if (!nome || nome.length > 100 || String(body.email || "").length > 254 || !isSafeEmailAddress(email) || funcao.length > 100) {
+      sendJson(res, 400, { error: "Informe nome, e-mail valido e funcao com tamanhos permitidos." });
       return;
     }
     const existing = settings.responsaveis.find((responsavel) => responsavel.email === email);
     if (existing) {
       existing.nome = nome;
-      existing.funcao = String(body.funcao || existing.funcao || "").trim();
+      existing.funcao = funcao || existing.funcao || "";
       existing.ativo = body.ativo !== false;
     } else {
+      if (settings.responsaveis.length >= 500) {
+        sendJson(res, 413, { error: "O limite de responsaveis foi atingido." });
+        return;
+      }
       settings.responsaveis.push({
         id: crypto.randomUUID(),
         nome,
         email,
-        funcao: String(body.funcao || "").trim(),
+        funcao,
         ativo: true,
         criadoEm: new Date().toISOString()
       });
     }
-    await writeStore(store);
+    await writeStore(store, [transactionalSecurityEvent("notification_recipient_upserted", {
+      ...securityActor,
+      metadata: { recipientId: existing?.id || settings.responsaveis.at(-1)?.id || "" }
+    })]);
     sendJson(res, 200, settingsPayload(store));
     return;
   }
 
   const settingsUserMatch = url.pathname.match(/^\/api\/settings\/users\/([^/]+)$/);
   if (settingsUserMatch && req.method === "PATCH") {
-    const body = await readJson(req);
+    const body = await readJson(req, ADMIN_MAX_BODY_BYTES);
+    if (Object.prototype.hasOwnProperty.call(body, "ativo") && typeof body.ativo !== "boolean") {
+      sendJson(res, 400, { error: "O campo ativo deve ser booleano." });
+      return;
+    }
     const settings = ensureSettings(store);
     const responsavel = settings.responsaveis.find((item) => item.id === settingsUserMatch[1]);
     if (!responsavel) {
@@ -558,16 +974,11 @@ async function handleApi(req, res, url) {
       return;
     }
     responsavel.ativo = body.ativo !== false;
-    await writeStore(store);
+    await writeStore(store, [transactionalSecurityEvent("notification_recipient_updated", {
+      ...securityActor,
+      metadata: { recipientId: responsavel.id, active: responsavel.ativo }
+    })]);
     sendJson(res, 200, settingsPayload(store));
-    return;
-  }
-
-  if (req.method === "GET" && ["/api/processes/export", "/api/processes/export/", "/api/processes/download", "/api/processes/download/"].includes(url.pathname)) {
-    const format = String(url.searchParams.get("format") || "csv").toLowerCase();
-    const filtered = filterProcesses(store.processos, Object.fromEntries(url.searchParams));
-    const enriched = applyQuickFilter(filtered.map((processo) => enrichProcess(processo)), url.searchParams.get("filtroRapido"));
-    sendProcessesExport(res, enriched, format);
     return;
   }
 
@@ -599,6 +1010,7 @@ async function handleApi(req, res, url) {
       atualizadoEm: new Date().toISOString(),
       criadoPor: usuario,
       criadoPorEmail: user.email,
+      criadoPorId: user.id,
       versao: 1,
       inativo: false
     };
@@ -606,7 +1018,7 @@ async function handleApi(req, res, url) {
     store.processos.unshift(processo);
     store.auditoria.unshift(createAuditEntry({
       processoId: processo.id,
-      usuario,
+      ...auditActor,
       acao: "Criacao de processo",
       detalhes: `Processo ${processo.numeroProcesso || "sem numero"} criado.`
     }));
@@ -674,7 +1086,7 @@ async function handleApi(req, res, url) {
     store.processos[index] = updated;
     store.auditoria.unshift(createAuditEntry({
       processoId: updated.id,
-      usuario,
+      ...auditActor,
       acao: "Alteracao de processo",
       detalhes: `Status atual: ${updated.status}.`,
       alteracoes: processChanges(current, updated)
@@ -712,7 +1124,7 @@ async function handleApi(req, res, url) {
     store.processos[index] = updated;
     store.auditoria.unshift(createAuditEntry({
       processoId: updated.id,
-      usuario,
+      ...auditActor,
       acao: "Anulacao de empenho",
       detalhes: `Motivo: ${updated.motivoAnulacao}.`
     }));
@@ -763,7 +1175,7 @@ async function handleApi(req, res, url) {
     processo.versao = Number(processo.versao || 0) + 1;
     processo.atualizadoEm = new Date().toISOString();
     store.auditoria.unshift(createAuditEntry({
-      processoId: processo.id, usuario, acao: "Registro de entrega",
+      processoId: processo.id, ...auditActor, acao: "Registro de entrega",
       detalhes: complete ? "Entrega integral registrada." : "Entrega parcial registrada.",
       alteracoes: { entregaId: entrega.id, itens: entrega.itens }
     }));
@@ -788,7 +1200,7 @@ async function handleApi(req, res, url) {
     processo.inativadoPor = usuario;
     processo.versao = Number(processo.versao || 0) + 1;
     store.auditoria.unshift(createAuditEntry({
-      processoId: processo.id, usuario, acao: "Inativacao de processo", detalhes: "Processo marcado como inativo."
+      processoId: processo.id, ...auditActor, acao: "Inativacao de processo", detalhes: "Processo marcado como inativo."
     }));
     await writeStore(store);
     sendJson(res, 200, enrichProcess(processo));
@@ -823,15 +1235,14 @@ async function handleApi(req, res, url) {
     const observacao = {
       id: crypto.randomUUID(),
       processoId: obsMatch[1],
-      usuario,
-      usuarioEmail: user.email,
+      ...auditActor,
       conteudo: content,
       criadoEm: new Date().toISOString()
     };
     store.observacoes.unshift(observacao);
     store.auditoria.unshift(createAuditEntry({
       processoId: observacao.processoId,
-      usuario,
+      ...auditActor,
       acao: "Inclusao de observacao",
       detalhes: "Observacao registrada no processo."
     }));
@@ -862,7 +1273,7 @@ async function handleApi(req, res, url) {
       sendJson(res, 404, { error: "Observacao nao encontrada" });
       return;
     }
-    if (role !== "admin" && observacao.usuarioEmail !== user.email) {
+    if (role !== "admin" && !observationBelongsToUser(observacao, user)) {
       sendJson(res, 403, { error: "Somente o autor ou administrador pode alterar esta observacao." });
       return;
     }
@@ -870,7 +1281,7 @@ async function handleApi(req, res, url) {
     observacao.atualizadoEm = new Date().toISOString();
     store.auditoria.unshift(createAuditEntry({
       processoId: obsItemMatch[1],
-      usuario,
+      ...auditActor,
       acao: "Alteracao de observacao",
       detalhes: "Observacao atualizada no processo."
     }));
@@ -894,7 +1305,7 @@ async function handleApi(req, res, url) {
       sendJson(res, 404, { error: "Observacao nao encontrada" });
       return;
     }
-    if (role !== "admin" && targetObservation.usuarioEmail !== user.email) {
+    if (role !== "admin" && !observationBelongsToUser(targetObservation, user)) {
       sendJson(res, 403, { error: "Somente o autor ou administrador pode remover esta observacao." });
       return;
     }
@@ -906,7 +1317,7 @@ async function handleApi(req, res, url) {
     }
     store.auditoria.unshift(createAuditEntry({
       processoId: obsItemMatch[1],
-      usuario,
+      ...auditActor,
       acao: "Exclusao de observacao",
       detalhes: "Observacao removida do processo."
     }));
@@ -928,8 +1339,22 @@ async function handleApi(req, res, url) {
       sendJson(res, 400, { error: "Documento, nome do arquivo e conteudo sao obrigatorios" });
       return;
     }
+    const documentKey = String(body.documentKey).trim();
+    if (![...REQUIRED_DOCUMENT_KEYS, "complementares"].includes(documentKey)) {
+      sendJson(res, 400, { error: "Tipo de documento invalido." });
+      return;
+    }
+    const metadataError = uploadMetadataError(body, { complementary: documentKey === "complementares" });
+    if (metadataError) {
+      sendJson(res, 400, { error: metadataError });
+      return;
+    }
+    const fileName = String(body.fileName).trim();
+    const mimeType = String(body.mimeType || "").trim();
+    const title = String(body.titulo || "").trim();
+    const description = String(body.descricao || "").trim();
 
-    if (body.documentKey === "complementares" && !String(body.titulo || "").trim()) {
+    if (documentKey === "complementares" && !title) {
       sendJson(res, 400, { error: "O nome do documento complementar e obrigatorio" });
       return;
     }
@@ -940,40 +1365,57 @@ async function handleApi(req, res, url) {
       return;
     }
     const content = decodeUploadContent(body.contentBase64);
-    if (!validateProcessDocumentUpload(body.documentKey, body.fileName, body.mimeType, content)) {
+    if (!validateProcessDocumentUpload(documentKey, fileName, mimeType, content)) {
       sendJson(res, 400, { error: "Documento invalido. Processo SPED, Nota de Empenho e Nota Fiscal devem ser PDF valido." });
       return;
     }
 
-    if (!canAttachDocument(current, body.documentKey)) {
+    if (!canAttachDocument(current, documentKey)) {
       sendJson(res, 400, { error: "Este documento nao pode ser anexado neste momento." });
       return;
     }
 
     const safeProcessId = safeName(documentMatch[1]);
-    const safeFileName = `${safeName(body.documentKey)}-${safeName(body.fileName)}`;
+    const safeFileName = `${crypto.randomUUID()}-${safeName(documentKey)}-${safeName(fileName)}`;
     const dir = join(UPLOAD_ROOT, safeProcessId);
-    await mkdir(dir, { recursive: true });
-    await writeFile(join(dir, safeFileName), content);
+    const fullPath = join(dir, safeFileName);
+    const currentDocuments = documentEntries(current.documentos);
+    const replacedDocument = documentKey === "complementares" ? null : current.documentos?.[documentKey];
+    const resultingCount = currentDocuments.length + (replacedDocument ? 0 : 1);
+    const resultingBytes = await totalStoredAttachmentBytes(currentDocuments, MAX_PROCESS_UPLOAD_BYTES)
+      - await storedAttachmentByteSize(replacedDocument)
+      + content.length;
+    if (resultingCount > MAX_PROCESS_DOCUMENTS) {
+      sendJson(res, 413, { error: `Cada processo aceita no maximo ${MAX_PROCESS_DOCUMENTS} documentos.` });
+      return;
+    }
+    if (resultingBytes > MAX_PROCESS_UPLOAD_BYTES) {
+      sendJson(res, 413, { error: "O limite total de documentos deste processo foi atingido." });
+      return;
+    }
+    await createPrivateFile(fullPath, content, { root: UPLOAD_ROOT, mode: 0o600 });
 
     const documentInfo = {
-      fileName: body.fileName,
-      titulo: body.documentKey === "complementares" ? String(body.titulo || "").trim() : undefined,
-      descricao: body.documentKey === "complementares" ? String(body.descricao || "").trim() : undefined,
+      fileName,
+      titulo: documentKey === "complementares" ? title : undefined,
+      descricao: documentKey === "complementares" ? description : undefined,
       path: `/uploads/${safeProcessId}/${safeFileName}`,
-      mimeType: body.mimeType || contentTypeForPath(safeFileName),
+      mimeType: mimeType || contentTypeForPath(safeFileName),
+      sizeBytes: content.length,
       uploadedAt: new Date().toISOString(),
-      uploadedBy: usuario
+      uploadedBy: usuario,
+      uploadedByEmail: user.email,
+      uploadedById: user.id
     };
 
     const documentos = { ...(current.documentos || {}) };
-    if (body.documentKey === "complementares") {
+    if (documentKey === "complementares") {
       const currentComplementares = documentos.complementares
         ? (Array.isArray(documentos.complementares) ? documentos.complementares : [documentos.complementares])
         : [];
       documentos.complementares = [...currentComplementares, documentInfo];
     } else {
-      documentos[body.documentKey] = documentInfo;
+      documentos[documentKey] = documentInfo;
     }
 
     store.processos[index] = {
@@ -984,18 +1426,28 @@ async function handleApi(req, res, url) {
     };
     store.auditoria.unshift(createAuditEntry({
       processoId: current.id,
-      usuario,
+      ...auditActor,
       acao: "Anexo de documento",
-      detalhes: `Documento ${body.documentKey} anexado.`,
+      detalhes: `Documento ${documentKey} anexado.`,
       documento: {
-        chave: body.documentKey,
+        chave: documentKey,
         nome: documentInfo.titulo || documentInfo.fileName,
         fileName: documentInfo.fileName,
         path: documentInfo.path,
         mimeType: documentInfo.mimeType
       }
     }));
-    await writeStore(store);
+    try {
+      await writeStore(store);
+    } catch (error) {
+      await rm(fullPath, { force: true }).catch(() => null);
+      throw error;
+    }
+    if (replacedDocument?.path && replacedDocument.path !== documentInfo.path) {
+      await removeUploadedFile(replacedDocument.path).catch((error) => {
+        logError("replaced_upload_cleanup_failed", { path: replacedDocument.path, message: error.message });
+      });
+    }
     sendJson(res, 200, enrichProcess(store.processos[index]));
     return;
   }
@@ -1051,12 +1503,14 @@ async function handleApi(req, res, url) {
     };
     store.auditoria.unshift(createAuditEntry({
       processoId: current.id,
-      usuario,
+      ...auditActor,
       acao: "Remocao de documento",
       detalhes: `Documento ${documentKey} removido.`
     }));
     await writeStore(store);
-    await removeUploadedFile(removedDocument?.path);
+    await removeUploadedFile(removedDocument?.path).catch((error) => {
+      logError("removed_upload_cleanup_failed", { path: removedDocument?.path, message: error.message });
+    });
     sendJson(res, 200, enrichProcess(store.processos[index]));
     return;
   }
@@ -1068,6 +1522,10 @@ async function handleApi(req, res, url) {
       sendJson(res, 404, { error: "Processo nao encontrado" });
       return;
     }
+    if (activeCompiledDownloads >= MAX_CONCURRENT_COMPILED_DOWNLOADS) {
+      sendJson(res, 429, { error: "Ha muitos downloads sendo compilados. Tente novamente em instantes." });
+      return;
+    }
     const payload = {
       geradoEm: new Date().toISOString(),
       processo: enrichProcess(processo),
@@ -1077,23 +1535,28 @@ async function handleApi(req, res, url) {
     };
     const fileName = safeName(processo.numeroProcesso || processo.id);
     const format = String(url.searchParams.get("format") || "zip").toLowerCase();
-    if (format === "pdf") {
-      const documents = await processDocumentEntries(processo);
-      const pdf = await createCompiledPdf(documents, payload);
+    activeCompiledDownloads += 1;
+    try {
+      if (format === "pdf") {
+        const documents = await processDocumentEntries(processo);
+        const pdf = await createCompiledPdf(documents, payload);
+        res.writeHead(200, {
+          "content-type": "application/pdf",
+          "content-disposition": `attachment; filename="${fileName}-processo-compilado.pdf"`
+        });
+        res.end(pdf);
+        return;
+      }
+      const entries = await processDownloadEntries(processo, payload);
+      const zip = createZip(entries);
       res.writeHead(200, {
-        "content-type": "application/pdf",
-        "content-disposition": `attachment; filename="${fileName}-processo-compilado.pdf"`
+        "content-type": "application/zip",
+        "content-disposition": `attachment; filename="${fileName}-processo-completo.zip"`
       });
-      res.end(pdf);
-      return;
+      res.end(zip);
+    } finally {
+      activeCompiledDownloads -= 1;
     }
-    const entries = await processDownloadEntries(processo, payload);
-    const zip = createZip(entries);
-    res.writeHead(200, {
-      "content-type": "application/zip",
-      "content-disposition": `attachment; filename="${fileName}-processo-completo.zip"`
-    });
-    res.end(zip);
     return;
   }
 
@@ -1130,7 +1593,10 @@ async function handleApi(req, res, url) {
 
     if (index >= 0) store.fornecedores[index] = updated;
     else store.fornecedores.push(updated);
-    await writeStore(store);
+    await writeStore(store, [transactionalSecurityEvent("supplier_upserted", {
+      ...securityActor,
+      metadata: { supplierId: updated.id, created: index < 0 }
+    })]);
     sendJson(res, index >= 0 ? 200 : 201, updated);
     return;
   }
@@ -1143,30 +1609,27 @@ async function handleApi(req, res, url) {
   sendJson(res, 404, { error: "Rota nao encontrada" });
 }
 
-async function currentUser(req, store) {
-  const authenticated = await sessionUser(req, store);
-  if (authenticated) {
-    return {
-      email: authenticated.email,
-      name: authenticated.nome,
-      role: resolveRole(authenticated)
-    };
-  }
+function publicUserContext() {
   const email = "publico@consulta.local";
   const name = "Consulta publica";
   return {
+    id: "",
     email,
     name,
     role: resolveRole({ email })
   };
 }
 
-function requiresAdmin(method = "", pathname = "") {
+export function requiresAdmin(method = "", pathname = "") {
   if (pathname === "/api/emails/run-due") return true;
   if (pathname === "/api/emails/status") return true;
   if (pathname.startsWith("/api/settings")) return true;
   if (pathname.startsWith("/api/admin/")) return true;
   return false;
+}
+
+export function roleCanMutate(role = "") {
+  return ["admin", "almoxarifado"].includes(String(role).trim().toLowerCase());
 }
 
 function normalizeManagedRole(role = "") {
@@ -1178,20 +1641,37 @@ function requiresAuditAccess(method = "", pathname = "") {
   return String(method).toUpperCase() === "GET" && ["/api/audit", "/api/emails/history", "/api/security-audit"].includes(pathname);
 }
 
-function isLoginRateLimited(req, email = "") {
-  return isRateLimited(loginAttemptKey(req, email), LOGIN_RATE_LIMIT_WINDOW_MS, LOGIN_RATE_LIMIT_MAX);
+async function reserveLoginAttempt(req, email = "") {
+  const [accountAllowed, ipAllowed] = await Promise.all([
+    consumeRateLimitAttempt(
+      loginAccountKey(email),
+      LOGIN_RATE_LIMIT_WINDOW_MS,
+      LOGIN_RATE_LIMIT_MAX
+    ),
+    consumeRateLimitAttempt(
+      loginIpKey(req),
+      LOGIN_RATE_LIMIT_WINDOW_MS,
+      Math.max(LOGIN_RATE_LIMIT_MAX * 10, LOGIN_RATE_LIMIT_MAX)
+    )
+  ]);
+  return accountAllowed && ipAllowed;
 }
 
-function recordFailedLogin(req, email = "") {
-  return recordRateLimitFailure(loginAttemptKey(req, email), LOGIN_RATE_LIMIT_WINDOW_MS);
+async function clearSuccessfulLogin(req, email = "") {
+  await Promise.all([
+    clearRateLimit(loginAccountKey(email)),
+    clearRateLimit(loginIpKey(req))
+  ]);
 }
 
-function clearFailedLogin(req, email = "") {
-  return clearRateLimit(loginAttemptKey(req, email));
+function loginAccountKey(email = "") {
+  const normalized = normalizeEmail(email) || "unknown";
+  const digest = createHash("sha256").update(normalized).digest("hex");
+  return `login:account:${digest}`;
 }
 
-function loginAttemptKey(req, email = "") {
-  return `${clientIp(req)}:${normalizeEmail(email) || "unknown"}`;
+function loginIpKey(req) {
+  return `login:ip:${clientIp(req)}`;
 }
 
 function clientIp(req) {
@@ -1209,59 +1689,115 @@ async function ensureUsers(store) {
   // Bootstrap local-only admin account from explicit environment variables.
   const existingAdmin = store.usuarios.find((user) => normalizeEmail(user.email) === LOCAL_ADMIN_EMAIL);
   if (existingAdmin) {
-    existingAdmin.senhaHash = hashPassword(LOCAL_ADMIN_PASSWORD);
-    existingAdmin.ativo = true;
-    existingAdmin.role = "admin";
-    existingAdmin.origemCadastro = existingAdmin.origemCadastro || "local";
-    existingAdmin.precisaDefinirSenha = false;
-    existingAdmin.atualizadoEm = new Date().toISOString();
+    localAdminBootstrapped = true;
+    return;
   } else {
-    store.usuarios.push({
+    const localAdmin = {
       id: `admin-${crypto.randomUUID()}`,
       nome: "Administrador Almoxarifado",
       email: LOCAL_ADMIN_EMAIL,
       origemCadastro: "local",
-      senhaHash: hashPassword(LOCAL_ADMIN_PASSWORD),
-      precisaDefinirSenha: false,
+      senhaHash: await hashPassword(LOCAL_ADMIN_PASSWORD),
+      precisaDefinirSenha: true,
+      authVersion: 1,
       ativo: true,
       role: "admin",
       criadoEm: new Date().toISOString()
-    });
+    };
+    store.usuarios.push(localAdmin);
+    await writeStore(store, [transactionalSecurityEvent("local_admin_bootstrapped", {
+      actorEmail: LOCAL_ADMIN_EMAIL,
+      targetUserId: localAdmin.id,
+      metadata: { firstPasswordRequired: true }
+    })]);
   }
-  await writeStore(store);
   localAdminBootstrapped = true;
 }
 
-function publicProcess(processo = {}) {
-  const {
-    documentos,
-    criadoPor,
-    criadoPorEmail,
-    motivoAnulacao,
-    anuladoPor,
-    ...safe
-  } = processo;
+export function publicProcess(processo = {}) {
+  const materiais = (Array.isArray(processo.materiais) ? processo.materiais : []).map((material) => ({
+    descricao: String(material.descricao || ""),
+    valorUnitario: Number(material.valorUnitario || 0),
+    quantidade: Number(material.quantidade || 0)
+  }));
   return {
-    ...safe,
-    documentosDisponiveis: Object.keys(documentos || {}).filter((key) => Boolean(documentos[key]))
+    id: String(processo.id || ""),
+    numeroProcesso: String(processo.numeroProcesso || ""),
+    numeroEmpenho: String(processo.numeroEmpenho || ""),
+    fornecedor: String(processo.fornecedor || ""),
+    materiais,
+    status: String(processo.status || ""),
+    dataProcesso: String(processo.dataProcesso || ""),
+    dataEnvioEmpenho: String(processo.dataEnvioEmpenho || ""),
+    dataEnvioFornecedor: String(processo.dataEnvioFornecedor || ""),
+    dataEntrega: String(processo.dataEntrega || ""),
+    dataEnvioLiquidacao: String(processo.dataEnvioLiquidacao || ""),
+    dataLiquidacao: String(processo.dataLiquidacao || ""),
+    dataPagamento: String(processo.dataPagamento || ""),
+    valorTotal: Number(processo.valorTotal || 0),
+    diasDecorridos: Number(processo.diasDecorridos || 0),
+    documentosDisponiveis: Object.keys(processo.documentos || {}).filter((key) => Boolean(processo.documentos[key]))
   };
 }
 
 function createSession(user) {
-  return createSessionRecord(user.id, SESSION_TIMEOUT_MS);
+  return createSessionRecord(user.id, SESSION_TIMEOUT_MS, positiveAuthVersion(user.authVersion));
 }
 
-async function sessionUser(req, store) {
+async function sessionUser(req) {
   const token = bearerToken(req);
   if (!token) return null;
-  const userId = await resolveSession(token, SESSION_TIMEOUT_MS);
-  if (!userId) return null;
-  return store.usuarios.find((user) => user.id === userId && user.ativo !== false) || null;
+  return resolveSessionUser(token, SESSION_TIMEOUT_MS);
 }
 
 function bearerToken(req) {
   const header = String(req.headers.authorization || "");
-  return header.startsWith("Bearer ") ? header.slice(7) : "";
+  if (header.startsWith("Bearer ")) return header.slice(7);
+  return sessionCookie(req);
+}
+
+function usesCookieSession(req) {
+  return !String(req.headers.authorization || "").startsWith("Bearer ") && Boolean(sessionCookie(req));
+}
+
+function sessionCookie(req) {
+  const cookies = String(req.headers.cookie || "").split(";");
+  for (const cookie of cookies) {
+    const separator = cookie.indexOf("=");
+    if (separator < 0) continue;
+    if (cookie.slice(0, separator).trim() === "almox_session") {
+      try {
+        return decodeURIComponent(cookie.slice(separator + 1).trim());
+      } catch {
+        return "";
+      }
+    }
+  }
+  return "";
+}
+
+function setSessionCookie(res, token) {
+  const maxAge = Math.max(1, Math.floor(SESSION_COOKIE_MAX_AGE_MS / 1000));
+  const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
+  res.setHeader("set-cookie", `almox_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAge}${secure}`);
+}
+
+function clearSessionCookie(res) {
+  const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
+  res.setHeader("set-cookie", `almox_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0${secure}`);
+}
+
+function isSameOriginMutation(req) {
+  const origin = String(req.headers.origin || "");
+  const host = String(req.headers.host || "");
+  if (!origin || !host) return false;
+  try {
+    const parsed = new URL(origin);
+    const expectedProtocol = process.env.NODE_ENV === "production" ? "https:" : parsed.protocol;
+    return parsed.host === host && parsed.protocol === expectedProtocol;
+  } catch {
+    return false;
+  }
 }
 
 function publicUser(user) {
@@ -1269,7 +1805,8 @@ function publicUser(user) {
     nome: user.nome,
     email: user.email,
     foto: user.foto || "",
-    role: resolveRole(user)
+    role: resolveRole(user),
+    precisaDefinirSenha: Boolean(user.precisaDefinirSenha)
   };
 }
 
@@ -1302,33 +1839,18 @@ function parseList(value = "") {
     .filter(Boolean);
 }
 
-function hashPassword(password) {
-  const salt = randomBytes(16).toString("hex");
-  const hash = scryptSync(String(password), salt, 64).toString("hex");
-  return `${salt}:${hash}`;
+function positiveRuntimeInteger(value, fallback) {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-export function isValidPassword(password = "") {
-  const value = String(password);
-  return value.length >= 8
-    && /\p{Lu}/u.test(value)
-    && /\p{N}/u.test(value)
-    && /[^\p{L}\p{N}]/u.test(value);
-}
+export { isValidPassword };
 
 function passwordPolicyMessage() {
-  return "A senha deve ter no minimo 8 caracteres, incluindo uma letra maiuscula, um numero e um caractere especial.";
+  return PASSWORD_POLICY_MESSAGE;
 }
 
-function verifyPassword(password, stored) {
-  const [salt, hash] = String(stored || "").split(":");
-  if (!salt || !hash) return false;
-  const expected = Buffer.from(hash, "hex");
-  const actual = scryptSync(String(password), salt, 64);
-  return expected.length === actual.length && timingSafeEqual(expected, actual);
-}
-
-async function serveStatic(res, pathname) {
+async function serveStatic(req, res, pathname) {
   const safePath = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
   const fullPath = normalize(join(ROOT, safePath));
 
@@ -1338,17 +1860,26 @@ async function serveStatic(res, pathname) {
   }
 
   await serveFile(res, fullPath, {
-    "cache-control": "no-store",
+    "cache-control": safePath === "index.html" ? "no-cache" : "public, max-age=60, must-revalidate",
     "cross-origin-opener-policy": "same-origin-allow-popups",
     "referrer-policy": "strict-origin-when-cross-origin"
-  });
+  }, { request: req, etag: true, root: ROOT });
 }
 
 async function serveUpload(req, res, pathname) {
-  const store = await readStore();
-  const user = await sessionUser(req, store);
+  const user = await sessionUser(req);
   if (!user) {
     sendJson(res, 401, { error: "Faca login para acessar documentos." });
+    return;
+  }
+  const store = await readStore();
+  const reference = findUploadReference(store, pathname);
+  if (!reference) {
+    sendText(res, 404, "Arquivo nao encontrado");
+    return;
+  }
+  if (reference.scope === "template" && resolveRole(user) !== "admin") {
+    sendText(res, 403, "Acesso negado");
     return;
   }
   const safePath = pathname.replace(/^\/uploads\/+/, "");
@@ -1361,14 +1892,26 @@ async function serveUpload(req, res, pathname) {
 
   await serveFile(res, fullPath, {
     "cache-control": "private, no-store",
-    "content-disposition": `attachment; filename="${safeName(fullPath.split("/").pop() || "documento")}"`
-  });
+    "content-disposition": `attachment; filename="${safeName(reference.fileName || "documento")}"`
+  }, { root: UPLOAD_ROOT, mode: 0o600 });
 }
 
-async function serveFavicon(res) {
+function findUploadReference(store, pathname) {
+  for (const processo of store.processos || []) {
+    const attachment = documentEntries(processo.documentos).find((item) => item.path === pathname);
+    if (attachment) return { ...attachment, scope: "process" };
+  }
+  for (const template of Object.values(store.configuracoes?.emailTemplates || {})) {
+    const attachment = (template.anexos || []).find((item) => item.path === pathname);
+    if (attachment) return { ...attachment, scope: "template" };
+  }
+  return null;
+}
+
+async function serveFavicon(req, res) {
   await serveFile(res, FAVICON_FILE, {
-    "cache-control": "public, max-age=86400"
-  });
+    "cache-control": "public, max-age=300, must-revalidate"
+  }, { request: req, etag: true });
 }
 
 async function removeUploadedFile(uploadPath = "") {
@@ -1376,23 +1919,68 @@ async function removeUploadedFile(uploadPath = "") {
   const relativePath = String(uploadPath).replace(/^\/uploads\/+/, "");
   const fullPath = normalize(join(UPLOAD_ROOT, relativePath));
   if (!isPathWithin(UPLOAD_ROOT, fullPath)) return;
+  await privateFileMetadata(fullPath, { root: UPLOAD_ROOT, mode: 0o600 });
   await rm(fullPath, { force: true });
 }
 
-async function serveFile(res, filePath, extraHeaders = {}) {
+export async function serveFile(res, filePath, extraHeaders = {}, options = {}) {
+  let opened;
+  let responseStarted = false;
   try {
-    const content = await readFile(filePath);
-    res.writeHead(200, {
+    opened = await openRegularFileNoFollow(filePath, {
+      root: options.root,
+      mode: options.mode
+    });
+    const metadata = opened.metadata;
+    const responseHeaders = {
       "content-type": contentTypeForPath(filePath),
       ...extraHeaders
+    };
+    if (options.etag) {
+      responseHeaders.etag = `W/"${metadata.size.toString(16)}-${Math.trunc(metadata.mtimeMs).toString(16)}"`;
+      if (String(options.request?.headers?.["if-none-match"] || "") === responseHeaders.etag) {
+        res.writeHead(304, responseHeaders);
+        res.end();
+        return;
+      }
+    }
+    res.writeHead(200, {
+      ...responseHeaders,
+      "content-length": metadata.size
     });
-    res.end(content);
+    responseStarted = true;
+    if (metadata.size === 0) {
+      res.end();
+      return;
+    }
+    const stream = opened.handle.createReadStream({
+      autoClose: false,
+      start: 0,
+      end: metadata.size - 1
+    });
+    if (typeof res.write === "function" && typeof res.on === "function") {
+      await pipeline(stream, res);
+      return;
+    }
+    const chunks = [];
+    for await (const chunk of stream) chunks.push(chunk);
+    res.end(Buffer.concat(chunks));
   } catch (error) {
     if (error.code === "ENOENT") {
       sendText(res, 404, "Arquivo nao encontrado");
       return;
     }
+    if (error instanceof UnsafeFilePathError || error.code === "ELOOP") {
+      sendText(res, 403, "Acesso negado");
+      return;
+    }
+    if (responseStarted) {
+      res.destroy?.(error);
+      return;
+    }
     throw error;
+  } finally {
+    await opened?.handle.close().catch(() => null);
   }
 }
 
@@ -1417,13 +2005,13 @@ export function contentTypeForPath(pathname = "") {
   }[extname(pathname).toLowerCase()] || "application/octet-stream";
 }
 
-async function readJson(req) {
+async function readJson(req, maxBytes = MAX_JSON_BODY_BYTES) {
   const chunks = [];
   let total = 0;
   for await (const chunk of req) {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     total += buffer.length;
-    if (total > MAX_JSON_BODY_BYTES) {
+    if (total > maxBytes) {
       const error = new Error("Payload muito grande.");
       error.statusCode = 413;
       throw error;
@@ -1431,7 +2019,20 @@ async function readJson(req) {
     chunks.push(buffer);
   }
   if (!chunks.length) return {};
-  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  try {
+    const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      const error = new Error("O corpo da requisicao deve ser um objeto JSON.");
+      error.statusCode = 400;
+      throw error;
+    }
+    return parsed;
+  } catch (error) {
+    if (error.statusCode) throw error;
+    const invalidJson = new Error("JSON invalido.");
+    invalidJson.statusCode = 400;
+    throw invalidJson;
+  }
 }
 
 function sendJson(res, statusCode, payload) {
@@ -1454,7 +2055,29 @@ function applySecurityHeaders(res) {
 }
 
 function decodeUploadContent(contentBase64 = "") {
-  const content = Buffer.from(String(contentBase64 || ""), "base64");
+  if (typeof contentBase64 !== "string") {
+    const error = new Error("Conteudo Base64 invalido.");
+    error.statusCode = 400;
+    throw error;
+  }
+  const encoded = contentBase64.trim();
+  const maximumEncodedLength = Math.ceil(MAX_UPLOAD_BYTES / 3) * 4 + 4;
+  if (encoded.length > maximumEncodedLength) {
+    const error = new Error("Arquivo acima do limite permitido.");
+    error.statusCode = 413;
+    throw error;
+  }
+  if (!encoded || encoded.length % 4 !== 0 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) {
+    const error = new Error("Conteudo Base64 invalido.");
+    error.statusCode = 400;
+    throw error;
+  }
+  const content = Buffer.from(encoded, "base64");
+  if (content.toString("base64") !== encoded) {
+    const error = new Error("Conteudo Base64 invalido.");
+    error.statusCode = 400;
+    throw error;
+  }
   if (content.length > MAX_UPLOAD_BYTES) {
     const error = new Error("Arquivo acima do limite permitido.");
     error.statusCode = 413;
@@ -1463,29 +2086,55 @@ function decodeUploadContent(contentBase64 = "") {
   return content;
 }
 
+function uploadMetadataError(body = {}, options = {}) {
+  const fileName = String(body.fileName || "").trim();
+  const mimeType = String(body.mimeType || "").trim();
+  if (!fileName || fileName.length > MAX_UPLOAD_FILENAME_LENGTH) {
+    return `O nome do arquivo deve ter entre 1 e ${MAX_UPLOAD_FILENAME_LENGTH} caracteres.`;
+  }
+  if (mimeType.length > MAX_UPLOAD_MIME_LENGTH) {
+    return `O tipo MIME deve ter no maximo ${MAX_UPLOAD_MIME_LENGTH} caracteres.`;
+  }
+  if (options.complementary) {
+    const title = String(body.titulo || "").trim();
+    const description = String(body.descricao || "").trim();
+    if (title.length > MAX_COMPLEMENT_TITLE_LENGTH) {
+      return `O titulo deve ter no maximo ${MAX_COMPLEMENT_TITLE_LENGTH} caracteres.`;
+    }
+    if (description.length > MAX_COMPLEMENT_DESCRIPTION_LENGTH) {
+      return `A descricao deve ter no maximo ${MAX_COMPLEMENT_DESCRIPTION_LENGTH} caracteres.`;
+    }
+  }
+  return "";
+}
+
 async function handleHealth(res, pathname = "/health") {
   if (pathname === "/health/live") {
     sendJson(res, 200, { ok: true, checkedAt: new Date().toISOString() });
     return;
   }
-  const storageBackend = await detectStoreBackend();
+  const storageBackend = databaseConfigured() ? "postgres" : "json";
   const checks = {
-    storage: false,
+    storage: storageBackend === "json" && process.env.NODE_ENV !== "production",
     storageBackend,
     emailConfigured: EMAIL_CONFIGURATION.configured,
-    schedulerRunning: emailSchedulerRunning
+    schedulerRunning: emailSchedulerRunning,
+    scheduler: emailSchedulerHealthStatus()
   };
-  try {
-    const store = await readStore();
-    checks.storage = Boolean(store && typeof store === "object");
-  } catch (error) {
-    checks.storageError = error.message;
+  if (storageBackend === "postgres") {
+    try {
+      const result = await query("SELECT revision FROM app_state_revision WHERE id = true LIMIT 1");
+      checks.storage = Boolean(result.rows[0]);
+    } catch {
+      checks.storage = false;
+    }
   }
   const ok = pathname === "/health/ready"
     ? checks.storage && (process.env.NODE_ENV !== "production" || storageBackend === "postgres")
-    : checks.storage && checks.emailConfigured && checks.schedulerRunning;
+    : checks.storage && checks.emailConfigured && !checks.scheduler.degraded;
   sendJson(res, ok ? 200 : 503, {
     ok,
+    degraded: !checks.storage || !checks.emailConfigured || checks.scheduler.degraded,
     checks,
     checkedAt: new Date().toISOString()
   });
@@ -1497,6 +2146,15 @@ function logInfo(event, data = {}) {
 
 function logError(event, data = {}) {
   console.error(JSON.stringify({ level: "error", event, at: new Date().toISOString(), ...data }));
+}
+
+async function recordSecurityEventSafely(eventType, event = {}) {
+  try {
+    return await recordSecurityEvent(eventType, event);
+  } catch (error) {
+    logError("security_audit_write_failed", { eventType, message: error.message });
+    return null;
+  }
 }
 
 export function errorResponsePayload(error) {
@@ -1533,23 +2191,98 @@ function emailStatusPayload() {
     fromName: EMAIL_FROM_NAME,
     simulationRecipient: EMAIL_TEST_RECIPIENT,
     mode: "producao",
-    schedulerRunning: emailSchedulerRunning
+    schedulerRunning: emailSchedulerRunning,
+    scheduler: emailSchedulerHealthStatus()
   };
 }
 
 function startEmailScheduler() {
   if (emailSchedulerRunning) return;
   emailSchedulerRunning = true;
+  emailSchedulerState.startedAt = new Date().toISOString();
   emailSchedulerTimeout = setTimeout(() => {
-    runDueEmailNotifications().catch((error) => {
+    runScheduledEmailNotifications().catch((error) => {
       logError("email_scheduler_failed", { message: error.message });
     });
-  }, 10_000);
+  }, EMAIL_SCHEDULER_START_DELAY_MS);
   emailSchedulerInterval = setInterval(() => {
-    runDueEmailNotifications().catch((error) => {
+    runScheduledEmailNotifications().catch((error) => {
       logError("email_scheduler_failed", { message: error.message });
     });
   }, EMAIL_CHECK_INTERVAL_MS);
+}
+
+function runScheduledEmailNotifications() {
+  if (emailSchedulerPromise) return emailSchedulerPromise;
+  emailSchedulerState.lastRunStartedAt = new Date().toISOString();
+  emailSchedulerPromise = runDueEmailNotifications()
+    .then((result) => {
+      const finishedAt = new Date().toISOString();
+      if (result.ok) {
+        emailSchedulerState.lastSuccessAt = finishedAt;
+        emailSchedulerState.consecutiveErrors = 0;
+      } else {
+        emailSchedulerState.lastErrorAt = finishedAt;
+        emailSchedulerState.consecutiveErrors += 1;
+      }
+      return result;
+    }, (error) => {
+      emailSchedulerState.lastErrorAt = new Date().toISOString();
+      emailSchedulerState.consecutiveErrors += 1;
+      throw error;
+    })
+    .finally(() => {
+      emailSchedulerPromise = undefined;
+    });
+  return emailSchedulerPromise;
+}
+
+export function emailSchedulerHealthStatus(state = emailSchedulerState, now = Date.now(), running = emailSchedulerRunning) {
+  const schedulerAgeMs = ageInMilliseconds(state.startedAt, now);
+  const lastRunAgeMs = ageInMilliseconds(state.lastRunStartedAt, now);
+  const lastSuccessAgeMs = ageInMilliseconds(state.lastSuccessAt, now);
+  const lastErrorAgeMs = ageInMilliseconds(state.lastErrorAt, now);
+  const startupGraceExpired = running
+    && lastRunAgeMs === null
+    && schedulerAgeMs !== null
+    && schedulerAgeMs > EMAIL_SCHEDULER_GRACE_PERIOD_MS;
+  const stale = running
+    && lastRunAgeMs !== null
+    && lastRunAgeMs > EMAIL_SCHEDULER_STALE_AFTER_MS;
+  const errorAfterLastSuccess = lastErrorAgeMs !== null && (
+    lastSuccessAgeMs === null || Date.parse(state.lastErrorAt) > Date.parse(state.lastSuccessAt)
+  );
+  const persistentError = errorAfterLastSuccess && (
+    Number(state.consecutiveErrors || 0) >= EMAIL_SCHEDULER_PERSISTENT_ERROR_COUNT
+      || lastErrorAgeMs > EMAIL_SCHEDULER_GRACE_PERIOD_MS
+  );
+  const degraded = !running || startupGraceExpired || stale || persistentError;
+  let status = "starting";
+  if (!running) status = "stopped";
+  else if (degraded) status = "degraded";
+  else if (errorAfterLastSuccess) status = "warning";
+  else if (state.lastRunStartedAt) status = "healthy";
+  return {
+    running,
+    status,
+    degraded,
+    startedAt: state.startedAt || null,
+    lastRunStartedAt: state.lastRunStartedAt || null,
+    lastSuccessAt: state.lastSuccessAt || null,
+    lastErrorAt: state.lastErrorAt || null,
+    schedulerAgeMs,
+    lastRunAgeMs,
+    lastSuccessAgeMs,
+    lastErrorAgeMs,
+    consecutiveErrors: Number(state.consecutiveErrors || 0)
+  };
+}
+
+function ageInMilliseconds(timestamp, now = Date.now()) {
+  if (!timestamp) return null;
+  const parsed = Date.parse(timestamp);
+  if (!Number.isFinite(parsed)) return null;
+  return Math.max(0, now - parsed);
 }
 
 function startMaintenance() {
@@ -1571,6 +2304,9 @@ async function gracefulShutdown(signal) {
   const forceExit = setTimeout(() => process.exit(1), 10_000);
   forceExit.unref();
   server.close(async () => {
+    if (emailSchedulerPromise) {
+      await emailSchedulerPromise.catch((error) => logError("email_shutdown_wait_failed", { message: error.message }));
+    }
     await closePool().catch((error) => logError("database_close_failed", { message: error.message }));
     clearTimeout(forceExit);
     process.exit(0);
@@ -1618,13 +2354,13 @@ async function runDueEmailNotifications(options = {}) {
       continue;
     }
 
-    const claimed = await claimEmailDispatch(dedupeKey, {
+    const claimToken = await claimEmailDispatch(dedupeKey, {
       processoId: candidate.processo.id,
       tipo: candidate.tipo,
       destinatarios: recipients,
       modoTeste: Boolean(testRecipient)
     }, Boolean(options.force));
-    if (!claimed) {
+    if (!claimToken) {
       result.skipped.push({ processoId: candidate.processo.id, tipo: candidate.tipo, motivo: "envio ja reservado ou concluido" });
       continue;
     }
@@ -1633,7 +2369,7 @@ async function runDueEmailNotifications(options = {}) {
     try {
       email = await buildNotificationEmail(candidate, recipients, testRecipient);
       const sendResult = await sendSmtpMailWithRetry(email);
-      await completeEmailDispatch(dedupeKey, { attempts: sendResult.attempts });
+      await completeEmailDispatch(dedupeKey, claimToken, { attempts: sendResult.attempts });
       const entry = {
         id: crypto.randomUUID(),
         dedupeKey,
@@ -1659,7 +2395,7 @@ async function runDueEmailNotifications(options = {}) {
         tentativas: sendResult.attempts
       });
     } catch (error) {
-      await failEmailDispatch(dedupeKey, error).catch((claimError) => {
+      await failEmailDispatch(dedupeKey, claimToken, error).catch((claimError) => {
         logError("email_claim_update_failed", { dedupeKey, message: claimError.message });
       });
       const entry = {
@@ -1691,10 +2427,30 @@ async function runDueEmailNotifications(options = {}) {
     }
   }
 
-  store.emailHistorico = history.slice(0, 500);
-  await writeStore(store);
+  await persistEmailHistory([...result.sent, ...result.failed]);
   result.ok = result.failed.length === 0;
   return result;
+}
+
+async function persistEmailHistory(entries = [], maximumAttempts = 3) {
+  if (!entries.length) return;
+  let lastError;
+  for (let attempt = 1; attempt <= maximumAttempts; attempt += 1) {
+    const latestStore = await readStore();
+    const latestHistory = ensureEmailHistory(latestStore);
+    for (const entry of entries) upsertEmailHistory(latestHistory, entry);
+    latestStore.emailHistorico = latestHistory
+      .sort((left, right) => String(right.enviadoEm || right.criadoEm || "").localeCompare(String(left.enviadoEm || left.criadoEm || "")))
+      .slice(0, 500);
+    try {
+      await writeStore(latestStore);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (error.statusCode !== 409 || attempt === maximumAttempts) throw error;
+    }
+  }
+  throw lastError;
 }
 
 function dueEmailCandidates(store, settings, today, options = {}) {
@@ -1855,7 +2611,9 @@ async function sendSmtpMail(message) {
     host: SMTP_HOST,
     port: SMTP_PORT,
     user: SMTP_AUTH_USER,
-    pass: SMTP_AUTH_PASSWORD
+    pass: SMTP_AUTH_PASSWORD,
+    connectTimeoutMs: SMTP_CONNECT_TIMEOUT_MS,
+    commandTimeoutMs: SMTP_COMMAND_TIMEOUT_MS
   });
   try {
     await client.send(message);
@@ -1911,6 +2669,7 @@ class SmtpClient {
     this.credentials = credentials;
     this.buffer = "";
     this.pending = [];
+    this.commandTimeoutMs = credentials.commandTimeoutMs;
     this.socket.setEncoding("utf8");
     this.socket.on("data", (chunk) => this.receive(chunk));
     this.socket.on("error", (error) => this.rejectPending(error));
@@ -1919,11 +2678,14 @@ class SmtpClient {
 
   static connect(credentials) {
     return new Promise((resolve, reject) => {
+      let settled = false;
       const socket = connectTls({
         host: credentials.host,
         port: credentials.port,
         servername: credentials.host
       }, async () => {
+        clearTimeout(connectTimeout);
+        socket.off("error", rejectConnection);
         const client = new SmtpClient(socket, credentials);
         try {
           await client.readReply([220]);
@@ -1931,13 +2693,28 @@ class SmtpClient {
           await client.command("AUTH LOGIN", [334]);
           await client.command(Buffer.from(credentials.user).toString("base64"), [334]);
           await client.command(Buffer.from(credentials.pass).toString("base64"), [235]);
+          settled = true;
           resolve(client);
         } catch (error) {
+          settled = true;
           socket.destroy();
           reject(error);
         }
       });
-      socket.once("error", reject);
+      const rejectConnection = (error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(connectTimeout);
+        reject(error);
+      };
+      const connectTimeout = setTimeout(() => {
+        const error = new Error("Timeout ao conectar ao servidor SMTP.");
+        error.code = "ETIMEDOUT";
+        socket.destroy(error);
+        rejectConnection(error);
+      }, credentials.connectTimeoutMs);
+      connectTimeout.unref?.();
+      socket.once("error", rejectConnection);
     });
   }
 
@@ -1953,6 +2730,7 @@ class SmtpClient {
       pending.lines.push(line.trimEnd());
       if (/^\d{3} /.test(line)) {
         this.pending.shift();
+        clearTimeout(pending.timer);
         const code = Number(line.slice(0, 3));
         if (pending.expected.includes(code)) pending.resolve({ code, lines: pending.lines });
         else pending.reject(new Error(`SMTP ${code}: ${pending.lines.join(" | ")}`));
@@ -1962,13 +2740,24 @@ class SmtpClient {
 
   readReply(expected) {
     return new Promise((resolve, reject) => {
-      this.pending.push({ expected, resolve, reject, lines: [] });
+      const pending = { expected, resolve, reject, lines: [], timer: undefined };
+      pending.timer = setTimeout(() => {
+        const index = this.pending.indexOf(pending);
+        if (index >= 0) this.pending.splice(index, 1);
+        const error = new Error("Timeout aguardando resposta SMTP.");
+        error.code = "ETIMEDOUT";
+        reject(error);
+        this.socket.destroy(error);
+      }, this.commandTimeoutMs);
+      pending.timer.unref?.();
+      this.pending.push(pending);
     });
   }
 
   async command(command, expected) {
+    const reply = this.readReply(expected);
     this.socket.write(`${command}\r\n`);
-    return this.readReply(expected);
+    return reply;
   }
 
   async send(message) {
@@ -1988,7 +2777,11 @@ class SmtpClient {
   }
 
   rejectPending(error) {
-    while (this.pending.length) this.pending.shift().reject(error);
+    while (this.pending.length) {
+      const pending = this.pending.shift();
+      clearTimeout(pending.timer);
+      pending.reject(error);
+    }
   }
 }
 
@@ -2066,7 +2859,7 @@ function smtpAddress(value = "") {
 
 function isSafeEmailAddress(value = "") {
   const text = String(value || "").trim();
-  if (!text || /[\r\n<>]/.test(text)) return false;
+  if (!text || text.length > 254 || /[\r\n<>]/.test(text)) return false;
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(text);
 }
 
@@ -2100,12 +2893,12 @@ function ensureSettings(store) {
   store.configuracoes.notificationRules = sanitizeNotificationRules(store.configuracoes.notificationRules || {});
   store.configuracoes.responsaveis = Array.isArray(store.configuracoes.responsaveis)
     ? store.configuracoes.responsaveis.map((item) => ({
-      id: item.id || crypto.randomUUID(),
+      id: String(item.id || stableLegacyId("responsavel", normalizeEmail(item.email), item.nome, item.funcao)),
       nome: String(item.nome || "").trim(),
       email: normalizeEmail(item.email),
       funcao: String(item.funcao || "").trim(),
       ativo: item.ativo !== false,
-      criadoEm: item.criadoEm || new Date().toISOString()
+      criadoEm: String(item.criadoEm || "")
     })).filter((item) => item.nome && item.email)
     : [];
   return store.configuracoes;
@@ -2122,6 +2915,18 @@ function sanitizeEmailTemplates(input = {}) {
   }));
 }
 
+function emailTemplatesValidationError(input = {}) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return "Templates de e-mail invalidos.";
+  for (const key of Object.keys(DEFAULT_SETTINGS.emailTemplates)) {
+    const template = input[key] || legacyEmailTemplate(input, key);
+    if (!template) continue;
+    if (!template || typeof template !== "object" || Array.isArray(template)) return "Template de e-mail invalido.";
+    if (String(template.assunto || "").length > 200) return "O assunto do template deve ter no maximo 200 caracteres.";
+    if (String(template.corpo || "").length > 10_000) return "O corpo do template deve ter no maximo 10000 caracteres.";
+  }
+  return "";
+}
+
 function legacyEmailTemplate(input = {}, key = "") {
   if (key === "avisoPrazos") return input.notificacaoInterna;
   if (key === "oficioFornecedor") return input.notificacaoFornecedor;
@@ -2131,25 +2936,86 @@ function legacyEmailTemplate(input = {}, key = "") {
 function sanitizeTemplateAttachments(input = []) {
   return (Array.isArray(input) ? input : [])
     .map((attachment) => ({
-      id: String(attachment.id || crypto.randomUUID()),
+      id: String(attachment.id || stableLegacyId("anexo-template", attachment.path, attachment.fileName)),
       fileName: String(attachment.fileName || "").trim(),
       path: String(attachment.path || "").trim(),
       mimeType: String(attachment.mimeType || "").trim(),
+      sizeBytes: attachmentByteSize(attachment),
       uploadedAt: String(attachment.uploadedAt || "").trim(),
-      uploadedBy: String(attachment.uploadedBy || "").trim()
+      uploadedBy: String(attachment.uploadedBy || "").trim(),
+      uploadedByEmail: normalizeEmail(attachment.uploadedByEmail),
+      uploadedById: String(attachment.uploadedById || "").trim()
     }))
     .filter((attachment) => attachment.fileName && attachment.path);
+}
+
+function documentEntries(documents = {}) {
+  return Object.values(documents || {}).flatMap((value) => (
+    Array.isArray(value) ? value : (value && typeof value === "object" ? [value] : [])
+  ));
+}
+
+function attachmentByteSize(attachment) {
+  const value = Number(attachment?.sizeBytes || 0);
+  return Number.isSafeInteger(value) && value > 0 ? value : 0;
+}
+
+function totalAttachmentBytes(attachments = []) {
+  return attachments.reduce((total, attachment) => total + attachmentByteSize(attachment), 0);
+}
+
+export async function totalStoredAttachmentBytes(attachments = [], maximumBytes = Number.MAX_SAFE_INTEGER) {
+  let total = 0;
+  for (const attachment of attachments || []) {
+    total += await storedAttachmentByteSize(attachment);
+    if (!Number.isSafeInteger(total) || total > maximumBytes) {
+      const error = new Error("Os anexos excedem o limite agregado permitido.");
+      error.statusCode = 413;
+      throw error;
+    }
+  }
+  return total;
+}
+
+async function storedAttachmentByteSize(attachment) {
+  if (!attachment) return 0;
+  const declaredSize = attachmentByteSize(attachment);
+  if (declaredSize) return declaredSize;
+  const fullPath = uploadReferenceFilePath(attachment.path);
+  if (!fullPath) return 0;
+  try {
+    return (await privateFileMetadata(fullPath, { root: UPLOAD_ROOT, mode: 0o600 })).size;
+  } catch (error) {
+    if (error.code === "ENOENT") return 0;
+    throw error;
+  }
+}
+
+export function stableLegacyId(prefix, ...parts) {
+  const hash = createHash("sha256")
+    .update(parts.map((part) => String(part || "").trim()).join("\u0000"))
+    .digest("hex")
+    .slice(0, 24);
+  return `${safeName(prefix)}-${hash}`;
+}
+
+function uploadReferenceFilePath(uploadPath = "") {
+  const path = String(uploadPath || "");
+  if (!path.startsWith("/uploads/")) return "";
+  const relativePath = path.replace(/^\/uploads\/+/, "");
+  const fullPath = normalize(join(UPLOAD_ROOT, relativePath));
+  return isPathWithin(UPLOAD_ROOT, fullPath) ? fullPath : "";
 }
 
 function sanitizeNotificationRules(input = {}) {
   const diasAvisoInterno = (Array.isArray(input.diasAvisoInterno) ? input.diasAvisoInterno : String(input.diasAvisoInterno || "").split(/[\n,; ]+/))
     .map((day) => Number(day))
-    .filter((day) => Number.isInteger(day) && day > 0)
+    .filter((day) => Number.isInteger(day) && day > 0 && day <= 3_650)
     .sort((a, b) => a - b);
   const diaOficioFornecedor = Number(input.diaOficioFornecedor || DEFAULT_SETTINGS.notificationRules.diaOficioFornecedor);
   return {
-    diasAvisoInterno: diasAvisoInterno.length ? [...new Set(diasAvisoInterno)] : DEFAULT_SETTINGS.notificationRules.diasAvisoInterno,
-    diaOficioFornecedor: Number.isInteger(diaOficioFornecedor) && diaOficioFornecedor > 0
+    diasAvisoInterno: diasAvisoInterno.length ? [...new Set(diasAvisoInterno)].slice(0, 64) : DEFAULT_SETTINGS.notificationRules.diasAvisoInterno,
+    diaOficioFornecedor: Number.isInteger(diaOficioFornecedor) && diaOficioFornecedor > 0 && diaOficioFornecedor <= 3_650
       ? diaOficioFornecedor
       : DEFAULT_SETTINGS.notificationRules.diaOficioFornecedor
   };
@@ -2185,7 +3051,7 @@ function sanitizeProcessInput(input = {}, current = {}) {
   return result;
 }
 
-function validateProcessBody(input = {}) {
+export function validateProcessBody(input = {}) {
   if (!String(input.numeroProcesso || "").trim() && !String(input.numeroEmpenho || "").trim()) {
     return "Informe o numero do processo, o numero do empenho ou ambos.";
   }
@@ -2242,8 +3108,22 @@ function safeDate(value = "") {
   return text;
 }
 
+function resolveDashboardYear(value, availableYears = []) {
+  const requested = String(value || "").trim();
+  if (/^\d{4}$/.test(requested)) {
+    const year = Number(requested);
+    if (year >= 1900 && year <= 9999) return year;
+  }
+  return availableYears[0] || new Date().getFullYear();
+}
+
 function activeAdminCount(users = []) {
   return users.filter((user) => user.ativo !== false && resolveRole(user) === "admin").length;
+}
+
+function observationBelongsToUser(observation = {}, user = {}) {
+  if (observation.usuarioId) return Boolean(user.id) && observation.usuarioId === user.id;
+  return Boolean(user.email) && normalizeEmail(observation.usuarioEmail) === normalizeEmail(user.email);
 }
 
 function nonNegativeNumber(value) {
@@ -2374,7 +3254,7 @@ function createProcessesCsv(rows = []) {
 }
 
 function csvCell(value = "") {
-  const text = String(value ?? "");
+  const text = spreadsheetSafeText(value);
   return `"${text.replace(/"/g, '""')}"`;
 }
 
@@ -2387,7 +3267,7 @@ function createProcessesExcel(rows = []) {
     <table>
       <thead><tr>${columns.map(([, label]) => `<th>${escapeHtmlText(label)}</th>`).join("")}</tr></thead>
       <tbody>
-        ${rows.map((row) => `<tr>${columns.map(([key]) => `<td>${escapeHtmlText(row[key])}</td>`).join("")}</tr>`).join("")}
+        ${rows.map((row) => `<tr>${columns.map(([key]) => `<td style="mso-number-format:'\\@'">${escapeHtmlText(spreadsheetSafeText(row[key]))}</td>`).join("")}</tr>`).join("")}
       </tbody>
     </table>
   </body>
@@ -2443,6 +3323,11 @@ function escapeHtmlText(value = "") {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+function spreadsheetSafeText(value = "") {
+  const text = String(value ?? "");
+  return /^[\s\u0000-\u001f]*[=+\-@]/u.test(text) ? `'${text}` : text;
 }
 
 function duplicateProcessFields(processos = [], candidate = {}, ignoreId = "") {
@@ -2530,8 +3415,10 @@ async function processDownloadEntries(processo, payload) {
     name: "processo.json",
     data: Buffer.from(JSON.stringify(payload, null, 2), "utf8")
   }];
+  enforceAggregateDownloadLimit(entries);
 
   entries.push(...await processDocumentEntries(processo));
+  enforceAggregateDownloadLimit(entries);
   return entries;
 }
 
@@ -2546,11 +3433,14 @@ async function processDocumentEntries(processo) {
         const fullPath = normalize(join(UPLOAD_ROOT, relative));
         if (!isPathWithin(UPLOAD_ROOT, fullPath)) continue;
         try {
+          const data = await readFile(fullPath);
+          enforceAggregateDownloadLimit(entries, data);
           entries.push({
             name: `documentos/${safeName(key)}-${index + 1}-${safeName(item.fileName || "documento.pdf")}`,
-            data: await readFile(fullPath)
+            data
           });
-        } catch {
+        } catch (error) {
+          if (error.statusCode) throw error;
           // Missing files remain listed in processo.json.
         }
       }
@@ -2561,11 +3451,14 @@ async function processDocumentEntries(processo) {
     const fullPath = normalize(join(UPLOAD_ROOT, relative));
     if (!isPathWithin(UPLOAD_ROOT, fullPath)) continue;
     try {
+      const data = await readFile(fullPath);
+      enforceAggregateDownloadLimit(entries, data);
       entries.push({
         name: `documentos/${safeName(key)}-${safeName(value.fileName || "documento.pdf")}`,
-        data: await readFile(fullPath)
+        data
       });
-    } catch {
+    } catch (error) {
+      if (error.statusCode) throw error;
       // Missing files remain listed in processo.json.
     }
   }
@@ -2574,6 +3467,7 @@ async function processDocumentEntries(processo) {
 }
 
 async function createCompiledPdf(documentEntries, payload) {
+  enforceAggregateDownloadLimit(documentEntries);
   const pdfEntries = documentEntries.filter((entry) => isPdfBuffer(entry.data));
   const united = await unitePdfDocuments(pdfEntries.map((entry) => entry.data));
   if (united) return united;
@@ -2599,9 +3493,10 @@ async function unitePdfDocuments(pdfBuffers) {
       inputPaths.push(inputPath);
     }
     const outputPath = join(directory, "compilado.pdf");
-    const exitCode = await runCommand("pdfunite", [...inputPaths, outputPath]);
+    const exitCode = await runCommand("pdfunite", [...inputPaths, outputPath], PDF_COMMAND_TIMEOUT_MS);
     if (exitCode !== 0) return null;
     const output = await readFile(outputPath);
+    enforceAggregateDownloadLimit([], output);
     return isPdfBuffer(output) ? output : null;
   } catch {
     return null;
@@ -2610,11 +3505,29 @@ async function unitePdfDocuments(pdfBuffers) {
   }
 }
 
-function runCommand(command, args) {
+function runCommand(command, args, timeoutMs = 10_000) {
   return new Promise((resolve) => {
     const child = spawn(command, args, { stdio: "ignore" });
-    child.on("error", () => resolve(-1));
-    child.on("close", (code) => resolve(code ?? -1));
+    let settled = false;
+    let forceKill;
+    const finish = (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      clearTimeout(forceKill);
+      resolve(code);
+    };
+    const timeout = setTimeout(() => {
+      child.kill("SIGTERM");
+      forceKill = setTimeout(() => {
+        child.kill("SIGKILL");
+        finish(-2);
+      }, 1_000);
+      forceKill.unref?.();
+    }, timeoutMs);
+    timeout.unref?.();
+    child.on("error", () => finish(-1));
+    child.on("close", (code) => finish(code ?? -1));
   });
 }
 
@@ -2731,6 +3644,7 @@ function escapePdfText(value = "") {
 }
 
 function createZip(entries) {
+  enforceAggregateDownloadLimit(entries);
   const localParts = [];
   const centralParts = [];
   let offset = 0;
@@ -2792,6 +3706,17 @@ function createZip(entries) {
   return Buffer.concat([...localParts, ...centralParts, end]);
 }
 
+function enforceAggregateDownloadLimit(entries = [], additionalData) {
+  const currentBytes = entries.reduce((total, entry) => total + Buffer.byteLength(entry.data || ""), 0);
+  const totalBytes = currentBytes + (additionalData ? Buffer.byteLength(additionalData) : 0);
+  if (totalBytes > MAX_COMPILED_DOWNLOAD_BYTES) {
+    const error = new Error("Os documentos excedem o limite permitido para compilacao.");
+    error.statusCode = 413;
+    throw error;
+  }
+  return totalBytes;
+}
+
 function crc32(buffer) {
   let crc = 0xffffffff;
   for (const byte of buffer) {
@@ -2809,6 +3734,7 @@ const CRC_TABLE = Array.from({ length: 256 }, (_, index) => {
 });
 
 function loadLocalEnv() {
+  if (process.env.NODE_ENV === "test") return;
   try {
     const envFile = process.env.NODE_ENV === "production" ? "../.env.production" : "../.env";
     const envPath = fileURLToPath(new URL(envFile, import.meta.url));

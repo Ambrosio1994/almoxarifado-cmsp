@@ -2,6 +2,39 @@ import { databaseConfigured, query } from "../db/postgres.js";
 
 const memoryLimits = new Map();
 
+export async function consumeRateLimitAttempt(key, windowMs, maximum) {
+  const safeMaximum = Math.max(1, Number(maximum) || 1);
+  if (!databaseConfigured()) {
+    const now = Date.now();
+    const current = memoryLimits.get(key);
+    if (!current || now - current.startedAt >= windowMs) {
+      memoryLimits.set(key, { attempts: 1, startedAt: now });
+      pruneMemory(windowMs);
+      return true;
+    }
+    current.attempts += 1;
+    pruneMemory(windowMs);
+    return current.attempts <= safeMaximum;
+  }
+
+  const result = await query(`
+    INSERT INTO auth_rate_limits (rate_key, attempts, window_started_at, updated_at)
+    VALUES ($1, 1, now(), now())
+    ON CONFLICT (rate_key) DO UPDATE SET
+      attempts = CASE
+        WHEN auth_rate_limits.window_started_at <= now() - make_interval(secs => $2::double precision / 1000.0) THEN 1
+        ELSE auth_rate_limits.attempts + 1
+      END,
+      window_started_at = CASE
+        WHEN auth_rate_limits.window_started_at <= now() - make_interval(secs => $2::double precision / 1000.0) THEN now()
+        ELSE auth_rate_limits.window_started_at
+      END,
+      updated_at = now()
+    RETURNING attempts <= $3::integer AS allowed
+  `, [key, windowMs, safeMaximum]);
+  return Boolean(result.rows[0]?.allowed);
+}
+
 export async function isRateLimited(key, windowMs, maximum) {
   if (!databaseConfigured()) {
     const current = memoryLimits.get(key);

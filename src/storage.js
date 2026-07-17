@@ -1,26 +1,45 @@
 import crypto from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { constants as fsConstants } from "node:fs";
+import { open, rename, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { databaseConfigured, query, transaction } from "./db/postgres.js";
+import {
+  ensurePrivateDirectory,
+  openDirectoryNoFollow,
+  openRegularFileNoFollow,
+  readRegularFileLimited
+} from "./security/private-files.js";
+import {
+  databaseConfigured,
+  isTestRuntime,
+  query,
+  readTransaction,
+  transaction
+} from "./db/postgres.js";
+import { recordSecurityEvent } from "./repositories/security-audit.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const STORE_PATH = new URL("../data/store.json", `file://${__dirname}/`);
-const STORE_FILE = fileURLToPath(STORE_PATH);
+const DEFAULT_STORE_FILE = fileURLToPath(new URL("../data/store.json", `file://${__dirname}/`));
+const EXPECTED_SCHEMA_MIGRATION = "010_auth_session_version";
+const STORE_FILE = resolveStoreFilePath();
 let writeQueue = Promise.resolve();
+let databaseReadyConfirmed = false;
+let localStoreRevision = 0;
 
 export async function readStore() {
-  if (await databaseStateReady()) {
+  if (await requireConfiguredDatabase()) {
     return readDatabaseStore();
   }
 
-  if (databaseConfigured() && process.env.NODE_ENV === "production") {
-    throw new Error("PostgreSQL configurado, mas o schema da aplicacao nao esta pronto.");
-  }
-
   try {
-    const raw = await readFile(STORE_PATH, "utf8");
-    return JSON.parse(raw);
+    const directory = dirname(STORE_FILE);
+    await ensurePrivateDirectory(directory);
+    const { content } = await readRegularFileLimited(STORE_FILE, {
+      root: directory,
+      mode: 0o600
+    });
+    return JSON.parse(content.toString("utf8"));
   } catch (error) {
     if (error.code !== "ENOENT") throw error;
     return emptyStore();
@@ -28,15 +47,39 @@ export async function readStore() {
 }
 
 export async function readUsersStore() {
-  if (!(await databaseStateReady())) return readStore();
+  if (!(await requireConfiguredDatabase())) return readStore();
   const users = await query(usersSelectSql());
   return { ...emptyStore(), usuarios: users.rows.map(deserializeUser) };
 }
 
+export async function readUserById(userId, options = {}) {
+  if (!userId) return null;
+  if (!(await requireConfiguredDatabase())) {
+    const store = await readStore();
+    return store.usuarios.find((user) => user.id === userId) || null;
+  }
+  const result = await query(`${usersSelectSql({
+    includePassword: options.includePassword === true,
+    orderBy: false
+  })} WHERE id = $1 LIMIT 1`, [userId]);
+  return result.rows[0] ? deserializeUser(result.rows[0]) : null;
+}
+
+export async function readUserByEmail(email) {
+  const normalizedEmail = normalizeEmail(email);
+  if (!normalizedEmail) return null;
+  if (!(await requireConfiguredDatabase())) {
+    const store = await readStore();
+    return store.usuarios.find((user) => normalizeEmail(user.email) === normalizedEmail) || null;
+  }
+  const result = await query(`${usersSelectSql({ includePassword: true, orderBy: false })} WHERE email = $1 LIMIT 1`, [normalizedEmail]);
+  return result.rows[0] ? deserializeUser(result.rows[0]) : null;
+}
+
 export async function readSettingsStore() {
-  if (!(await databaseStateReady())) return readStore();
+  if (!(await requireConfiguredDatabase())) return readStore();
   const [users, settings] = await Promise.all([
-    query(usersSelectSql()),
+    query(usersSelectSql({ includePassword: false })),
     query("SELECT value FROM app_settings WHERE key = 'configuracoes' LIMIT 1")
   ]);
   return {
@@ -47,7 +90,7 @@ export async function readSettingsStore() {
 }
 
 export async function readProcessesStore() {
-  if (!(await databaseStateReady())) return readStore();
+  if (!(await requireConfiguredDatabase())) return readStore();
   const processes = await query(`
     SELECT data
     FROM app_processes
@@ -56,102 +99,164 @@ export async function readProcessesStore() {
   return { ...emptyStore(), processos: processes.rows.map(deserializeRecord) };
 }
 
-function usersSelectSql() {
+export async function readStoreRevision() {
+  if (!(await requireConfiguredDatabase())) return localStoreRevision;
+  const result = await query("SELECT revision FROM app_state_revision WHERE id = true LIMIT 1");
+  return Number(result.rows[0]?.revision || 0);
+}
+
+export async function readProcessesSnapshot() {
+  if (!(await requireConfiguredDatabase())) {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const revisionBefore = localStoreRevision;
+      const store = await readStore();
+      if (revisionBefore === localStoreRevision) {
+        return { processos: store.processos, revision: revisionBefore };
+      }
+    }
+    const store = await readStore();
+    return { processos: store.processos, revision: localStoreRevision };
+  }
+  return readTransaction(async (client) => {
+    const processes = await client.query(`
+      SELECT data
+      FROM app_processes
+      ORDER BY COALESCE(updated_at, created_at) DESC, id DESC
+    `);
+    const revision = await client.query("SELECT revision FROM app_state_revision WHERE id = true LIMIT 1");
+    return {
+      processos: processes.rows.map(deserializeRecord),
+      revision: Number(revision.rows[0]?.revision || 0)
+    };
+  });
+}
+
+function usersSelectSql(options = {}) {
+  const passwordColumn = options.includePassword === false ? "''::text AS senha_hash" : "senha_hash";
   return `
-    SELECT id, nome, email, foto_url, google_sub, origem_cadastro, senha_hash,
+    SELECT id, nome, email, foto_url, google_sub, origem_cadastro, ${passwordColumn},
            precisa_definir_senha, ativo, role, access_justification, access_requested_at,
-           criado_em, atualizado_em
-    FROM app_users
-    ORDER BY criado_em ASC, id ASC
+           auth_version, criado_em, atualizado_em
+    FROM app_users${options.orderBy === false ? "" : "\n    ORDER BY criado_em ASC, id ASC"}
   `;
 }
 
-export async function writeStore(store) {
-  writeQueue = writeQueue.then(() => persistStore(store), () => persistStore(store));
+export async function writeStore(store, options = {}) {
+  const preparedStore = prepareStoreForPersistence(store);
+  const securityEvents = prepareSecurityEvents(options);
+  writeQueue = writeQueue.then(
+    () => persistStore(preparedStore, securityEvents),
+    () => persistStore(preparedStore, securityEvents)
+  );
   return writeQueue;
 }
 
-async function persistStore(store) {
-  if (await databaseStateReady()) {
-    await writeDatabaseStore(store);
+async function persistStore(store, securityEvents) {
+  if (await requireConfiguredDatabase()) {
+    await writeDatabaseStore(store, securityEvents);
+    localStoreRevision += 1;
     return;
   }
 
-  if (databaseConfigured() && process.env.NODE_ENV === "production") {
-    throw new Error("PostgreSQL configurado, mas o schema da aplicacao nao esta pronto.");
-  }
-
   await atomicWriteStore(store);
+  for (const event of securityEvents) {
+    await recordSecurityEvent(event.eventType, event);
+  }
+  localStoreRevision += 1;
 }
 
 async function atomicWriteStore(store) {
   const dir = dirname(STORE_FILE);
-  const tempPath = join(dir, `.store.${process.pid}.${Date.now()}.tmp`);
-  await mkdir(dir, { recursive: true });
-  await writeFile(tempPath, `${JSON.stringify(store, null, 2)}\n`, "utf8");
-  await rename(tempPath, STORE_FILE);
+  const tempPath = join(dir, `.store.${process.pid}.${Date.now()}.${crypto.randomUUID()}.tmp`);
+  await ensurePrivateDirectory(dir);
+
+  let handle;
+  try {
+    handle = await open(
+      tempPath,
+      fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW,
+      0o600
+    );
+    await handle.writeFile(`${JSON.stringify(store, null, 2)}\n`, "utf8");
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    await rename(tempPath, STORE_FILE);
+    const storedFile = await openRegularFileNoFollow(STORE_FILE, { root: dir, mode: 0o600 });
+    await storedFile.handle.close();
+
+    // Persist the directory entry as well as file contents before reporting a
+    // successful atomic replacement.
+    const { handle: directoryHandle } = await openDirectoryNoFollow(dir, { mode: 0o700 });
+    try {
+      await directoryHandle.sync();
+    } finally {
+      await directoryHandle.close();
+    }
+  } catch (error) {
+    await handle?.close().catch(() => null);
+    await rm(tempPath, { force: true }).catch(() => null);
+    throw error;
+  }
 }
 
 async function readDatabaseStore() {
-  const [
-    users,
-    settings,
-    processes,
-    suppliers,
-    observations,
-    audit,
-    emailHistory,
-    revision
-  ] = await Promise.all([
-    query(usersSelectSql()),
-    query(`
+  return readTransaction(async (client) => {
+    // All collections and the revision now come from the same PostgreSQL
+    // snapshot. Mixing pool clients here could return a revision newer than
+    // some collections and make a stale full-state write look valid.
+    // node-postgres does not support concurrent query() calls on one client.
+    // Explicit sequencing keeps every read in this snapshot and is compatible
+    // with pg 9, which removes the old implicit queueing behavior.
+    const users = await client.query(usersSelectSql());
+    const settings = await client.query(`
       SELECT value
       FROM app_settings
       WHERE key = 'configuracoes'
       LIMIT 1
-    `),
-    query(`
+    `);
+    const processes = await client.query(`
       SELECT data
       FROM app_processes
       ORDER BY COALESCE(updated_at, created_at) DESC, id DESC
-    `),
-    query(`
+    `);
+    const suppliers = await client.query(`
       SELECT data
       FROM app_suppliers
       ORDER BY COALESCE(updated_at, created_at) DESC, id DESC
-    `),
-    query(`
+    `);
+    const observations = await client.query(`
       SELECT data
       FROM app_process_observations
       ORDER BY COALESCE(updated_at, created_at) DESC, id DESC
-    `),
-    query(`
+    `);
+    const audit = await client.query(`
       SELECT data
       FROM app_process_audit
       ORDER BY created_at DESC, id DESC
-    `),
-    query(`
+    `);
+    const emailHistory = await client.query(`
       SELECT data
       FROM app_email_history
       ORDER BY COALESCE(updated_at, created_at) DESC, id DESC
-    `),
-    query("SELECT revision FROM app_state_revision WHERE id = true")
-  ]);
+    `);
+    const revision = await client.query("SELECT revision FROM app_state_revision WHERE id = true");
 
-  return {
-    processos: processes.rows.map(deserializeRecord),
-    fornecedores: suppliers.rows.map(deserializeRecord),
-    auditoria: audit.rows.map(deserializeRecord),
-    observacoes: observations.rows.map(deserializeRecord),
-    emailHistorico: emailHistory.rows.map(deserializeRecord),
-    usuarios: users.rows.map(deserializeUser),
-    configuracoes: settings.rows[0]?.value || {},
-    __revision: Number(revision.rows[0]?.revision || 0)
-  };
+    return {
+      processos: processes.rows.map(deserializeRecord),
+      fornecedores: suppliers.rows.map(deserializeRecord),
+      auditoria: audit.rows.map(deserializeRecord),
+      observacoes: observations.rows.map(deserializeRecord),
+      emailHistorico: emailHistory.rows.map(deserializeRecord),
+      usuarios: users.rows.map(deserializeUser),
+      configuracoes: settings.rows[0]?.value || {},
+      __revision: Number(revision.rows[0]?.revision || 0)
+    };
+  });
 }
 
-async function writeDatabaseStore(store) {
-  await transaction(async (client) => {
+async function writeDatabaseStore(store, securityEvents) {
+  const committedRevision = await transaction(async (client) => {
     const expectedRevision = Number.isInteger(store.__revision) ? store.__revision : null;
     const revisionResult = expectedRevision === null
       ? await client.query("UPDATE app_state_revision SET revision = revision + 1 WHERE id = true RETURNING revision")
@@ -182,49 +287,79 @@ async function writeDatabaseStore(store) {
     });
     await deleteMissingRecords(client, "app_process_observations", store.observacoes || []);
     await deleteMissingRecords(client, "app_email_history", store.emailHistorico || []);
-    store.__revision = Number(revisionResult.rows[0].revision);
+    for (const event of securityEvents) {
+      await recordSecurityEvent(event.eventType, event, { client });
+    }
+    return Number(revisionResult.rows[0].revision);
   });
+  store.__revision = committedRevision;
 }
 
 async function upsertUsers(client, users) {
-  for (const user of users) {
-    await client.query(`
-      INSERT INTO app_users (
-        id, nome, email, foto_url, google_sub, origem_cadastro, senha_hash,
-        precisa_definir_senha, ativo, role, access_justification, access_requested_at,
-        criado_em, atualizado_em
-      )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::timestamptz, COALESCE($13::timestamptz, now()), COALESCE($14::timestamptz, now()))
-      ON CONFLICT (id) DO UPDATE SET
-        nome = EXCLUDED.nome,
-        email = EXCLUDED.email,
-        foto_url = EXCLUDED.foto_url,
-        google_sub = EXCLUDED.google_sub,
-        origem_cadastro = EXCLUDED.origem_cadastro,
-        senha_hash = EXCLUDED.senha_hash,
-        precisa_definir_senha = EXCLUDED.precisa_definir_senha,
-        ativo = EXCLUDED.ativo,
-        role = EXCLUDED.role,
-        access_justification = EXCLUDED.access_justification,
-        access_requested_at = EXCLUDED.access_requested_at,
-        atualizado_em = EXCLUDED.atualizado_em
-    `, [
-      textId(user.id),
-      text(user.nome || user.name || user.email || "Usuario"),
-      normalizeEmail(user.email),
-      text(user.foto || user.fotoUrl),
-      nullableText(user.googleSub),
-      text(user.origemCadastro || "local"),
-      text(user.senhaHash),
-      Boolean(user.precisaDefinirSenha),
-      user.ativo !== false,
-      normalizeRole(user.role, user.email),
-      text(user.justificativaAcesso),
-      timestamp(user.solicitadoEm || (user.origemCadastro === "solicitacao" ? user.criadoEm : "")),
-      timestamp(user.criadoEm),
-      timestamp(user.atualizadoEm)
-    ]);
-  }
+  if (!users.length) return;
+  const rows = users.map((user) => ({
+    id: textId(user.id),
+    nome: text(user.nome || user.name || user.email || "Usuario"),
+    email: normalizeEmail(user.email),
+    foto_url: text(user.foto || user.fotoUrl),
+    google_sub: nullableText(user.googleSub),
+    origem_cadastro: text(user.origemCadastro || "local"),
+    senha_hash: text(user.senhaHash),
+    precisa_definir_senha: Boolean(user.precisaDefinirSenha),
+    auth_version: positiveAuthVersion(user.authVersion),
+    ativo: user.ativo !== false,
+    role: normalizeRole(user.role, user.email),
+    access_justification: text(user.justificativaAcesso),
+    access_requested_at: timestamp(user.solicitadoEm || (user.origemCadastro === "solicitacao" ? user.criadoEm : "")),
+    criado_em: timestamp(user.criadoEm),
+    atualizado_em: timestamp(user.atualizadoEm)
+  }));
+  await client.query(`
+    INSERT INTO app_users (
+      id, nome, email, foto_url, google_sub, origem_cadastro, senha_hash,
+      precisa_definir_senha, ativo, role, access_justification, access_requested_at, auth_version,
+      criado_em, atualizado_em
+    )
+    SELECT
+      x.id, x.nome, x.email, x.foto_url, x.google_sub, x.origem_cadastro, x.senha_hash,
+      x.precisa_definir_senha, x.ativo, x.role, x.access_justification,
+      x.access_requested_at::timestamptz, x.auth_version,
+      COALESCE(x.criado_em::timestamptz, now()),
+      COALESCE(x.atualizado_em::timestamptz, now())
+    FROM jsonb_to_recordset($1::jsonb) AS x(
+      id text, nome text, email text, foto_url text, google_sub text,
+      origem_cadastro text, senha_hash text, precisa_definir_senha boolean,
+      ativo boolean, role text, access_justification text,
+      access_requested_at text, auth_version bigint, criado_em text, atualizado_em text
+    )
+    WHERE true
+    ON CONFLICT (id) DO UPDATE SET
+      nome = EXCLUDED.nome,
+      email = EXCLUDED.email,
+      foto_url = EXCLUDED.foto_url,
+      google_sub = EXCLUDED.google_sub,
+      origem_cadastro = EXCLUDED.origem_cadastro,
+      senha_hash = EXCLUDED.senha_hash,
+      precisa_definir_senha = EXCLUDED.precisa_definir_senha,
+      ativo = EXCLUDED.ativo,
+      role = EXCLUDED.role,
+      access_justification = EXCLUDED.access_justification,
+      access_requested_at = EXCLUDED.access_requested_at,
+      auth_version = EXCLUDED.auth_version,
+      atualizado_em = EXCLUDED.atualizado_em
+    WHERE app_users.nome IS DISTINCT FROM EXCLUDED.nome
+       OR app_users.email IS DISTINCT FROM EXCLUDED.email
+       OR app_users.foto_url IS DISTINCT FROM EXCLUDED.foto_url
+       OR app_users.google_sub IS DISTINCT FROM EXCLUDED.google_sub
+       OR app_users.origem_cadastro IS DISTINCT FROM EXCLUDED.origem_cadastro
+       OR app_users.senha_hash IS DISTINCT FROM EXCLUDED.senha_hash
+       OR app_users.precisa_definir_senha IS DISTINCT FROM EXCLUDED.precisa_definir_senha
+       OR app_users.ativo IS DISTINCT FROM EXCLUDED.ativo
+       OR app_users.role IS DISTINCT FROM EXCLUDED.role
+       OR app_users.access_justification IS DISTINCT FROM EXCLUDED.access_justification
+       OR app_users.access_requested_at IS DISTINCT FROM EXCLUDED.access_requested_at
+       OR app_users.auth_version IS DISTINCT FROM EXCLUDED.auth_version
+  `, [JSON.stringify(rows)]);
 }
 
 async function upsertSettings(client, settings) {
@@ -234,47 +369,62 @@ async function upsertSettings(client, settings) {
     ON CONFLICT (key) DO UPDATE SET
       value = EXCLUDED.value,
       updated_at = EXCLUDED.updated_at
+    WHERE app_settings.value IS DISTINCT FROM EXCLUDED.value
   `, [JSON.stringify(settings)]);
 }
 
 async function insertRecords(client, table, records, timestampKeys = [], options = {}) {
-  for (const record of records) {
-    const createdAt = firstTimestamp(record, timestampKeys);
-    const updatedAt = firstTimestamp(record, ["atualizadoEm", "updatedAt", ...timestampKeys.filter((key) => key !== "atualizadoEm")]);
-    const columns = options.immutable
-      ? ["id", "data", "created_at"]
-      : ["id", "data", "created_at", "updated_at"];
-    const values = options.immutable
-      ? [textId(record.id), JSON.stringify(record), createdAt]
-      : [textId(record.id), JSON.stringify(record), createdAt, updatedAt];
-
-    if (options.processIdKey) {
-      columns.push("processo_id");
-      values.push(text(record[options.processIdKey]));
-    }
-
-    if (options.dedupeKey) {
-      columns.push("dedupe_key");
-      values.push(nullableText(record[options.dedupeKey]));
-    }
-
-    const conflictClause = options.immutable
-      ? "DO NOTHING"
-      : `DO UPDATE SET
-         data = EXCLUDED.data,
-         updated_at = EXCLUDED.updated_at${options.processIdKey ? ",\n         processo_id = EXCLUDED.processo_id" : ""}${options.dedupeKey ? ",\n         dedupe_key = EXCLUDED.dedupe_key" : ""}`;
-    const placeholders = columns.map((column, index) =>
-      ["created_at", "updated_at"].includes(column)
-        ? `COALESCE($${index + 1}::timestamptz, now())`
-        : `$${index + 1}`
-    );
-    await client.query(
-      `INSERT INTO ${table} (${columns.join(", ")})
-       VALUES (${placeholders.join(", ")})
-       ON CONFLICT (id) ${conflictClause}`,
-      values
-    );
+  if (!records.length) return;
+  const rows = records.map((record) => ({
+    id: textId(record.id),
+    data: record,
+    created_at: firstTimestamp(record, timestampKeys),
+    updated_at: firstTimestamp(record, [
+      "atualizadoEm",
+      "updatedAt",
+      ...timestampKeys.filter((key) => key !== "atualizadoEm")
+    ]),
+    processo_id: options.processIdKey ? text(record[options.processIdKey]) : null,
+    dedupe_key: options.dedupeKey ? nullableText(record[options.dedupeKey]) : null
+  }));
+  const columns = options.immutable
+    ? ["id", "data", "created_at"]
+    : ["id", "data", "created_at", "updated_at"];
+  const selectColumns = options.immutable
+    ? ["x.id", "x.data", "COALESCE(x.created_at::timestamptz, now())"]
+    : [
+        "x.id",
+        "x.data",
+        "COALESCE(x.created_at::timestamptz, now())",
+        "COALESCE(x.updated_at::timestamptz, now())"
+      ];
+  if (options.processIdKey) {
+    columns.push("processo_id");
+    selectColumns.push("x.processo_id");
   }
+  if (options.dedupeKey) {
+    columns.push("dedupe_key");
+    selectColumns.push("x.dedupe_key");
+  }
+  const conflictClause = options.immutable
+    ? "DO NOTHING"
+    : `DO UPDATE SET
+       data = EXCLUDED.data,
+       updated_at = EXCLUDED.updated_at${options.processIdKey ? ",\n       processo_id = EXCLUDED.processo_id" : ""}${options.dedupeKey ? ",\n       dedupe_key = EXCLUDED.dedupe_key" : ""}`;
+  const updatePredicate = options.immutable
+    ? ""
+    : ` WHERE ${table}.data IS DISTINCT FROM EXCLUDED.data${options.processIdKey ? ` OR ${table}.processo_id IS DISTINCT FROM EXCLUDED.processo_id` : ""}${options.dedupeKey ? ` OR ${table}.dedupe_key IS DISTINCT FROM EXCLUDED.dedupe_key` : ""}`;
+
+  await client.query(`
+    INSERT INTO ${table} (${columns.join(", ")})
+    SELECT ${selectColumns.join(", ")}
+    FROM jsonb_to_recordset($1::jsonb) AS x(
+      id text, data jsonb, created_at text, updated_at text,
+      processo_id text, dedupe_key text
+    )
+    WHERE true
+    ON CONFLICT (id) ${conflictClause}${updatePredicate}
+  `, [JSON.stringify(rows)]);
 }
 
 async function deleteMissingRecords(client, table, records) {
@@ -288,9 +438,13 @@ async function deleteMissingRecords(client, table, records) {
 
 async function databaseStateReady() {
   if (!databaseConfigured()) return false;
-  try {
-    const result = await query(`
+  if (databaseReadyConfirmed) return true;
+  const result = await query(`
       SELECT
+        to_regclass('public.app_users') IS NOT NULL AS users_ready,
+        to_regclass('public.user_sessions') IS NOT NULL AS sessions_ready,
+        to_regclass('public.app_settings') IS NOT NULL AS settings_ready,
+        to_regclass('public.app_schema_migrations') IS NOT NULL AS migrations_ready,
         to_regclass('public.app_processes') IS NOT NULL AS processes_ready,
         to_regclass('public.app_process_observations') IS NOT NULL AS observations_ready,
         to_regclass('public.app_process_audit') IS NOT NULL AS audit_ready,
@@ -301,30 +455,131 @@ async function databaseStateReady() {
         to_regclass('public.auth_rate_limits') IS NOT NULL AS rate_limits_ready,
         to_regclass('public.app_security_audit') IS NOT NULL AS security_audit_ready,
         EXISTS (
-          SELECT 1 FROM app_schema_migrations WHERE version = '009_security_audit'
+          SELECT 1 FROM app_schema_migrations WHERE version = '${EXPECTED_SCHEMA_MIGRATION}'
         ) AS schema_current
     `);
-    const row = result.rows[0] || {};
-    return Boolean(
-      row.processes_ready &&
-      row.observations_ready &&
-      row.audit_ready &&
-      row.suppliers_ready &&
-      row.email_history_ready &&
-      row.revision_ready &&
-      row.email_claims_ready &&
-      row.rate_limits_ready &&
-      row.security_audit_ready &&
-      row.schema_current
-    );
-  } catch {
-    return false;
-  }
+  const row = result.rows[0] || {};
+  databaseReadyConfirmed = Boolean(
+    row.users_ready &&
+    row.sessions_ready &&
+    row.settings_ready &&
+    row.migrations_ready &&
+    row.processes_ready &&
+    row.observations_ready &&
+    row.audit_ready &&
+    row.suppliers_ready &&
+    row.email_history_ready &&
+    row.revision_ready &&
+    row.email_claims_ready &&
+    row.rate_limits_ready &&
+    row.security_audit_ready &&
+    row.schema_current
+  );
+  return databaseReadyConfirmed;
 }
 
 export async function detectStoreBackend() {
-  if (await databaseStateReady()) return "postgres";
+  if (await requireConfiguredDatabase()) return "postgres";
   return "json";
+}
+
+async function requireConfiguredDatabase() {
+  if (!databaseConfigured()) return false;
+  let ready;
+  try {
+    ready = await databaseStateReady();
+  } catch (cause) {
+    const error = new Error("PostgreSQL configurado, mas indisponivel.", { cause });
+    error.statusCode = 503;
+    throw error;
+  }
+  if (!ready) {
+    const error = new Error("PostgreSQL configurado, mas o schema da aplicacao nao esta pronto.");
+    error.statusCode = 503;
+    throw error;
+  }
+  return true;
+}
+
+export function resolveStoreFilePath() {
+  if (!isTestRuntime()) {
+    return process.env.APP_STORE_PATH ? resolve(process.env.APP_STORE_PATH) : DEFAULT_STORE_FILE;
+  }
+  const testRoot = resolve(
+    process.env.TEST_STORAGE_ROOT || join(tmpdir(), "almoxarifado-cmsp-tests")
+  );
+  return join(testRoot, String(process.pid), "store.json");
+}
+
+export function prepareStoreForPersistence(store, options = {}) {
+  if (!store || typeof store !== "object" || Array.isArray(store)) {
+    throw new TypeError("O estado a persistir deve ser um objeto.");
+  }
+
+  for (const [key, label] of [
+    ["processos", "processo"],
+    ["fornecedores", "fornecedor"],
+    ["auditoria", "auditoria"],
+    ["observacoes", "observacao"],
+    ["emailHistorico", "historico de e-mail"],
+    ["usuarios", "usuario"]
+  ]) {
+    const records = store[key] ?? [];
+    if (!Array.isArray(records)) throw new TypeError(`${key} deve ser uma lista.`);
+    ensureRecordIds(records, label);
+    store[key] = records;
+  }
+
+  const processIds = new Set(store.processos.map((record) => record.id));
+  for (const [key, label] of [["auditoria", "auditoria"], ["observacoes", "observacao"]]) {
+    for (const record of store[key]) {
+      const processId = text(record.processoId);
+      if (!processId) {
+        throw new Error(`${label} ${record.id} nao possui processoId.`);
+      }
+      if (!options.allowExternalProcessReferences && !processIds.has(processId)) {
+        throw new Error(`${label} ${record.id} referencia processo inexistente ${processId}.`);
+      }
+    }
+  }
+
+  if (!store.configuracoes || typeof store.configuracoes !== "object" || Array.isArray(store.configuracoes)) {
+    store.configuracoes = {};
+  }
+  return store;
+}
+
+export function prepareSecurityEvents(options = {}) {
+  const input = Array.isArray(options) ? options : (options.securityEvents || []);
+  if (!Array.isArray(input)) throw new TypeError("securityEvents deve ser uma lista.");
+  if (input.length > 50) throw new RangeError("Uma gravacao aceita no maximo 50 eventos de seguranca.");
+  return input.map((event) => {
+    if (!event || typeof event !== "object" || Array.isArray(event)) {
+      throw new TypeError("Evento de seguranca invalido.");
+    }
+    const eventType = text(event.eventType).slice(0, 100);
+    if (!eventType) throw new TypeError("eventType e obrigatorio no evento de seguranca.");
+    return {
+      eventType,
+      actorUserId: nullableText(event.actorUserId),
+      actorEmail: normalizeEmail(event.actorEmail),
+      targetUserId: nullableText(event.targetUserId),
+      metadata: cloneJson(event.metadata || {})
+    };
+  });
+}
+
+function ensureRecordIds(records, label) {
+  const ids = new Set();
+  for (const record of records) {
+    if (!record || typeof record !== "object" || Array.isArray(record)) {
+      throw new TypeError(`Registro de ${label} invalido.`);
+    }
+    const id = text(record.id) || crypto.randomUUID();
+    if (ids.has(id)) throw new Error(`ID duplicado em ${label}: ${id}.`);
+    record.id = id;
+    ids.add(id);
+  }
 }
 
 function deserializeRecord(row = {}) {
@@ -341,6 +596,7 @@ function deserializeUser(row = {}) {
     origemCadastro: row.origem_cadastro || "local",
     senhaHash: row.senha_hash || "",
     precisaDefinirSenha: Boolean(row.precisa_definir_senha),
+    authVersion: positiveAuthVersion(row.auth_version),
     ativo: row.ativo !== false,
     role: row.role || "",
     justificativaAcesso: row.access_justification || "",
@@ -391,11 +647,18 @@ function nullableText(value = "") {
 }
 
 function textId(value = "") {
-  return text(value) || crypto.randomUUID();
+  const result = text(value);
+  if (!result) throw new Error("ID obrigatorio ausente durante a persistencia.");
+  return result;
 }
 
 function normalizeEmail(value = "") {
   return String(value).trim().toLowerCase();
+}
+
+function positiveAuthVersion(value) {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 1;
 }
 
 function timestamp(value = "") {

@@ -43,6 +43,7 @@ export function canCancelProcess(processo, user = {}) {
   if (processo.status === "Anulado") return false;
   if (processo.status === "Pago") return false;
   if (user.role === "admin") return true;
+  if (processo.criadoPorId) return Boolean(user.id) && processo.criadoPorId === user.id;
   return Boolean(processo.criadoPorEmail && user.email && processo.criadoPorEmail === user.email);
 }
 
@@ -156,6 +157,7 @@ export function isPublicConsultation(method = "", pathname = "") {
     /^\/api\/dashboard$/,
     /^\/api\/dashboard\/execucao-mensal$/,
     /^\/api\/dashboard\/distribuicao-status$/,
+    /^\/api\/dashboard\/charts$/,
     /^\/api\/processes$/,
     /^\/api\/processes\/export\/?$/
   ].some((pattern) => pattern.test(pathname));
@@ -233,11 +235,13 @@ export function isProcessOverdue(processo = {}) {
   return processo.diasDecorridos > 30 && !["Entregue", "Liquidado", "Pago", "Anulado"].includes(processo.status);
 }
 
-export function createAuditEntry({ processoId, usuario, acao, detalhes, documento, alteracoes }) {
+export function createAuditEntry({ processoId, usuario, usuarioEmail, usuarioId, acao, detalhes, documento, alteracoes }) {
   return {
     id: crypto.randomUUID(),
     processoId,
     usuario,
+    usuarioEmail: usuarioEmail || "",
+    usuarioId: usuarioId || "",
     acao,
     detalhes,
     documento,
@@ -302,6 +306,15 @@ export function dashboardMetrics(processos) {
       .map((status) => [status, ativos.filter((processo) => processo.status === status).length])
       .filter(([, count]) => count > 0)
   };
+}
+
+export function dashboardAvailableYears(processos = []) {
+  return [...new Set(processos
+    .filter((processo) => !processo.inativo)
+    .map((processo) => String(processDeadlineDate(processo) || "").match(/^(\d{4})-\d{2}-\d{2}$/)?.[1])
+    .filter(Boolean)
+    .map(Number))]
+    .sort((left, right) => right - left);
 }
 
 export function dashboardMonthlyExecution(processos, year = new Date().getFullYear()) {

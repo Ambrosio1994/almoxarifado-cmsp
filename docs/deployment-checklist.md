@@ -6,10 +6,11 @@ Alvo oficial: `https://sapgestao.dpdns.org`, com PostgreSQL de producao no Neon.
 
 - [ ] Confirmar que o branch e o commit que serao implantados passaram por `npm ci`, `npm test` e `npm run check`.
 - [ ] Copiar `.env.production.example` para `.env.production`, substituir todos os marcadores e executar `chmod 600 .env.production`.
-- [ ] Manter `DATABASE_URL` com a conexao pooled do Neon para a aplicacao e `DATABASE_URL_MIGRATION` com a conexao direta para migracoes e backup.
+- [ ] Manter `DATABASE_URL` com a conexao pooled do Neon para a aplicacao e `DATABASE_URL_MIGRATION` com a conexao direta para migracoes e backup. Se executar a integracao PostgreSQL opcional, usar `TEST_DATABASE_URL` em database separado, descartavel e identificado como teste.
 - [ ] Confirmar `DB_SSL=true` e `sslmode=require` ou `sslmode=verify-full` nas duas URLs; manter `channel_binding=require` quando fornecido pelo Neon.
 - [ ] Confirmar que a role de runtime tem somente os privilegios necessarios e que a credencial de migracao fica restrita ao operador/CI.
-- [ ] Validar SMTP, `EMAIL_FROM_ADDRESS` em dominio verificado, administradores, limites, `TRUST_PROXY=true` e volume persistente de uploads.
+- [ ] Em instalacao nova, configurar `LOCAL_ADMIN_EMAIL` e `LOCAL_ADMIN_PASSWORD`. Em banco existente, confirmar por consulta e teste de login que ha administrador local ativo antes de usar `CONFIRM_EXISTING_ADMIN_PROVISIONED=true`; `ADMIN_EMAILS` sozinho nao cria acesso.
+- [ ] Validar SMTP, `EMAIL_FROM_ADDRESS` em dominio verificado, administradores, limites de body/scrypt/cache, `TRUST_PROXY=true` e volume persistente de uploads.
 - [ ] Garantir que `.env.production`, dumps, `.deploy/` e certificados privados nao aparecem em `git status` nem no artefato da imagem.
 
 ## DNS, firewall e TLS
@@ -24,8 +25,9 @@ Alvo oficial: `https://sapgestao.dpdns.org`, com PostgreSQL de producao no Neon.
 
 - [ ] Instalar Docker com Compose v2. O backup usa `pg_dump` local quando disponível e recorre ao cliente PostgreSQL em container quando necessário.
 - [ ] Executar `bash scripts/deploy-production.sh check`.
-- [ ] Executar `npm run backup:production`; testar o dump com `pg_restore --list backups/<arquivo>.dump` e copiar o backup criptografado para armazenamento externo.
-- [ ] Executar `npm run deploy:production`. O script repete testes, cria backup, aplica migracoes, preserva a imagem anterior, sobe a nova imagem e aguarda readiness.
+- [ ] Executar `bash scripts/deploy-production.sh backup`; confirmar que o volume descoberto existe, conferir no manifesto os hashes do dump e do arquivo de uploads e copiar o conjunto criptografado para armazenamento externo.
+- [ ] Restaurar o dump e os uploads periodicamente em staging; validar `pg_restore --list`, `tar -tzf` e uma amostra de download.
+- [ ] Executar `npm run deploy:production`. O script cria backup consistente antes dos testes isolados, aplica migracoes sob lock exclusivo, preserva a imagem anterior, sobe a nova imagem e aguarda readiness.
 - [ ] Confirmar que todas as migracoes aparecem uma unica vez em `app_schema_migrations`.
 
 ## Verificacao apos release

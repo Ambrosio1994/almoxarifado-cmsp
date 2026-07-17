@@ -1,23 +1,51 @@
-import { readdir, rm } from "node:fs/promises";
+import { readdir, rm, stat } from "node:fs/promises";
 import { isAbsolute, join, normalize, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { closePool } from "../src/db/postgres.js";
-import { readStore } from "../src/storage.js";
+import { detectStoreBackend, readStore } from "../src/storage.js";
 
 const root = resolve(process.env.UPLOAD_STORAGE_ROOT || fileURLToPath(new URL("../uploads/", import.meta.url)));
 const apply = process.argv.includes("--apply");
+const expectedBackend = optionValue("--expect-backend") || (process.env.NODE_ENV === "production" ? "postgres" : "json");
+const graceMs = positiveInteger(process.env.ORPHAN_UPLOAD_GRACE_MS || "86400000", "ORPHAN_UPLOAD_GRACE_MS");
+
+if (!["postgres", "json"].includes(expectedBackend)) {
+  throw new Error("--expect-backend deve ser postgres ou json.");
+}
+if (apply && !process.argv.includes("--confirm-delete-orphans")) {
+  throw new Error("Use --confirm-delete-orphans para confirmar a exclusao.");
+}
+if (apply && process.env.NODE_ENV === "production" && !process.argv.includes("--confirm-backup")) {
+  throw new Error("Em producao, confirme um backup verificado com --confirm-backup.");
+}
 
 try {
+  const backend = await detectStoreBackend();
+  if (backend !== expectedBackend) {
+    throw new Error(`Backend ativo ${backend} difere do esperado ${expectedBackend}.`);
+  }
   const store = await readStore();
   const referenced = referencedUploadPaths(store);
   const files = await walk(root);
-  const orphans = files.filter((file) => !referenced.has(normalize(file)));
+  const now = Date.now();
+  const unreferenced = files.filter((file) => !referenced.has(normalize(file.path)));
+  const orphans = unreferenced.filter((file) => now - file.mtimeMs >= graceMs);
+  const protectedByGrace = unreferenced.filter((file) => now - file.mtimeMs < graceMs);
 
   for (const file of orphans) {
-    if (apply) await rm(file, { force: true });
-    console.log(`${apply ? "removido" : "orphan"}: ${relative(root, file)}`);
+    if (apply) await rm(file.path, { force: true });
+    console.log(`${apply ? "removido" : "orphan"}: ${relative(root, file.path)}`);
   }
-  console.log(JSON.stringify({ root, referenced: referenced.size, scanned: files.length, orphans: orphans.length, applied: apply }));
+  console.log(JSON.stringify({
+    root,
+    backend,
+    referenced: referenced.size,
+    scanned: files.length,
+    orphans: orphans.length,
+    protectedByGrace: protectedByGrace.length,
+    graceMs,
+    applied: apply
+  }));
 } finally {
   await closePool();
 }
@@ -54,7 +82,19 @@ async function walk(directory) {
   }
   const nested = await Promise.all(entries.map((entry) => {
     const path = join(directory, entry.name);
-    return entry.isDirectory() ? walk(path) : [path];
+    return entry.isDirectory() ? walk(path) : stat(path).then((metadata) => [{ path, mtimeMs: metadata.mtimeMs }]);
   }));
   return nested.flat();
+}
+
+function optionValue(name) {
+  const prefix = `${name}=`;
+  return process.argv.find((argument) => argument.startsWith(prefix))?.slice(prefix.length) || "";
+}
+
+function positiveInteger(value, name) {
+  if (!/^\d+$/.test(value) || Number(value) <= 0 || !Number.isSafeInteger(Number(value))) {
+    throw new Error(`${name} deve ser um inteiro positivo.`);
+  }
+  return Number(value);
 }

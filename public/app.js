@@ -1,17 +1,29 @@
+import {
+  enhancePasswordFields,
+  isValidPasswordInput,
+  PASSWORD_POLICY_MESSAGE,
+  resetPasswordVisibility
+} from "./password-fields.js";
+
 const state = {
   meta: { status: [], filtrosRapidos: [] },
   processos: [],
   dashboardMetrics: {},
+  dashboardCharts: { execucaoMensal: [], distribuicaoStatus: [] },
+  dashboardYears: [],
   allProcesses: [],
+  processesLoaded: false,
+  processesLoading: null,
   fornecedores: [],
   suppliersLoaded: false,
+  suppliersLoading: null,
   auditoria: [],
   auditLoaded: false,
   emailHistory: [],
   emailHistoryLoaded: false,
   securityAudit: [],
   detailObservations: [],
-  editing: null,
+  deliveryDraft: null,
   observationProcessId: null,
   selectedProcess: null,
   detailReturnSection: "processes",
@@ -21,13 +33,26 @@ const state = {
   supplierSearch: "",
   supplierHistory: "",
   settings: null,
-  settingsPanel: "templates"
+  settingsLoading: null,
+  settingsPanel: "templates",
+  activeSection: "dashboard",
+  detailObservationsError: ""
 };
 
+const MAX_DOCUMENT_FILE_BYTES = 15 * 1024 * 1024;
+
 let currentUser = null;
-let authToken = localStorage.getItem("almoxAuthToken") || "";
+let legacyAuthToken = localStorage.getItem("almoxAuthToken") || "";
+let refreshController = null;
+let refreshSequence = 0;
+let dashboardSequence = 0;
+let detailController = null;
+let detailSequence = 0;
+let handlingUnauthorized = false;
+let sessionGeneration = 0;
 const authScreen = document.querySelector("#authScreen");
 const appShell = document.querySelector("#appShell");
+const appStatus = document.querySelector("#appStatus");
 const sidebar = document.querySelector("#sidebar");
 const sidebarProfile = document.querySelector("#sidebarProfile");
 const sidebarAvatar = document.querySelector("#sidebarAvatar");
@@ -41,11 +66,9 @@ const passwordStep = document.querySelector("#passwordStep");
 const emailSubmitButton = document.querySelector("#emailSubmitButton");
 const authMessage = document.querySelector("#authMessage");
 const logoutButton = document.querySelector("#logoutButton");
-const statusSelect = document.querySelector("#statusSelect");
 const statusFilter = document.querySelector("#statusFilter");
 const quickFilter = document.querySelector("#quickFilter");
 const quickFilterBar = document.querySelector("#quickFilterBar");
-const yearFilter = document.querySelector("#yearFilter");
 const searchInput = document.querySelector("#searchInput");
 const processForm = document.querySelector("#processForm");
 const processDialog = document.querySelector("#processDialog");
@@ -57,10 +80,19 @@ const addMaterialButton = document.querySelector("#addMaterialButton");
 const materialsList = document.querySelector("#materialsList");
 const formMessage = document.querySelector("#formMessage");
 const table = document.querySelector("#processTable");
-const metrics = document.querySelector("#metrics");
 const dialog = document.querySelector("#observationsDialog");
 const observationsList = document.querySelector("#observationsList");
 const observationForm = document.querySelector("#observationForm");
+const observationMessage = document.querySelector("#observationMessage");
+const editObservationDialog = document.querySelector("#editObservationDialog");
+const editObservationForm = document.querySelector("#editObservationForm");
+const editObservationMessage = document.querySelector("#editObservationMessage");
+const deliveryDialog = document.querySelector("#deliveryDialog");
+const deliveryForm = document.querySelector("#deliveryForm");
+const deliveryDialogTitle = document.querySelector("#deliveryDialogTitle");
+const deliveryMaterials = document.querySelector("#deliveryMaterials");
+const deliveryMessage = document.querySelector("#deliveryMessage");
+const cancelDelivery = document.querySelector("#cancelDelivery");
 const processListView = document.querySelector("#processListView");
 const processDetailView = document.querySelector("#processDetailView");
 const backToProcesses = document.querySelector("#backToProcesses");
@@ -74,6 +106,7 @@ const downloadDialog = document.querySelector("#downloadDialog");
 const downloadChoices = document.querySelectorAll("[data-download-format]");
 const supplierInfoDialog = document.querySelector("#supplierInfoDialog");
 const supplierInfoForm = document.querySelector("#supplierInfoForm");
+const supplierInfoMessage = document.querySelector("#supplierInfoMessage");
 const cancelSupplierInfo = document.querySelector("#cancelSupplierInfo");
 const dashboardView = document.querySelector("#dashboardView");
 const suppliersView = document.querySelector("#suppliersView");
@@ -94,6 +127,11 @@ const cancelDocumentMetadata = document.querySelector("#cancelDocumentMetadata")
 const changePasswordDialog = document.querySelector("#changePasswordDialog");
 const changePasswordForm = document.querySelector("#changePasswordForm");
 const changePasswordMessage = document.querySelector("#changePasswordMessage");
+const changePasswordCloseButton = document.querySelector("#changePasswordCloseButton");
+const adminPasswordDialog = document.querySelector("#adminPasswordDialog");
+const adminPasswordForm = document.querySelector("#adminPasswordForm");
+const adminPasswordUser = document.querySelector("#adminPasswordUser");
+const adminPasswordMessage = document.querySelector("#adminPasswordMessage");
 
 initTheme();
 await initAuth();
@@ -119,20 +157,26 @@ function applyTheme(theme) {
 
 async function initAuth() {
   bindAuthEvents();
-  if (!authToken) {
-    showAuth();
-    return;
-  }
-
   try {
-    const user = await api("/auth/session");
+    const user = await api("/auth/session", {
+      skipAuthRedirect: true,
+      legacyToken: legacyAuthToken
+    });
     setCurrentUser(user);
     showApp();
-    await boot();
-  } catch {
+    enforceRequiredPasswordChange();
+    await bootSafely();
+  } catch (error) {
+    if (error.status === 401) {
+      clearClientSession();
+      showAuth();
+    } else {
+      showAuth();
+      showSessionValidationError();
+    }
+  } finally {
+    legacyAuthToken = "";
     localStorage.removeItem("almoxAuthToken");
-    authToken = "";
-    showAuth();
   }
 }
 
@@ -140,30 +184,69 @@ function bindAuthEvents() {
   enhancePasswordFields(document);
   loginForm.addEventListener("submit", async (event) => {
     event.preventDefault();
+    authMessage.textContent = "";
+    setFormBusy(loginForm, true, "Entrando...");
     const data = Object.fromEntries(new FormData(loginForm));
     try {
       const response = await api("/auth/login", {
         method: "POST",
-        body: JSON.stringify(data)
+        body: JSON.stringify(data),
+        skipAuthRedirect: true
       });
       await startSession(response);
     } catch (error) {
       authMessage.textContent = error.message;
+      loginForm.elements.senha.value = "";
+      resetPasswordVisibility(loginForm);
+      loginForm.elements.senha.focus();
+    } finally {
+      setFormBusy(loginForm, false);
     }
   });
 
   logoutButton.addEventListener("click", async () => {
-    await api("/auth/logout", { method: "POST" }).catch(() => null);
-    localStorage.removeItem("almoxAuthToken");
-    authToken = "";
-    location.reload();
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 8000);
+    const logoutRequest = fetch("/auth/logout", {
+      method: "POST",
+      credentials: "same-origin",
+      signal: controller.signal
+    });
+    clearClientSession();
+    showAuth();
+    authMessage.textContent = "Encerrando sessao...";
+    setFormBusy(loginForm, true, "Encerrando...");
+    try {
+      const response = await logoutRequest;
+      if (!response.ok && response.status !== 401) throw new Error("Nao foi possivel encerrar a sessao.");
+      authMessage.textContent = "Sessao encerrada.";
+    } catch (error) {
+      const message = error.name === "AbortError"
+        ? "O servidor demorou para confirmar o encerramento."
+        : error.message || "Nao foi possivel confirmar o encerramento no servidor.";
+      authMessage.textContent = `${message} A sessao visual foi limpa; tente novamente se ela reaparecer.`;
+    } finally {
+      window.clearTimeout(timeout);
+      setFormBusy(loginForm, false);
+    }
   });
 
-  sidebarProfile?.addEventListener("click", () => changePasswordDialog?.showModal());
+  sidebarProfile?.addEventListener("click", () => {
+    if (changePasswordDialog && !changePasswordDialog.open) changePasswordDialog.showModal();
+  });
   sidebarProfile?.addEventListener("keydown", (event) => {
-    if (["Enter", " "].includes(event.key)) changePasswordDialog?.showModal();
+    if (["Enter", " "].includes(event.key)) {
+      event.preventDefault();
+      if (changePasswordDialog && !changePasswordDialog.open) changePasswordDialog.showModal();
+    }
   });
   changePasswordForm?.addEventListener("submit", changePassword);
+  adminPasswordForm?.addEventListener("submit", saveManagedUserPassword);
+  changePasswordDialog?.addEventListener("close", () => resetSensitiveForm(changePasswordForm, changePasswordMessage));
+  changePasswordDialog?.addEventListener("cancel", (event) => {
+    if (currentUser?.precisaDefinirSenha) event.preventDefault();
+  });
+  adminPasswordDialog?.addEventListener("close", () => resetSensitiveForm(adminPasswordForm, adminPasswordMessage));
 }
 
 async function changePassword(event) {
@@ -178,26 +261,161 @@ async function changePassword(event) {
     changePasswordMessage.textContent = passwordPolicyMessage();
     return;
   }
+  setFormBusy(event.currentTarget, true, "Alterando...");
   try {
     const response = await api("/auth/change-password", {
       method: "POST",
       body: JSON.stringify(passwordData)
     });
-    authToken = response.token;
-    localStorage.setItem("almoxAuthToken", authToken);
+    if (response.user) setCurrentUser(response.user);
+    if (currentUser) currentUser.precisaDefinirSenha = false;
+    enforceRequiredPasswordChange();
     event.currentTarget.reset();
     changePasswordDialog.close();
   } catch (error) {
     changePasswordMessage.textContent = error.message;
+  } finally {
+    setFormBusy(event.currentTarget, false);
   }
 }
 
 async function startSession(response) {
-  authToken = response.token;
-  localStorage.setItem("almoxAuthToken", authToken);
   setCurrentUser(response.user);
   showApp();
-  await boot();
+  enforceRequiredPasswordChange();
+  await bootSafely();
+}
+
+async function bootSafely() {
+  clearAppStatus();
+  try {
+    await boot();
+  } catch (error) {
+    if (error.name === "AbortError") return;
+    showAppError(error.message || "Nao foi possivel carregar os dados da aplicacao.");
+  }
+}
+
+function showAppError(message) {
+  if (!appStatus) return;
+  appStatus.replaceChildren();
+  appStatus.classList.remove("success");
+  const text = document.createElement("span");
+  text.textContent = message;
+  const retry = document.createElement("button");
+  retry.type = "button";
+  retry.className = "secondary";
+  retry.textContent = "Tentar novamente";
+  retry.addEventListener("click", () => bootSafely(), { once: true });
+  appStatus.append(text, retry);
+  appStatus.classList.remove("hidden");
+}
+
+function showAppNotice(message) {
+  if (!appStatus) return;
+  appStatus.replaceChildren();
+  const text = document.createElement("span");
+  text.textContent = message;
+  appStatus.append(text);
+  appStatus.classList.add("success");
+  appStatus.classList.remove("hidden");
+}
+
+function clearAppStatus() {
+  appStatus?.classList.add("hidden");
+  appStatus?.classList.remove("success");
+  appStatus?.replaceChildren();
+}
+
+function clearClientSession() {
+  sessionGeneration += 1;
+  localStorage.removeItem("almoxAuthToken");
+  legacyAuthToken = "";
+  currentUser = null;
+  refreshController?.abort();
+  detailController?.abort();
+  refreshSequence += 1;
+  dashboardSequence += 1;
+  detailSequence += 1;
+  state.settings = null;
+  state.settingsLoading = null;
+  state.auditLoaded = false;
+  state.emailHistoryLoaded = false;
+  state.suppliersLoaded = false;
+  state.suppliersLoading = null;
+  if (changePasswordCloseButton) changePasswordCloseButton.disabled = false;
+  changePasswordDialog?.classList.remove("password-change-required");
+  [
+    processDialog,
+    dialog,
+    editObservationDialog,
+    deliveryDialog,
+    downloadDialog,
+    documentMetadataDialog,
+    supplierInfoDialog,
+    changePasswordDialog,
+    adminPasswordDialog
+  ].forEach((modal) => {
+    if (modal?.open) modal.close();
+  });
+  processForm?.reset();
+  observationForm?.reset();
+  deliveryForm?.reset();
+  documentMetadataForm?.reset();
+  supplierInfoForm?.reset();
+  resetApplicationData();
+}
+
+function resetApplicationData() {
+  state.meta = { status: [], filtrosRapidos: [] };
+  state.processos = [];
+  state.dashboardMetrics = {};
+  state.dashboardCharts = { execucaoMensal: [], distribuicaoStatus: [] };
+  state.dashboardYears = [];
+  state.allProcesses = [];
+  state.processesLoaded = false;
+  state.processesLoading = null;
+  state.fornecedores = [];
+  state.auditoria = [];
+  state.securityAudit = [];
+  state.emailHistory = [];
+  state.detailObservations = [];
+  state.deliveryDraft = null;
+  state.observationProcessId = null;
+  state.selectedProcess = null;
+  state.detailReturnSection = "processes";
+  state.pendingDocumentFile = null;
+  state.detailTab = "general";
+  state.dashboardYear = "";
+  state.supplierSearch = "";
+  state.supplierHistory = "";
+  state.settingsPanel = "templates";
+  state.activeSection = "dashboard";
+  state.detailObservationsError = "";
+  table?.replaceChildren();
+  detailPanel?.replaceChildren();
+  dashboardView?.replaceChildren();
+  suppliersView?.replaceChildren();
+  auditView?.replaceChildren();
+  usersView?.replaceChildren();
+  settingsView?.replaceChildren();
+  if (detailProcessNumber) detailProcessNumber.textContent = "Processo";
+  if (detailStatusBadges) detailStatusBadges.replaceChildren();
+  if (detailSubtitle) detailSubtitle.textContent = "";
+  if (searchInput) searchInput.value = "";
+  if (statusFilter) statusFilter.value = "";
+  if (quickFilter) quickFilter.value = "";
+  quickFilterBar?.replaceChildren();
+  clearAppStatus();
+}
+
+function handleUnauthorized() {
+  if (handlingUnauthorized) return;
+  handlingUnauthorized = true;
+  clearClientSession();
+  showAuth();
+  authMessage.textContent = "Sua sessao expirou. Entre novamente para continuar.";
+  handlingUnauthorized = false;
 }
 
 function setCurrentUser(user) {
@@ -205,10 +423,22 @@ function setCurrentUser(user) {
     email: user.email,
     name: user.nome || user.name || user.email,
     role: user.role || "almoxarifado",
-    foto: user.foto || ""
+    foto: user.foto || "",
+    precisaDefinirSenha: Boolean(user.precisaDefinirSenha)
   };
   applyRoleVisibility();
   renderSidebarProfile();
+}
+
+function enforceRequiredPasswordChange() {
+  const required = Boolean(currentUser?.precisaDefinirSenha);
+  if (changePasswordCloseButton) changePasswordCloseButton.disabled = required;
+  changePasswordDialog?.classList.toggle("password-change-required", required);
+  if (required && changePasswordDialog && !changePasswordDialog.open) {
+    changePasswordMessage.textContent = "Defina uma nova senha para continuar usando o sistema.";
+    changePasswordDialog.showModal();
+    changePasswordForm?.elements.senhaAtual?.focus();
+  }
 }
 
 function showAuth() {
@@ -216,7 +446,44 @@ function showAuth() {
   authScreen.classList.remove("hidden");
   appShell.classList.add("hidden");
   sidebar.classList.add("hidden");
+  closeMobileMenu();
   showAuthPanel("login");
+  resetPasswordVisibility(loginForm);
+  loginForm?.elements.email?.focus();
+}
+
+function showSessionValidationError() {
+  authMessage.replaceChildren();
+  const text = document.createElement("span");
+  text.textContent = "Nao foi possivel confirmar sua sessao. Ela pode continuar valida; tente novamente ou entre com suas credenciais.";
+  const retry = document.createElement("button");
+  retry.type = "button";
+  retry.className = "secondary auth-retry-button";
+  retry.textContent = "Tentar validar novamente";
+  retry.addEventListener("click", async () => {
+    setButtonBusy(retry, true, "Validando...");
+    setFormBusy(loginForm, true, "Validando...");
+    try {
+      const user = await api("/auth/session", { skipAuthRedirect: true });
+      setCurrentUser(user);
+      authMessage.textContent = "";
+      showApp();
+      enforceRequiredPasswordChange();
+      await bootSafely();
+    } catch (error) {
+      if (error.status === 401) {
+        clearClientSession();
+        showAuth();
+        authMessage.textContent = "Sua sessao expirou. Entre novamente para continuar.";
+      } else {
+        showSessionValidationError();
+      }
+    } finally {
+      setButtonBusy(retry, false);
+      setFormBusy(loginForm, false);
+    }
+  }, { once: true });
+  authMessage.append(text, retry);
 }
 
 function showApp() {
@@ -224,6 +491,8 @@ function showApp() {
   authScreen.classList.add("hidden");
   appShell.classList.remove("hidden");
   sidebar.classList.remove("hidden");
+  activateSectionShell("dashboard");
+  dashboardView.innerHTML = '<p class="empty-state" role="status">Carregando painel...</p>';
   renderSidebarProfile();
 }
 
@@ -248,6 +517,7 @@ function applyRoleVisibility() {
   document.querySelector('[data-section="settings"]')?.classList.toggle("hidden", role !== "admin");
   document.querySelector('[data-section="users"]')?.classList.toggle("hidden", role !== "admin");
   document.querySelector('[data-section="audit"]')?.classList.toggle("hidden", !["admin", "auditor"].includes(role));
+  document.querySelector('[data-detail-tab="emails"]')?.classList.toggle("hidden", !["admin", "auditor"].includes(role));
   newProcessButton?.classList.toggle("hidden", role === "auditor");
   observationForm?.classList.toggle("hidden", role === "auditor");
 }
@@ -276,37 +546,142 @@ function showAuthPanel(panel) {
       passwordStep.querySelector("input").required = true;
       passwordStep.querySelector("input").value = "";
     }
+    resetPasswordVisibility(loginForm);
     if (emailSubmitButton) emailSubmitButton.textContent = "Entrar";
   }
 }
 
 async function boot() {
-  state.meta = await api("/api/meta");
-  fillSelect(statusSelect, state.meta.status, "Todos os status");
+  const [meta] = await Promise.all([
+    api("/api/meta"),
+    loadDashboardData()
+  ]);
+  state.meta = meta;
   fillSelect(statusFilter, state.meta.status, "Todos os status");
   fillSelect(quickFilter, state.meta.filtrosRapidos, "Filtros rapidos");
-  await refresh();
-  renderYearOptions();
   renderQuickFilters();
-  openSection("dashboard");
+  await openSection("dashboard");
 }
 
-async function refresh() {
+async function loadDashboardData(year = state.dashboardYear) {
+  const sequence = ++dashboardSequence;
   const params = new URLSearchParams();
-  if (searchInput.value) params.set("q", searchInput.value);
-  if (statusFilter.value) params.set("status", statusFilter.value);
-  if (quickFilter.value) params.set("filtroRapido", quickFilter.value);
-  if (yearFilter?.value) params.set("ano", yearFilter.value);
-  const processPath = `/api/processes?${params}`;
-  if (params.toString()) {
-    [state.processos, state.allProcesses] = await Promise.all([api(processPath), api("/api/processes")]);
-  } else {
-    state.processos = await api(processPath);
-    state.allProcesses = state.processos;
+  if (year) params.set("ano", year);
+  const query = params.toString();
+  const payload = await api(`/api/dashboard${query ? `?${query}` : ""}`);
+  if (sequence !== dashboardSequence) return null;
+  const normalized = normalizeDashboardPayload(payload, year);
+  state.dashboardMetrics = normalized.metrics;
+  state.dashboardCharts = normalized.charts;
+  state.dashboardYears = normalized.anos;
+  state.dashboardYear = String(normalized.ano);
+  return normalized;
+}
+
+function normalizeDashboardPayload(payload = {}, requestedYear = "") {
+  const metricsCandidate = payload.metrics || payload.metricas || payload.dashboardMetrics || payload;
+  const metrics = metricsCandidate && typeof metricsCandidate === "object" ? metricsCandidate : {};
+  const charts = payload.charts || payload.graficos || {};
+  const rawYears = payload.anos || payload.years || [];
+  const anos = (Array.isArray(rawYears) ? rawYears : [])
+    .map(Number)
+    .filter(Number.isInteger)
+    .sort((a, b) => b - a);
+  const fallbackYear = Number(requestedYear) || new Date().getFullYear();
+  return {
+    metrics,
+    charts: {
+      execucaoMensal: Array.isArray(charts.execucaoMensal || payload.execucaoMensal) ? (charts.execucaoMensal || payload.execucaoMensal) : [],
+      distribuicaoStatus: Array.isArray(charts.distribuicaoStatus || payload.distribuicaoStatus) ? (charts.distribuicaoStatus || payload.distribuicaoStatus) : []
+    },
+    anos: anos.length ? anos : [fallbackYear],
+    ano: Number(payload.ano || payload.year || requestedYear) || anos[0] || fallbackYear
+  };
+}
+
+async function ensureProcessesLoaded({ force = false } = {}) {
+  if (state.processesLoaded && !force) return state.allProcesses;
+  if (state.processesLoading && !force) return state.processesLoading;
+  refreshController?.abort();
+  const controller = new AbortController();
+  refreshController = controller;
+  const sequence = ++refreshSequence;
+  const request = api("/api/processes", { signal: controller.signal })
+    .then((processes) => {
+      if (sequence !== refreshSequence) return state.allProcesses;
+      state.allProcesses = processes;
+      state.processesLoaded = true;
+      return processes;
+    });
+  state.processesLoading = request;
+  try {
+    return await request;
+  } finally {
+    if (refreshController === controller) refreshController = null;
+    if (state.processesLoading === request) state.processesLoading = null;
   }
+}
+
+async function renderProcessesView() {
+  if (!state.processesLoaded) {
+    table.innerHTML = '<tr class="empty-table-row"><td colspan="10" role="status">Carregando processos...</td></tr>';
+  }
+  await ensureProcessesLoaded();
+  applyProcessFilters();
+  renderProcessData();
+}
+
+async function refresh({ reload = true, updateDashboard = reload } = {}) {
+  if (reload) {
+    const [processResult, dashboardResult] = await Promise.allSettled([
+      ensureProcessesLoaded({ force: true }),
+      updateDashboard ? loadDashboardData(state.dashboardYear) : Promise.resolve(null)
+    ]);
+    if (processResult.status === "rejected") {
+      if (processResult.reason?.name === "AbortError") return;
+      throw processResult.reason;
+    }
+    if (dashboardResult.status === "rejected" && dashboardResult.reason?.name !== "AbortError") {
+      showAppError(`A lista foi atualizada, mas o painel nao: ${dashboardResult.reason?.message || "falha ao carregar os indicadores"}`);
+    } else if (dashboardResult.value && state.activeSection === "dashboard") {
+      renderDashboardView();
+    }
+  }
+  applyProcessFilters();
+  renderProcessData();
+}
+
+function applyProcessFilters() {
+  const query = normalizeText(searchInput?.value || "");
+  const status = statusFilter?.value || "";
+  const quick = quickFilter?.value || "";
+  state.processos = state.allProcesses
+    .filter((processo) => !processo.inativo)
+    .filter((processo) => !status || processo.status === status)
+    .filter((processo) => {
+      if (!query) return true;
+      return [
+        processo.numeroProcesso,
+        processo.numeroEmpenho,
+        processo.numeroNotaFiscal,
+        processo.fornecedor,
+        processo.material,
+        processo.status,
+        ...(processo.materiais || []).map((material) => material.descricao)
+      ].some((value) => normalizeText(value).includes(query));
+    })
+    .filter((processo) => matchesQuickFilter(processo, quick));
+}
+
+function matchesQuickFilter(processo, quickFilterValue) {
+  if (!quickFilterValue) return true;
+  if (["Em atraso", "Mais de 30 dias"].includes(quickFilterValue)) return isOverdue(processo);
+  if (quickFilterValue === "Pendentes de liquidacao") return ["Entregue", "Aguardando envio para liquidacao"].includes(processo.status);
+  return processo.status === quickFilterValue;
+}
+
+function renderProcessData() {
   renderTable();
-  state.dashboardMetrics = calculateDashboardMetrics(state.allProcesses);
-  renderMetrics(state.dashboardMetrics);
 }
 
 function processFilterParams() {
@@ -314,35 +689,42 @@ function processFilterParams() {
   if (searchInput.value) params.set("q", searchInput.value);
   if (statusFilter.value) params.set("status", statusFilter.value);
   if (quickFilter.value) params.set("filtroRapido", quickFilter.value);
-  if (yearFilter?.value) params.set("ano", yearFilter.value);
   return params;
 }
 
 async function downloadProcesses() {
-  const params = new URLSearchParams();
+  const params = processFilterParams();
   const format = processExportFormat?.value || "excel";
   params.set("format", format);
-  const response = await fetch(`/api/processes/download?${params}`, {
-    headers: {
-      "x-user-email": currentUser.email,
-      "x-user-name": currentUser.name,
-      ...(authToken ? { authorization: `Bearer ${authToken}` } : {})
+  setButtonBusy(downloadProcessesButton, true, "Gerando...");
+  try {
+    const response = await fetch(`/api/processes/download?${params}`, { credentials: "same-origin" });
+    if (response.status === 401) {
+      handleUnauthorized();
+      return;
     }
-  });
-  if (!response.ok) {
-    const data = await response.json().catch(() => ({}));
-    alert(data.error || "Nao foi possivel gerar o download.");
-    return;
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.error || "Nao foi possivel gerar o download.");
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    triggerBlobDownload(url, processExportFileName(format));
+  } catch (error) {
+    if (error.name !== "AbortError") alert(error.message || "Nao foi possivel gerar o download.");
+  } finally {
+    setButtonBusy(downloadProcessesButton, false);
   }
-  const blob = await response.blob();
-  const url = URL.createObjectURL(blob);
+}
+
+function triggerBlobDownload(url, fileName = "") {
   const link = document.createElement("a");
   link.href = url;
-  link.download = processExportFileName(format);
+  link.download = fileName;
   document.body.append(link);
   link.click();
   link.remove();
-  URL.revokeObjectURL(url);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function processExportFileName(format = "excel") {
@@ -351,21 +733,10 @@ function processExportFileName(format = "excel") {
   return `empenhos-${date}.${extensions[format] || "xls"}`;
 }
 
-function renderMetrics(data) {
-  const items = (data.porStatus || []).filter(([, value]) => value > 0);
-
-  metrics.innerHTML = items.map(([label, value]) => `
-    <article class="metric">
-      <span>${escapeHtml(label)}</span>
-      <strong>${value}</strong>
-    </article>
-  `).join("");
-}
-
 function renderTable() {
-  table.innerHTML = state.processos.map((processo) => `
+  table.innerHTML = state.processos.length ? state.processos.map((processo) => `
     <tr data-edit="${escapeAttribute(processo.id)}">
-      <td class="strong-cell">${empty(processo.numeroProcesso)}</td>
+      <td class="strong-cell"><button type="button" class="link-button process-open-button" data-open-process="${escapeAttribute(processo.id)}" aria-label="Abrir ${escapeAttribute(processAccessibleName(processo))}">${empty(processo.numeroProcesso)}</button></td>
       <td class="mono-cell">${documentCell(processo.numeroEmpenho, "Nota de Empenho", processo.documentos?.notaEmpenho)}</td>
       <td>${empty(processo.fornecedor)}</td>
       <td>${materialsCell(processo.materiais)}</td>
@@ -376,7 +747,13 @@ function renderTable() {
       <td>${dateCell(processo.dataEnvioLiquidacao)}</td>
       <td>${statusBadges(processo)}</td>
     </tr>
-  `).join("");
+  `).join("") : '<tr class="empty-table-row"><td colspan="10">Nenhum processo encontrado.</td></tr>';
+}
+
+function processAccessibleName(processo = {}) {
+  if (processo.numeroProcesso) return `processo ${processo.numeroProcesso}`;
+  if (processo.numeroEmpenho) return `empenho ${processo.numeroEmpenho}`;
+  return "processo sem numero";
 }
 
 processForm.addEventListener("submit", async (event) => {
@@ -385,24 +762,43 @@ processForm.addEventListener("submit", async (event) => {
   data.materiais = readMaterials();
   const id = data.id;
   delete data.id;
+  formMessage.textContent = "";
+  if (!String(data.numeroProcesso || "").trim() && !String(data.numeroEmpenho || "").trim()) {
+    formMessage.textContent = "Informe o numero do processo, o numero do empenho ou ambos.";
+    return;
+  }
+  if (data.dataProcesso && !normalizeDateInput(data.dataProcesso)) {
+    formMessage.textContent = "Informe uma data do processo valida no formato DD-MM-AAAA.";
+    return;
+  }
 
+  setFormBusy(processForm, true, "Salvando...");
+  let savedProcess;
   try {
-    const savedProcess = await api(id ? `/api/processes/${id}` : "/api/processes", {
+    savedProcess = await api(id ? `/api/processes/${id}` : "/api/processes", {
       method: id ? "PUT" : "POST",
       body: JSON.stringify(data)
     });
-    formMessage.textContent = "Processo salvo.";
-    clearForm();
-    processDialog.close();
+  } catch (error) {
+    formMessage.textContent = error.message;
+    return;
+  } finally {
+    setFormBusy(processForm, false);
+  }
+
+  const wasSelected = state.selectedProcess?.id === savedProcess.id;
+  if (wasSelected) state.selectedProcess = savedProcess;
+  clearForm();
+  processDialog.close();
+  try {
     await refresh();
     await refreshAudit();
-    if (state.selectedProcess?.id === savedProcess.id) {
-      state.selectedProcess = savedProcess;
-      await loadDetailObservations(savedProcess.id);
+    if (wasSelected) {
+      state.detailObservations = await loadDetailObservations(savedProcess.id);
       renderProcessDetail();
     }
   } catch (error) {
-    formMessage.textContent = error.message;
+    showAppError(`O processo foi salvo, mas a lista nao foi atualizada: ${error.message}`);
   }
 });
 
@@ -410,10 +806,9 @@ document.querySelector("#clearForm").addEventListener("click", clearForm);
 newProcessButton.addEventListener("click", () => openProcessDialog());
 downloadProcessesButton?.addEventListener("click", downloadProcesses);
 addMaterialButton.addEventListener("click", () => addMaterialRow());
-searchInput.addEventListener("input", debounce(refresh, 250));
-statusFilter.addEventListener("change", refresh);
-quickFilter.addEventListener("change", refresh);
-yearFilter?.addEventListener("change", refresh);
+searchInput.addEventListener("input", debounce(() => refresh({ reload: false }), 180));
+statusFilter.addEventListener("change", () => refresh({ reload: false }));
+quickFilter.addEventListener("change", () => refresh({ reload: false }));
 documentMetadataForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
   await saveComplementaryDocument();
@@ -429,7 +824,8 @@ materialsList.addEventListener("click", (event) => {
 });
 
 table.addEventListener("click", async (event) => {
-  const editId = event.target.dataset.edit || event.target.closest("tr")?.dataset.edit;
+  const editId = event.target.closest("[data-open-process]")?.dataset.openProcess
+    || event.target.closest("tr")?.dataset.edit;
   const notesId = event.target.dataset.notes;
 
   if (editId) {
@@ -438,9 +834,7 @@ table.addEventListener("click", async (event) => {
   }
 
   if (notesId) {
-    state.observationProcessId = notesId;
-    await loadObservations();
-    dialog.showModal();
+    await openObservationsDialog(notesId);
   }
 });
 
@@ -449,15 +843,42 @@ backToProcesses.addEventListener("click", closeProcessDetail);
 detailTabs.forEach((tab) => {
   tab.addEventListener("click", async () => {
     state.detailTab = tab.dataset.detailTab;
-    detailTabs.forEach((item) => item.classList.toggle("active", item === tab));
-    if (state.detailTab === "timeline" && !state.auditLoaded && ["admin", "auditor"].includes(currentUser.role)) await loadAuditData();
-    if (state.detailTab === "emails" && !state.emailHistoryLoaded && ["admin", "auditor"].includes(currentUser.role)) {
-      state.emailHistory = await api("/api/emails/history");
-      state.emailHistoryLoaded = true;
+    detailTabs.forEach((item) => setTabActive(item, item === tab));
+    detailPanel.setAttribute("aria-busy", "true");
+    try {
+      if (state.detailTab === "timeline" && !state.auditLoaded && ["admin", "auditor"].includes(currentUser.role)) await loadAuditData();
+      if (state.detailTab === "emails" && !state.emailHistoryLoaded && ["admin", "auditor"].includes(currentUser.role)) {
+        state.emailHistory = await api("/api/emails/history");
+        state.emailHistoryLoaded = true;
+      }
+      renderDetailPanel();
+    } catch (error) {
+      renderInlineError(detailPanel, error.message || "Nao foi possivel carregar este modulo.");
+    } finally {
+      detailPanel.removeAttribute("aria-busy");
     }
-    renderDetailPanel();
+  });
+  tab.addEventListener("keydown", (event) => {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    const available = [...detailTabs].filter((item) => !item.classList.contains("hidden"));
+    const currentIndex = available.indexOf(tab);
+    const nextIndex = event.key === "Home"
+      ? 0
+      : event.key === "End"
+        ? available.length - 1
+        : (currentIndex + (event.key === "ArrowRight" ? 1 : -1) + available.length) % available.length;
+    event.preventDefault();
+    available[nextIndex]?.focus();
+    available[nextIndex]?.click();
   });
 });
+
+function setTabActive(tab, active) {
+  tab.classList.toggle("active", active);
+  tab.setAttribute("aria-selected", String(active));
+  tab.tabIndex = active ? 0 : -1;
+  if (active && tab.id) detailPanel.setAttribute("aria-labelledby", tab.id);
+}
 
 downloadProcessButton.addEventListener("click", () => {
   if (!state.selectedProcess) return;
@@ -465,33 +886,45 @@ downloadProcessButton.addEventListener("click", () => {
 });
 
 downloadChoices.forEach((button) => {
-  button.addEventListener("click", () => {
+  button.addEventListener("click", async () => {
     if (!state.selectedProcess) return;
     downloadDialog?.close();
-    downloadProcess(state.selectedProcess.id, button.dataset.downloadFormat);
+    try {
+      await downloadProcess(state.selectedProcess.id, button.dataset.downloadFormat);
+    } catch (error) {
+      alert(error.message || "Nao foi possivel baixar o processo.");
+    }
   });
 });
 
 supplierInfoForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
+  supplierInfoMessage.textContent = "";
   const data = Object.fromEntries(new FormData(supplierInfoForm));
   const razaoSocial = String(data.razaoSocial || "").trim();
   if (!razaoSocial) return;
-  const supplier = await api("/api/suppliers", {
-    method: "POST",
-    body: JSON.stringify({
-      razaoSocial,
-      emails: splitSupplierInfo(data.emails),
-      telefones: splitSupplierInfo(data.telefones),
-      enderecos: splitSupplierInfo(data.enderecos),
-      observacoes: String(data.observacoes || "").trim()
-    })
-  });
-  const index = state.fornecedores.findIndex((item) => normalizeText(item.razaoSocial) === normalizeText(supplier.razaoSocial));
-  if (index >= 0) state.fornecedores[index] = supplier;
-  else state.fornecedores.push(supplier);
-  supplierInfoDialog?.close();
-  renderSuppliersView();
+  setFormBusy(event.currentTarget, true, "Salvando...");
+  try {
+    const supplier = await api("/api/suppliers", {
+      method: "POST",
+      body: JSON.stringify({
+        razaoSocial,
+        emails: splitSupplierInfo(data.emails),
+        telefones: splitSupplierInfo(data.telefones),
+        enderecos: splitSupplierInfo(data.enderecos),
+        observacoes: String(data.observacoes || "").trim()
+      })
+    });
+    const index = state.fornecedores.findIndex((item) => normalizeText(item.razaoSocial) === normalizeText(supplier.razaoSocial));
+    if (index >= 0) state.fornecedores[index] = supplier;
+    else state.fornecedores.push(supplier);
+    supplierInfoDialog?.close();
+    await renderSuppliersView();
+  } catch (error) {
+    supplierInfoMessage.textContent = error.message || "Nao foi possivel salvar as informacoes.";
+  } finally {
+    setFormBusy(event.currentTarget, false);
+  }
 });
 
 cancelSupplierInfo?.addEventListener("click", () => {
@@ -501,7 +934,7 @@ cancelSupplierInfo?.addEventListener("click", () => {
 navItems.forEach((item) => {
   item.addEventListener("click", (event) => {
     event.preventDefault();
-    openSection(item.dataset.section);
+    void openSection(item.dataset.section);
     closeMobileMenu();
   });
 });
@@ -511,6 +944,7 @@ function setMobileMenu(open) {
   mobileMenuToggle?.setAttribute("aria-expanded", String(open));
   mobileMenuToggle?.setAttribute("aria-label", open ? "Fechar menu" : "Abrir menu");
   sidebarBackdrop?.classList.toggle("hidden", !open);
+  if (open) requestAnimationFrame(() => sidebar.querySelector(".nav-item:not(.hidden)")?.focus());
 }
 
 function closeMobileMenu() {
@@ -523,7 +957,10 @@ mobileMenuToggle?.addEventListener("click", () => {
 });
 sidebarBackdrop?.addEventListener("click", closeMobileMenu);
 window.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") closeMobileMenu();
+  if (event.key === "Escape" && document.body.classList.contains("mobile-menu-open")) {
+    closeMobileMenu();
+    mobileMenuToggle?.focus();
+  }
 });
 window.addEventListener("resize", () => {
   if (window.innerWidth > 980) {
@@ -535,7 +972,9 @@ window.addEventListener("resize", () => {
 
 sidebarToggle?.addEventListener("click", () => {
   document.body.classList.toggle("sidebar-collapsed");
-  sidebarToggle.textContent = document.body.classList.contains("sidebar-collapsed") ? "›" : "‹";
+  const collapsed = document.body.classList.contains("sidebar-collapsed");
+  sidebarToggle.textContent = collapsed ? "›" : "‹";
+  sidebarToggle.setAttribute("aria-label", collapsed ? "Expandir menu" : "Minimizar menu");
 });
 
 sidebarResizer?.addEventListener("pointerdown", (event) => {
@@ -561,68 +1000,71 @@ sidebarResizer?.addEventListener("pointercancel", () => {
 });
 
 detailPanel.addEventListener("click", async (event) => {
-  if (event.target.dataset.openEdit) {
-    openProcessDialog(state.selectedProcess);
-  }
+  try {
+    if (event.target.dataset.openEdit) {
+      openProcessDialog(state.selectedProcess);
+    }
 
-  const notesId = event.target.dataset.openNotes;
-  if (notesId) {
-    state.observationProcessId = notesId;
-    await loadObservations();
-    dialog.showModal();
-  }
+    const notesId = event.target.dataset.openNotes;
+    if (notesId) {
+      await openObservationsDialog(notesId);
+    }
 
-  const attachKey = event.target.dataset.attachDocument;
-  if (attachKey) {
-    await attachDocument(attachKey);
-  }
+    const attachKey = event.target.dataset.attachDocument;
+    if (attachKey) {
+      await attachDocument(attachKey);
+    }
 
-  const testEmailProcessId = event.target.dataset.sendTestEmail;
-  if (testEmailProcessId) {
-    await sendTestEmail(testEmailProcessId);
-  }
+    const testEmailProcessId = event.target.dataset.sendTestEmail;
+    if (testEmailProcessId) {
+      await sendTestEmail(testEmailProcessId);
+    }
 
-  const openPath = event.target.dataset.openDocument;
-  if (openPath) {
-    await downloadDocument(openPath);
-  }
+    const openPath = event.target.dataset.openDocument;
+    if (openPath) {
+      await downloadDocument(openPath);
+    }
 
-  const downloadPath = event.target.dataset.downloadDocument;
-  if (downloadPath) {
-    downloadDocument(downloadPath);
-  }
+    const downloadPath = event.target.dataset.downloadDocument;
+    if (downloadPath) {
+      await downloadDocument(downloadPath);
+    }
 
-  const removeDocumentKey = event.target.dataset.removeDocument;
-  if (removeDocumentKey) {
-    await removeDocument(removeDocumentKey);
-  }
+    const removeDocumentKey = event.target.dataset.removeDocument;
+    if (removeDocumentKey) {
+      await removeDocument(removeDocumentKey);
+    }
 
-  const editObservationId = event.target.dataset.editObservation;
-  if (editObservationId) {
-    await editObservation(editObservationId);
-  }
+    const editObservationId = event.target.dataset.editObservation;
+    if (editObservationId) {
+      await editObservation(editObservationId);
+    }
 
-  const deleteObservationId = event.target.dataset.deleteObservation;
-  if (deleteObservationId) {
-    await deleteObservation(deleteObservationId);
-  }
+    const deleteObservationId = event.target.dataset.deleteObservation;
+    if (deleteObservationId) {
+      await deleteObservation(deleteObservationId);
+    }
 
-  if (event.target.dataset.cancelProcess) {
-    await cancelSelectedProcess();
-  }
+    if (event.target.dataset.updateStatus) {
+      await saveNewProcessData();
+    }
 
-  if (event.target.dataset.updateStatus) {
-    await saveNewProcessData();
-  }
+    if (event.target.dataset.registerPartialDelivery) {
+      await registerPartialDelivery();
+    }
 
-  if (event.target.dataset.registerPartialDelivery) {
-    await registerPartialDelivery();
-  }
-
-  if (event.target.dataset.showNewData) {
-    const panel = detailPanel.querySelector("[data-new-data-panel]");
-    panel?.classList.toggle("hidden");
-    panel?.querySelector("[data-detail-date]")?.focus();
+    if (event.target.dataset.showNewData) {
+      const step = nextProcessStep(state.selectedProcess);
+      if (["Entrega parcial", "Entregue"].includes(step?.status)) {
+        openDeliveryDialog("", step.status === "Entregue");
+        return;
+      }
+      const panel = detailPanel.querySelector("[data-new-data-panel]");
+      panel?.classList.toggle("hidden");
+      panel?.querySelector("[data-detail-date]")?.focus();
+    }
+  } catch (error) {
+    if (error.name !== "AbortError") alert(error.message || "Nao foi possivel concluir a operacao.");
   }
 });
 
@@ -655,31 +1097,52 @@ async function sendTestEmail(processId) {
 
 observationForm.addEventListener("submit", async (event) => {
   event.preventDefault();
+  observationMessage.textContent = "";
   const data = Object.fromEntries(new FormData(observationForm));
-  await api(`/api/processes/${state.observationProcessId}/observations`, {
-    method: "POST",
-    body: JSON.stringify(data)
-  });
-  observationForm.reset();
-  await loadObservations();
-  if (state.selectedProcess?.id === state.observationProcessId) {
-    await loadDetailObservations(state.observationProcessId);
-    if (["timeline", "observations"].includes(state.detailTab)) renderDetailPanel();
+  setFormBusy(observationForm, true, "Registrando...");
+  try {
+    await api(`/api/processes/${state.observationProcessId}/observations`, {
+      method: "POST",
+      body: JSON.stringify(data)
+    });
+    observationForm.reset();
+    await refreshObservationViews();
+    observationMessage.textContent = "Observacao registrada.";
+  } catch (error) {
+    observationMessage.textContent = error.message || "Nao foi possivel registrar a observacao.";
+  } finally {
+    setFormBusy(observationForm, false);
   }
 });
 
+async function openObservationsDialog(processId) {
+  state.observationProcessId = processId;
+  observationMessage.textContent = "";
+  observationsList.innerHTML = '<p class="empty-state" role="status">Carregando observacoes...</p>';
+  const processo = processById(processId);
+  observationForm.classList.toggle("hidden", !canEditGeneralInUi(processo));
+  dialog.showModal();
+  try {
+    await loadObservations();
+  } catch (error) {
+    renderInlineError(observationsList, error.message || "Nao foi possivel carregar as observacoes.");
+  }
+}
+
 async function loadObservations() {
   const items = await api(`/api/processes/${state.observationProcessId}/observations`);
+  const processo = processById(state.observationProcessId);
   observationsList.innerHTML = items.length ? items.map((item) => `
     <article class="note">
-      <span>${new Date(item.criadoEm).toLocaleString("pt-BR")} - ${escapeHtml(item.usuario)}</span>
+      <span>${escapeHtml(formatDateTime(item.criadoEm))} - ${escapeHtml(item.usuario)}</span>
       <div>${escapeHtml(item.conteudo)}</div>
-      <div class="note-actions">
+      ${canManageObservation(item, processo) ? `<div class="note-actions">
         <button type="button" class="secondary" data-edit-observation="${escapeAttribute(item.id)}">Alterar</button>
         <button type="button" class="secondary" data-delete-observation="${escapeAttribute(item.id)}">Excluir</button>
-      </div>
+      </div>` : ""}
     </article>
   `).join("") : "<p>Nenhuma observacao registrada.</p>";
+  return items;
 }
 
 observationsList.addEventListener("click", async (event) => {
@@ -690,9 +1153,48 @@ observationsList.addEventListener("click", async (event) => {
   if (deleteObservationId) await deleteObservation(deleteObservationId);
 });
 
+editObservationForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  editObservationMessage.textContent = "";
+  const form = event.currentTarget;
+  const data = Object.fromEntries(new FormData(form));
+  const conteudo = String(data.conteudo || "").trim();
+  if (!conteudo || conteudo.length > 350) {
+    editObservationMessage.textContent = "A observacao deve ter entre 1 e 350 caracteres.";
+    return;
+  }
+  setFormBusy(form, true, "Salvando...");
+  try {
+    await api(`/api/processes/${encodeURIComponent(data.processId)}/observations/${encodeURIComponent(data.observationId)}`, {
+      method: "PUT",
+      body: JSON.stringify({ conteudo })
+    });
+    editObservationDialog.close();
+    await refreshObservationViews();
+    observationMessage.textContent = "Observacao alterada.";
+  } catch (error) {
+    editObservationMessage.textContent = error.message || "Nao foi possivel alterar a observacao.";
+  } finally {
+    setFormBusy(form, false);
+  }
+});
+
+editObservationDialog?.addEventListener("close", () => {
+  editObservationForm?.reset();
+  if (editObservationMessage) editObservationMessage.textContent = "";
+});
+
+deliveryForm?.addEventListener("submit", saveDeliveryFromDialog);
+cancelDelivery?.addEventListener("click", () => deliveryDialog?.close());
+deliveryDialog?.addEventListener("close", resetDeliveryDialog);
+deliveryForm?.addEventListener("input", (event) => {
+  event.target.removeAttribute("aria-invalid");
+  deliveryMessage.textContent = "";
+});
+
 function fillForm(processo) {
-  processForm.id.value = processo.id;
-  processForm.versao.value = processo.versao;
+  processForm.elements.id.value = processo.id;
+  processForm.elements.versao.value = processo.versao;
   for (const [key, value] of Object.entries(processo)) {
     if (processForm.elements[key]) processForm.elements[key].value = value ?? "";
   }
@@ -706,8 +1208,8 @@ function fillForm(processo) {
 
 function clearForm() {
   processForm.reset();
-  processForm.id.value = "";
-  processForm.versao.value = "";
+  processForm.elements.id.value = "";
+  processForm.elements.versao.value = "";
   formMessage.textContent = "";
   renderMaterialRows();
 }
@@ -719,11 +1221,17 @@ function openProcessDialog(processo = null) {
   processDialog.showModal();
 }
 
-function openProcessDetail(processo, returnSection = "processes") {
+async function openProcessDetail(processo, returnSection = "processes") {
   if (!processo) return;
+  detailController?.abort();
+  const controller = new AbortController();
+  detailController = controller;
+  const sequence = ++detailSequence;
   state.selectedProcess = processo;
   state.detailReturnSection = returnSection;
   state.detailTab = "general";
+  state.detailObservations = [];
+  state.detailObservationsError = "";
   processListView.classList.add("hidden");
   dashboardView.classList.add("hidden");
   suppliersView.classList.add("hidden");
@@ -732,50 +1240,45 @@ function openProcessDetail(processo, returnSection = "processes") {
   auditView.classList.add("hidden");
   processDetailView.classList.remove("hidden");
   if (sectionTitle) sectionTitle.textContent = "Empenhos";
-  detailTabs.forEach((tab) => tab.classList.toggle("active", tab.dataset.detailTab === "general"));
-  loadDetailObservations(processo.id).then(() => renderProcessDetail());
+  detailTabs.forEach((tab) => setTabActive(tab, tab.dataset.detailTab === "general"));
+  renderProcessDetail();
+
+  void ensureSuppliersLoaded().then(() => {
+    if (sequence === detailSequence && state.selectedProcess?.id === processo.id) renderProcessDetail();
+  }).catch(() => null);
+  try {
+    const observations = await loadDetailObservations(processo.id, { signal: controller.signal });
+    if (sequence !== detailSequence || state.selectedProcess?.id !== processo.id) return;
+    state.detailObservations = observations;
+    renderProcessDetail();
+  } catch (error) {
+    if (error.name !== "AbortError" && sequence === detailSequence && state.selectedProcess?.id === processo.id) {
+      state.detailObservationsError = error.message || "Nao foi possivel carregar as observacoes.";
+      renderProcessDetail();
+    }
+  } finally {
+    if (detailController === controller) detailController = null;
+  }
 }
 
 function closeProcessDetail() {
+  detailController?.abort();
+  detailController = null;
+  detailSequence += 1;
   const returnSection = state.detailReturnSection || "processes";
   state.selectedProcess = null;
-  processDetailView.classList.add("hidden");
-  navItems.forEach((item) => item.classList.toggle("active", item.dataset.section === returnSection));
-  if (sectionTitle) sectionTitle.textContent = returnSection === "suppliers" ? "Fornecedores" : "Empenhos";
-
-  if (returnSection === "suppliers") {
-    processListView.classList.add("hidden");
-    dashboardView.classList.add("hidden");
-    usersView.classList.add("hidden");
-    settingsView.classList.add("hidden");
-    auditView.classList.add("hidden");
-    suppliersView.classList.remove("hidden");
-    renderSuppliersView();
-    return;
-  }
-
-  suppliersView.classList.add("hidden");
-  dashboardView.classList.add("hidden");
-  usersView.classList.add("hidden");
-  settingsView.classList.add("hidden");
-  auditView.classList.add("hidden");
-  processListView.classList.remove("hidden");
+  void openSection(returnSection);
 }
 
 async function downloadProcess(processId, format) {
   const normalized = format === "pdf" ? "pdf" : "zip";
   const response = await fetch(`/api/processes/${processId}/download?format=${normalized}`, {
-    headers: authToken ? { authorization: `Bearer ${authToken}` } : {}
+    credentials: "same-origin"
   });
+  if (response.status === 401) handleUnauthorized();
   if (!response.ok) throw new Error("Nao foi possivel baixar o processo.");
   const blobUrl = URL.createObjectURL(await response.blob());
-  const link = document.createElement("a");
-  link.href = blobUrl;
-  link.download = normalized === "pdf" ? "processo.pdf" : "processo.zip";
-  document.body.append(link);
-  link.click();
-  link.remove();
-  setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+  triggerBlobDownload(blobUrl, normalized === "pdf" ? "processo.pdf" : "processo.zip");
 }
 
 function renderProcessDetail() {
@@ -890,7 +1393,7 @@ function renderTimelineModule(processo) {
       ${events.map((event) => `
         <li class="${timelineEventClass(event)}">
           <strong>${escapeHtml(event.label)}</strong>
-          <span>${event.date ? (event.showTime ? formatDateTime(event.date) : formatDate(event.date)) : "Pendente"}</span>
+          <span>${escapeHtml(event.date ? (event.showTime ? formatDateTime(event.date) : formatDate(event.date)) : "Pendente")}</span>
           ${event.meta ? `<span>${escapeHtml(event.meta)}</span>` : ""}
           ${event.details ? `<span>${escapeHtml(event.details)}</span>` : ""}
           ${event.documento?.path ? documentTimelinePreview(event.documento) : ""}
@@ -909,19 +1412,21 @@ function renderDeliveriesModule(processo) {
           <strong>${delivered ? "Entrega registrada" : "Nenhuma entrega registrada"}</strong>
           <span>${delivered ? `Data: ${dateCell(processo.dataEntrega)}` : "Use este modulo para registrar quantidade entregue, pendente e data da entrega."}</span>
         </div>
-        ${currentUser.role === "auditor" ? "" : '<button type="button" class="secondary" data-register-partial-delivery="true">Registrar entrega parcial</button>'}
+        ${canRegisterDeliveryInUi(processo) ? '<button type="button" class="secondary" data-register-partial-delivery="true">Registrar entrega parcial</button>' : ""}
       </article>
     </div>
   `;
 }
 
 function renderObservationsModule(processo) {
-  const observations = state.detailObservations.length
+  const observations = state.detailObservationsError
+    ? `<p class="form-message error" role="alert">${escapeHtml(state.detailObservationsError)}</p>`
+    : state.detailObservations.length
     ? state.detailObservations.map((observacao) => `
       <article class="note">
-        <span>${new Date(observacao.criadoEm).toLocaleString("pt-BR")} - ${escapeHtml(observacao.usuario)}</span>
+        <span>${escapeHtml(formatDateTime(observacao.criadoEm))} - ${escapeHtml(observacao.usuario)}</span>
         <div>${escapeHtml(observacao.conteudo)}</div>
-        ${(currentUser.role === "admin" || observacao.usuarioEmail === currentUser.email) ? `<div class="note-actions">
+        ${canManageObservation(observacao, processo) ? `<div class="note-actions">
           <button type="button" class="secondary" data-edit-observation="${escapeAttribute(observacao.id)}">Alterar</button>
           <button type="button" class="secondary" data-delete-observation="${escapeAttribute(observacao.id)}">Excluir</button>
         </div>` : ""}
@@ -936,7 +1441,7 @@ function renderObservationsModule(processo) {
           <strong>Observacoes do processo</strong>
           <span>Abra a janela de observacoes para consultar e registrar anotacoes cronologicas.</span>
         </div>
-        <button type="button" class="secondary" data-open-notes="${processo.id}">Abrir observacoes</button>
+        <button type="button" class="secondary" data-open-notes="${escapeAttribute(processo.id)}">Abrir observacoes</button>
       </article>
       <div class="notes-inline">${observations}</div>
     </div>
@@ -952,7 +1457,7 @@ function renderEmailsModule(processo) {
           <strong>Notificacoes automaticas</strong>
           <span>Envio via SMTP para o e-mail cadastrado no fornecedor.</span>
         </div>
-        ${currentUser.role === "admin" ? `<button type="button" class="secondary" data-send-test-email="${processo.id}">Enviar teste</button>` : ""}
+        ${currentUser.role === "admin" ? `<button type="button" class="secondary" data-send-test-email="${escapeAttribute(processo.id)}">Enviar teste</button>` : ""}
       </article>
       <article class="module-row">
         <div>
@@ -979,8 +1484,24 @@ function supplierFor(processo) {
   return state.fornecedores.find((fornecedor) => fornecedor.razaoSocial === processo.fornecedor);
 }
 
-async function loadDetailObservations(processId) {
-  state.detailObservations = await api(`/api/processes/${processId}/observations`);
+async function loadDetailObservations(processId, options = {}) {
+  return api(`/api/processes/${processId}/observations`, options);
+}
+
+async function ensureSuppliersLoaded() {
+  if (state.suppliersLoaded) return state.fornecedores;
+  if (state.suppliersLoading) return state.suppliersLoading;
+  const request = api("/api/suppliers")
+    .then((suppliers) => {
+      state.fornecedores = suppliers;
+      state.suppliersLoaded = true;
+      return suppliers;
+    })
+    .finally(() => {
+      if (state.suppliersLoading === request) state.suppliersLoading = null;
+    });
+  state.suppliersLoading = request;
+  return request;
 }
 
 async function refreshAudit() {
@@ -992,6 +1513,7 @@ async function attachDocument(documentKey) {
   if (!state.selectedProcess) return;
   const file = await pickDocumentFile();
   if (!file) return;
+  if (!validateSelectedDocument(file)) return;
   if (documentKey === "complementares") {
     openComplementaryDocumentForm(file);
     return;
@@ -1069,11 +1591,27 @@ async function removeDocument(documentKey) {
 function pickDocumentFile() {
   return new Promise((resolve) => {
     const input = document.createElement("input");
+    let settled = false;
+    const finish = (file) => {
+      if (settled) return;
+      settled = true;
+      resolve(file || null);
+    };
     input.type = "file";
     input.accept = ".pdf,.xlsx,.xls,.csv,.docx,.doc,.odt,.ods,.txt,.png,.jpg,.jpeg,application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/msword";
-    input.addEventListener("change", () => resolve(input.files?.[0] || null), { once: true });
+    input.addEventListener("change", () => finish(input.files?.[0]), { once: true });
+    input.addEventListener("cancel", () => finish(null), { once: true });
+    window.addEventListener("focus", () => setTimeout(() => {
+      if (!input.files?.length) finish(null);
+    }, 300), { once: true });
     input.click();
   });
+}
+
+function validateSelectedDocument(file) {
+  if (file.size <= MAX_DOCUMENT_FILE_BYTES) return true;
+  alert("O arquivo deve ter no maximo 15 MB.");
+  return false;
 }
 
 function fileToBase64(file) {
@@ -1088,43 +1626,38 @@ function fileToBase64(file) {
 }
 
 async function editObservation(observationId) {
-  const current = state.detailObservations.find((item) => item.id === observationId)
-    || await findDialogObservation(observationId);
-  const conteudo = prompt("Alterar observacao:", current?.conteudo || "");
-  if (!conteudo?.trim()) return;
-  const processId = current?.processoId || state.observationProcessId || state.selectedProcess?.id;
-
-  await api(`/api/processes/${processId}/observations/${observationId}`, {
-    method: "PUT",
-    body: JSON.stringify({ conteudo: conteudo.trim() })
-  });
-  await refreshObservationViews();
+  try {
+    const current = state.detailObservations.find((item) => item.id === observationId)
+      || await findDialogObservation(observationId);
+    if (!current || !editObservationDialog || !editObservationForm) return;
+    const processId = current?.processoId || state.observationProcessId || state.selectedProcess?.id;
+    editObservationForm.reset();
+    editObservationMessage.textContent = "";
+    editObservationForm.elements.processId.value = processId;
+    editObservationForm.elements.observationId.value = observationId;
+    editObservationForm.elements.conteudo.value = current.conteudo || "";
+    editObservationDialog.showModal();
+    editObservationForm.elements.conteudo.focus();
+  } catch (error) {
+    observationMessage.textContent = error.message || "Nao foi possivel abrir a observacao.";
+  }
 }
 
 async function deleteObservation(observationId) {
   if (!confirm("Excluir esta observacao?")) return;
-  const current = state.detailObservations.find((item) => item.id === observationId)
-    || await findDialogObservation(observationId);
-  const processId = current?.processoId || state.observationProcessId || state.selectedProcess?.id;
-  await api(`/api/processes/${processId}/observations/${observationId}`, {
-    method: "DELETE"
-  });
-  await refreshObservationViews();
-}
-
-async function cancelSelectedProcess() {
-  if (!state.selectedProcess) return;
-  const motivo = prompt("Informe o motivo da anulacao do empenho:");
-  if (!motivo?.trim()) return;
-
-  const updatedProcess = await api(`/api/processes/${state.selectedProcess.id}/cancel`, {
-    method: "POST",
-    body: JSON.stringify({ motivo: motivo.trim() })
-  });
-  state.selectedProcess = updatedProcess;
-  await refresh();
-  await refreshAudit();
-  renderProcessDetail();
+  try {
+    const current = state.detailObservations.find((item) => item.id === observationId)
+      || await findDialogObservation(observationId);
+    const processId = current?.processoId || state.observationProcessId || state.selectedProcess?.id;
+    if (!processId) throw new Error("Processo da observacao nao encontrado.");
+    await api(`/api/processes/${processId}/observations/${observationId}`, {
+      method: "DELETE"
+    });
+    await refreshObservationViews();
+    observationMessage.textContent = "Observacao excluida.";
+  } catch (error) {
+    observationMessage.textContent = error.message || "Nao foi possivel excluir a observacao.";
+  }
 }
 
 async function saveNewProcessData() {
@@ -1132,15 +1665,14 @@ async function saveNewProcessData() {
   const statusField = detailPanel.querySelector("[data-detail-status]");
   const dateField = detailPanel.querySelector("[data-detail-date]");
   const status = statusField?.value;
+  if (["Entrega parcial", "Entregue"].includes(status)) {
+    openDeliveryDialog(dateField?.value || "", status === "Entregue");
+    return;
+  }
   const date = normalizeDateInput(dateField?.value);
   const step = nextProcessStep(state.selectedProcess);
   if (!status || !date) {
     alert("Informe a data para salvar.");
-    return;
-  }
-
-  if (["Entrega parcial", "Entregue"].includes(status)) {
-    await registerDelivery(date, status === "Entregue");
     return;
   }
 
@@ -1156,49 +1688,140 @@ async function saveNewProcessData() {
   await refreshAudit();
   renderProcessDetail();
 }
-async function registerPartialDelivery() {
-  if (!state.selectedProcess) return;
-  const date = prompt("Informe a data da entrega parcial (DD-MM-AAAA):", displayDate(state.selectedProcess.dataEntrega));
-  if (!date?.trim()) return;
-
-  const normalizedDate = normalizeDateInput(date);
-  if (!normalizedDate) {
-    alert("Informe uma data valida no formato DD-MM-AAAA.");
-    return;
-  }
-  await registerDelivery(normalizedDate, false);
+function registerPartialDelivery() {
+  openDeliveryDialog(state.selectedProcess?.dataEntrega || "", false);
 }
 
-async function registerDelivery(date, complete) {
+function openDeliveryDialog(date = "", complete = false) {
   const processo = state.selectedProcess;
+  if (!processo || !deliveryDialog || !deliveryForm) return;
+  resetDeliveryDialog();
+  const balances = deliveryBalanceRows(processo);
+  state.deliveryDraft = { processId: processo.id, complete };
+  deliveryDialogTitle.textContent = complete ? "Registrar entrega final" : "Registrar entrega parcial";
+  deliveryForm.elements.data.value = displayDate(date);
+  deliveryMaterials.innerHTML = balances.length ? balances.map(({ materialIndex, material, remaining }) => {
+    const inputId = `deliveryQuantity-${materialIndex}`;
+    const balanceId = `deliveryBalance-${materialIndex}`;
+    return `
+      <div class="delivery-material-row">
+        <div class="delivery-material-summary">
+          <strong>${escapeHtml(material.descricao || `Material ${materialIndex + 1}`)}</strong>
+          <span id="${balanceId}">Saldo disponivel: ${escapeHtml(formatQuantity(remaining))}</span>
+        </div>
+        <label for="${inputId}">Quantidade recebida
+          <input id="${inputId}" name="quantidade-${materialIndex}" type="number" inputmode="decimal" min="0" max="${remaining}" step="any" value="${complete ? remaining : ""}" data-delivery-quantity="${materialIndex}" aria-describedby="${balanceId}">
+        </label>
+      </div>
+    `;
+  }).join("") : '<p class="empty-state">Nao ha saldo pendente para os materiais deste processo.</p>';
+  deliveryForm.querySelector('button[type="submit"]').disabled = !balances.length;
+  if (!balances.length) deliveryMessage.textContent = "Todos os materiais ja foram recebidos.";
+  deliveryDialog.showModal();
+  requestAnimationFrame(() => deliveryForm.elements.data.focus());
+}
+
+function deliveryBalanceRows(processo) {
   const delivered = new Map();
   (processo.entregas || []).forEach((entrega) => (entrega.itens || []).forEach((item) => {
     delivered.set(item.materialIndex, (delivered.get(item.materialIndex) || 0) + Number(item.quantidade || 0));
   }));
-  const itens = [];
-  for (const [materialIndex, material] of (processo.materiais || []).entries()) {
-    const remaining = Math.max(0, Number(material.quantidade || 0) - (delivered.get(materialIndex) || 0));
-    if (!remaining) continue;
-    const answer = prompt(
-      `Quantidade recebida de ${material.descricao} (saldo ${remaining}):`,
-      complete ? String(remaining) : "0"
-    );
-    if (answer === null) return;
-    const quantidade = Number(String(answer).replace(",", "."));
-    if (Number.isFinite(quantidade) && quantidade > 0) itens.push({ materialIndex, quantidade });
-  }
-  if (!itens.length) {
-    alert("Informe ao menos uma quantidade recebida.");
+  return (processo.materiais || []).map((material, materialIndex) => ({
+    material,
+    materialIndex,
+    remaining: Math.max(0, Number(material.quantidade || 0) - (delivered.get(materialIndex) || 0))
+  })).filter((item) => item.remaining > 0);
+}
+
+async function saveDeliveryFromDialog(event) {
+  event.preventDefault();
+  const processo = state.selectedProcess;
+  const draft = state.deliveryDraft;
+  if (!processo || !draft || processo.id !== draft.processId) {
+    deliveryMessage.textContent = "O processo selecionado mudou. Feche esta janela e tente novamente.";
     return;
   }
-  const updatedProcess = await api(`/api/processes/${processo.id}/deliveries`, {
-    method: "POST",
-    body: JSON.stringify({ data, itens })
+
+  deliveryMessage.textContent = "";
+  deliveryForm.querySelectorAll("[aria-invalid]").forEach((input) => input.removeAttribute("aria-invalid"));
+  const dateInput = deliveryForm.elements.data;
+  const data = normalizeDateInput(dateInput.value);
+  if (!data) {
+    dateInput.setAttribute("aria-invalid", "true");
+    deliveryMessage.textContent = "Informe uma data valida no formato DD-MM-AAAA.";
+    dateInput.focus();
+    return;
+  }
+
+  const balances = new Map(deliveryBalanceRows(processo).map((item) => [item.materialIndex, item]));
+  const itens = [];
+  let firstInvalidInput = null;
+  deliveryForm.querySelectorAll("[data-delivery-quantity]").forEach((input) => {
+    const materialIndex = Number(input.dataset.deliveryQuantity);
+    const balance = balances.get(materialIndex);
+    const rawValue = String(input.value || "").trim();
+    if (input.validity.badInput) {
+      input.setAttribute("aria-invalid", "true");
+      firstInvalidInput ||= input;
+      return;
+    }
+    if (!rawValue) return;
+    const quantidade = Number(rawValue);
+    if (!balance || !Number.isFinite(quantidade) || quantidade < 0 || quantidade > balance.remaining) {
+      input.setAttribute("aria-invalid", "true");
+      firstInvalidInput ||= input;
+      return;
+    }
+    if (quantidade > 0) itens.push({ materialIndex, quantidade });
   });
+  if (firstInvalidInput) {
+    deliveryMessage.textContent = "Revise as quantidades: cada valor deve ser numerico e nao pode superar o saldo indicado.";
+    firstInvalidInput.focus();
+    return;
+  }
+  if (!itens.length) {
+    deliveryMessage.textContent = "Informe ao menos uma quantidade recebida maior que zero.";
+    deliveryForm.querySelector("[data-delivery-quantity]")?.focus();
+    return;
+  }
+
+  setFormBusy(deliveryForm, true, "Salvando...");
+  let updatedProcess;
+  try {
+    updatedProcess = await api(`/api/processes/${processo.id}/deliveries`, {
+      method: "POST",
+      body: JSON.stringify({ data, itens })
+    });
+  } catch (error) {
+    deliveryMessage.textContent = error.message || "Nao foi possivel registrar a entrega.";
+    return;
+  } finally {
+    setFormBusy(deliveryForm, false);
+  }
+
   state.selectedProcess = updatedProcess;
-  await refresh();
-  await refreshAudit();
+  deliveryDialog.close();
   renderProcessDetail();
+  try {
+    await refresh();
+    await refreshAudit();
+    renderProcessDetail();
+  } catch (error) {
+    showAppError(`A entrega foi registrada, mas a lista nao foi atualizada: ${error.message}`);
+  }
+}
+
+function resetDeliveryDialog() {
+  state.deliveryDraft = null;
+  deliveryForm?.reset();
+  deliveryMaterials?.replaceChildren();
+  if (deliveryMessage) deliveryMessage.textContent = "";
+  const submit = deliveryForm?.querySelector('button[type="submit"]');
+  if (submit) submit.disabled = false;
+}
+
+function formatQuantity(value) {
+  return Number(value || 0).toLocaleString("pt-BR", { maximumFractionDigits: 6 });
 }
 
 function processUpdatePayload(overrides = {}) {
@@ -1223,7 +1846,7 @@ function processUpdatePayload(overrides = {}) {
 async function refreshObservationViews() {
   if (state.observationProcessId) await loadObservations();
   if (state.selectedProcess) {
-    await loadDetailObservations(state.selectedProcess.id);
+    state.detailObservations = await loadDetailObservations(state.selectedProcess.id);
     if (["timeline", "observations"].includes(state.detailTab)) renderDetailPanel();
   }
 }
@@ -1255,8 +1878,44 @@ function escapeHtml(value = "") {
     .replace(/'/g, "&#039;");
 }
 
-function openSection(section) {
-  navItems.forEach((item) => item.classList.toggle("active", item.dataset.section === section));
+async function openSection(section) {
+  if (["users", "settings"].includes(section) && currentUser?.role !== "admin") section = "dashboard";
+  if (section === "audit" && !["admin", "auditor"].includes(currentUser?.role)) section = "dashboard";
+  state.activeSection = section;
+  detailController?.abort();
+  detailSequence += 1;
+  activateSectionShell(section);
+
+  const renderers = {
+    dashboard: () => renderDashboardView(),
+    processes: () => renderProcessesView(),
+    suppliers: () => renderSuppliersView(),
+    audit: () => renderAuditView(),
+    users: () => renderUsersView(),
+    settings: () => renderSettingsView()
+  };
+  if (!renderers[section]) return;
+  try {
+    await renderers[section]();
+  } catch (error) {
+    if (error.name === "AbortError") return;
+    if (section === "processes") {
+      table.innerHTML = `<tr class="empty-table-row"><td colspan="10" role="alert">${escapeHtml(error.message || "Nao foi possivel carregar os processos.")}</td></tr>`;
+      return;
+    }
+    const target = { dashboard: dashboardView, suppliers: suppliersView, audit: auditView, users: usersView, settings: settingsView }[section];
+    renderSectionError(target, error.message || "Nao foi possivel carregar esta secao.", section);
+  }
+}
+
+function activateSectionShell(section) {
+  state.activeSection = section;
+  navItems.forEach((item) => {
+    const active = item.dataset.section === section;
+    item.classList.toggle("active", active);
+    if (active) item.setAttribute("aria-current", "page");
+    else item.removeAttribute("aria-current");
+  });
   const titles = { dashboard: "Painel", processes: "Empenhos", suppliers: "Fornecedores", audit: "Auditoria", users: "Usuarios e permissoes", settings: "Templates" };
   if (sectionTitle) sectionTitle.textContent = titles[section] || "";
   processListView.classList.toggle("hidden", section !== "processes");
@@ -1267,131 +1926,61 @@ function openSection(section) {
   settingsView.classList.toggle("hidden", section !== "settings");
   processDetailView.classList.add("hidden");
   state.selectedProcess = null;
-
-  if (section === "dashboard") renderDashboardView();
-  if (section === "suppliers") renderSuppliersView();
-  if (section === "audit") renderAuditView();
-  if (section === "users") renderUsersView();
-  if (section === "settings") renderSettingsView();
 }
 
 function renderDashboardView() {
+  const year = Number(state.dashboardYear) || state.dashboardYears[0] || new Date().getFullYear();
+  const charts = state.dashboardCharts;
   dashboardView.innerHTML = `
     <div class="content-header">
       <div>
         <h1>Painel</h1>
       </div>
       <select class="dashboard-year" id="dashboardYearSelect" aria-label="Ano do painel">
-        ${dashboardYearOptions(state.dashboardYear)}
+        ${dashboardYearOptions(year, state.dashboardYears)}
       </select>
     </div>
     <div class="dashboard-grid">
-      ${metrics.innerHTML}
-    </div>
-    <div class="chart-card">
-      <p class="empty-state">Carregando graficos...</p>
-    </div>
-  `;
-
-  const yearSelect = dashboardView.querySelector("#dashboardYearSelect");
-  yearSelect.addEventListener("change", (event) => {
-    state.dashboardYear = event.target.value;
-    renderDashboardView();
-  });
-  const year = state.dashboardYear || yearSelect.value || new Date().getFullYear();
-  const charts = calculateDashboardCharts(state.allProcesses, year);
-  const monthlyExecution = charts.execucaoMensal;
-  const statusDistribution = charts.distribuicaoStatus;
-
-  dashboardView.innerHTML = `
-    <div class="content-header">
-      <div>
-        <h1>Painel</h1>
-      </div>
-      <select class="dashboard-year" id="dashboardYearSelect" aria-label="Ano do painel">
-        ${dashboardYearOptions(year)}
-      </select>
-    </div>
-    <div class="dashboard-grid">
-      ${metrics.innerHTML}
+      ${dashboardMetricsMarkup(state.dashboardMetrics)}
     </div>
     <div class="charts-grid">
-      ${executionGroupedChart(monthlyExecution)}
-      ${budgetStatusChart(statusDistribution)}
+      ${executionGroupedChart(charts.execucaoMensal)}
+      ${budgetStatusChart(charts.distribuicaoStatus)}
       ${financialChart()}
     </div>
   `;
-  dashboardView.querySelector("#dashboardYearSelect").addEventListener("change", (event) => {
-    state.dashboardYear = event.target.value;
-    renderDashboardView();
-  });
-}
-
-function calculateDashboardMetrics(processos = []) {
-  const ativos = processos.filter((processo) => !processo.inativo);
-  const totalFor = (status) => ativos
-    .filter((processo) => processo.status === status)
-    .reduce((total, processo) => total + Number(processo.valorTotal || 0), 0);
-  return {
-    processosAtivos: ativos.length,
-    aguardandoEntrega: ativos.filter((processo) => processo.status === "Aguardando entrega").length,
-    atrasados: ativos.filter((processo) => processo.diasDecorridos > 30 && !["Entregue", "Liquidado", "Pago", "Anulado"].includes(processo.status)).length,
-    enviadosLiquidacao: ativos.filter((processo) => processo.status === "Enviado para liquidacao").length,
-    valorEmpenhado: ativos.reduce((total, processo) => total + Number(processo.valorTotal || 0), 0),
-    valorLiquidado: totalFor("Liquidado"),
-    valorPago: totalFor("Pago"),
-    porStatus: state.meta.status
-      .map((status) => [status, ativos.filter((processo) => processo.status === status).length])
-      .filter(([, count]) => count > 0)
-  };
-}
-
-function calculateDashboardCharts(processos = [], year = new Date().getFullYear()) {
-  const months = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"];
-  const execucaoMensal = months.map((mes) => ({ mes, empenhado: 0, liquidado: 0, pago: 0 }));
-  const totals = { Empenhado: 0, Liquidado: 0, Pago: 0 };
-  const addValue = (dateText, key, value) => {
-    if (!dateText) return;
-    const date = new Date(`${String(dateText).slice(0, 10)}T00:00:00`);
-    if (!Number.isNaN(date.getTime()) && String(date.getFullYear()) === String(year)) {
-      execucaoMensal[date.getMonth()][key] += Number(value || 0);
-    }
-  };
-
-  processos.filter((processo) => !processo.inativo).forEach((processo) => {
-    const referenceDate = deadlineDate(processo);
-    addValue(referenceDate, "empenhado", processo.valorTotal);
-    if (["Liquidado", "Pago"].includes(processo.status)) {
-      addValue(processo.dataLiquidacao || processo.dataEnvioLiquidacao || processo.atualizadoEm, "liquidado", processo.valorTotal);
-    }
-    if (processo.status === "Pago") addValue(processo.dataPagamento || processo.atualizadoEm, "pago", processo.valorTotal);
-
-    const referenceYear = referenceDate ? new Date(`${referenceDate}T00:00:00`).getFullYear() : NaN;
-    if (String(referenceYear) === String(year)) {
-      if (processo.status === "Pago") totals.Pago += 1;
-      else if (processo.status === "Liquidado") totals.Liquidado += 1;
-      else totals.Empenhado += 1;
+  dashboardView.querySelector("#dashboardYearSelect").addEventListener("change", async (event) => {
+    const select = event.currentTarget;
+    setControlBusy(select, true);
+    dashboardView.setAttribute("aria-busy", "true");
+    try {
+      const result = await loadDashboardData(select.value);
+      if (result && state.activeSection === "dashboard") renderDashboardView();
+    } catch (error) {
+      renderSectionError(dashboardView, error.message || "Nao foi possivel carregar o painel deste ano.", "dashboard");
+    } finally {
+      setControlBusy(select, false);
+      dashboardView.removeAttribute("aria-busy");
     }
   });
-
-  return {
-    execucaoMensal,
-    distribuicaoStatus: Object.entries(totals)
-      .map(([status, quantidade]) => ({ status, quantidade }))
-      .filter((entry) => entry.quantidade > 0)
-  };
 }
 
-function dashboardYearOptions(selected = "") {
-  const years = [...new Set(state.processos
-    .map((processo) => deadlineDate(processo) ? new Date(`${deadlineDate(processo)}T00:00:00`).getFullYear() : "")
-    .filter(Boolean))]
-    .sort((a, b) => b - a);
-  const current = selected || years[0] || new Date().getFullYear();
-  return years.map((year) => `<option value="${year}" ${String(year) === String(current) ? "selected" : ""}>Ano: ${year}</option>`).join("");
+function dashboardMetricsMarkup(data = {}) {
+  const items = (Array.isArray(data.porStatus) ? data.porStatus : []).filter((entry) => Array.isArray(entry) && Number(entry[1]) > 0);
+  return items.map(([label, value]) => `
+    <article class="metric">
+      <span>${escapeHtml(label)}</span>
+      <strong>${Number(value) || 0}</strong>
+    </article>
+  `).join("") || '<p class="empty-state">Nenhum processo contabilizado neste painel.</p>';
 }
 
-function executionGroupedChart(rows) {
+function dashboardYearOptions(selected, years = state.dashboardYears) {
+  const options = years.length ? years : [Number(selected) || new Date().getFullYear()];
+  return options.map((year) => `<option value="${year}" ${Number(year) === Number(selected) ? "selected" : ""}>Ano: ${year}</option>`).join("");
+}
+
+function executionGroupedChart(rows = []) {
   const max = Math.max(...rows.flatMap((row) => [row.empenhado, row.liquidado, row.pago]), 1);
   const yTicks = [max, max * 0.75, max * 0.5, max * 0.25, 0];
   return `
@@ -1404,18 +1993,31 @@ function executionGroupedChart(rows) {
           <span><i class="legend-paid"></i>Pago</span>
         </div>
       </div>
-      <div class="grouped-chart">
-        <div class="y-axis">
-          ${yTicks.map((tick) => `<span>${compactMoney(tick)}</span>`).join("")}
-        </div>
-        <div class="grouped-plot">
-          <div class="grid-lines"></div>
-          <div class="month-groups">
-            ${rows.map((row) => groupedMonth(row, max)).join("")}
+      ${monthlyExecutionTable(rows)}
+      <div class="chart-scroll" tabindex="0" aria-label="Grafico de execucao mensal; a tabela acessivel apresenta todos os valores">
+        <div class="grouped-chart" aria-hidden="true">
+          <div class="y-axis">
+            ${yTicks.map((tick) => `<span>${compactMoney(tick)}</span>`).join("")}
+          </div>
+          <div class="grouped-plot">
+            <div class="grid-lines"></div>
+            <div class="month-groups">
+              ${rows.map((row) => groupedMonth(row, max)).join("")}
+            </div>
           </div>
         </div>
       </div>
     </article>
+  `;
+}
+
+function monthlyExecutionTable(rows = []) {
+  return `
+    <table class="sr-only chart-data-table">
+      <caption>Valores da execucao mensal</caption>
+      <thead><tr><th>Mes</th><th>Empenhado</th><th>Liquidado</th><th>Pago</th></tr></thead>
+      <tbody>${rows.map((row) => `<tr><th>${escapeHtml(row.mes)}</th><td>${escapeHtml(money(row.empenhado))}</td><td>${escapeHtml(money(row.liquidado))}</td><td>${escapeHtml(money(row.pago))}</td></tr>`).join("")}</tbody>
+    </table>
   `;
 }
 
@@ -1441,16 +2043,16 @@ function groupedMonth(row, max) {
       <div class="group-bars">
         ${series.map(([key, label, value]) => `
           <div class="group-bar ${key}" style="height: ${Number(value) ? Math.max(6, (Number(value) / max) * 100) : 0}%">
-            <div class="column-tooltip">${row.mes} - ${label}: ${money(value)}</div>
+            <div class="column-tooltip">${escapeHtml(row.mes)} - ${label}: ${money(value)}</div>
           </div>
         `).join("")}
       </div>
-      <span>${row.mes}</span>
+      <span>${escapeHtml(row.mes)}</span>
     </div>
   `;
 }
 
-function budgetStatusChart(entries) {
+function budgetStatusChart(entries = []) {
   const normalized = entries.map((entry) => [entry.status, entry.quantidade]);
   return pieChartCard("Distribuicao por status", normalized);
 }
@@ -1475,34 +2077,7 @@ function chartCard(title, entries, formatter) {
   `;
 }
 
-function columnChartCard(title, entries, formatter) {
-  const max = Math.max(...entries.map(([, value]) => Number(value)), 1);
-  const yTicks = [max, max * 0.75, max * 0.5, max * 0.25, 0];
-  return `
-    <article class="chart-card monthly-chart">
-      <h2>${title}</h2>
-      <div class="column-chart">
-        <div class="y-axis">
-          ${yTicks.map((tick) => `<span>${compactMoney(tick)}</span>`).join("")}
-        </div>
-        <div class="plot-area">
-          <div class="grid-lines"></div>
-          <div class="columns">
-            ${entries.map(([label, value]) => `
-              <div class="column-item">
-                <div class="column-bar" style="height: ${Math.max(8, (Number(value) / max) * 100)}%"></div>
-                <div class="column-tooltip">${monthLabel(label)}: empenhado ${formatter(value)}</div>
-                <span>${monthLabel(label)}</span>
-              </div>
-            `).join("")}
-          </div>
-        </div>
-      </div>
-    </article>
-  `;
-}
-
-function pieChartCard(title, entries) {
+function pieChartCard(title, entries = []) {
   const total = entries.reduce((sum, [, value]) => sum + Number(value), 0) || 1;
   const fallbackColors = ["#14213a", "#6b7280", "#7c3aed", "#b42318"];
   let cursor = -90;
@@ -1524,9 +2099,14 @@ function pieChartCard(title, entries) {
 
   return `
     <article class="chart-card pie-card">
-      <h2>${title}</h2>
+      <h2>${escapeHtml(title)}</h2>
+      <table class="sr-only chart-data-table">
+        <caption>${escapeHtml(title)}</caption>
+        <thead><tr><th>Status</th><th>Quantidade</th></tr></thead>
+        <tbody>${slices.map((slice) => `<tr><th>${escapeHtml(slice.label)}</th><td>${slice.value}</td></tr>`).join("")}</tbody>
+      </table>
       <div class="pie-layout">
-        <svg class="external-pie" viewBox="0 0 620 360" role="img" aria-label="${title}">
+        <svg class="external-pie" viewBox="0 0 620 360" role="img" aria-label="${escapeAttribute(`${title}: ${slices.map((slice) => `${slice.label} ${slice.value}`).join(", ") || "sem dados"}`)}">
           ${slices.map((slice) => pieSlice(slice, total)).join("")}
         </svg>
       </div>
@@ -1550,10 +2130,10 @@ function pieSlice(slice, total) {
     <g class="pie-slice">
       <path class="pie-sector" d="${path}" fill="${slice.color}"></path>
       <path class="pie-leader" d="M ${edge.x} ${edge.y} L ${labelPoint.x} ${labelPoint.y} L ${labelX} ${labelPoint.y}" stroke="${slice.color}"></path>
-      <text class="pie-label" x="${labelX}" y="${labelPoint.y + 4}" text-anchor="${textAnchor}">${label}</text>
+      <text class="pie-label" x="${labelX}" y="${labelPoint.y + 4}" text-anchor="${textAnchor}">${escapeHtml(label)}</text>
       <foreignObject class="pie-tooltip" x="${center.x - 86}" y="${center.y - 30}" width="172" height="60">
         <div xmlns="http://www.w3.org/1999/xhtml">
-          <span>${slice.label}</span>
+          <span>${escapeHtml(slice.label)}</span>
           <strong>${slice.value} processos</strong>
         </div>
       </foreignObject>
@@ -1605,7 +2185,7 @@ function newDataButton(processo) {
 function newDataPanel(processo) {
   if (!canEditGeneralInUi(processo)) return "";
   const step = nextProcessStep(processo);
-  if (!step) return "";
+  if (!step || ["Entrega parcial", "Entregue"].includes(step.status)) return "";
   return `
     <div class="new-data-panel hidden" data-new-data-panel>
       <input type="hidden" data-detail-status value="${step.status}">
@@ -1618,13 +2198,8 @@ function newDataPanel(processo) {
   `;
 }
 
-function canEditStatusInUi(processo) {
-  if (!processo || ["Pago", "Anulado"].includes(processo.status)) return false;
-  return Boolean(nextProcessStep(processo, true));
-}
-
-function nextProcessStep(processo, skipPermissionCheck = false) {
-  if (!processo || (!skipPermissionCheck && ["Pago", "Anulado"].includes(processo.status))) return null;
+function nextProcessStep(processo) {
+  if (!processo || ["Pago", "Anulado"].includes(processo.status)) return null;
   const steps = {
     "Enviado para SALC": {
       button: "Registrar envio de empenho para fornecedor",
@@ -1685,6 +2260,22 @@ function canEditGeneralInUi(processo) {
   return true;
 }
 
+function processById(processId) {
+  return state.allProcesses.find((processo) => processo.id === processId)
+    || (state.selectedProcess?.id === processId ? state.selectedProcess : null);
+}
+
+function canManageObservation(observation, processo = state.selectedProcess) {
+  if (!observation || !canEditGeneralInUi(processo)) return false;
+  return isCurrentUserAdmin() || observation.usuarioEmail === currentUser?.email;
+}
+
+function canRegisterDeliveryInUi(processo) {
+  return canEditGeneralInUi(processo)
+    && ["Empenho enviado ao fornecedor", "Aguardando entrega", "Entrega parcial"].includes(processo.status)
+    && Boolean(deadlineDate(processo));
+}
+
 function canAttachDocumentInUi(processo, documentKey) {
   if (!processo || processo.inativo || ["Anulado", "Pago"].includes(processo.status) || !documentKey || currentUser.role === "auditor") return false;
   if (documentKey === "notaFiscal") {
@@ -1694,10 +2285,9 @@ function canAttachDocumentInUi(processo, documentKey) {
 }
 
 async function renderSuppliersView() {
-  if (!state.suppliersLoaded) {
+  if (!state.suppliersLoaded || !state.processesLoaded) {
     suppliersView.innerHTML = '<p class="empty-state">Carregando fornecedores...</p>';
-    state.fornecedores = await api("/api/suppliers");
-    state.suppliersLoaded = true;
+    await Promise.all([ensureSuppliersLoaded(), ensureProcessesLoaded()]);
   }
   const suppliers = supplierDirectory();
   const query = state.supplierSearch.trim();
@@ -1725,15 +2315,16 @@ async function renderSuppliersView() {
     </div>
   `;
 
-  suppliersView.querySelector("#supplierSearchInput")?.addEventListener("input", (event) => {
+  suppliersView.querySelector("#supplierSearchInput")?.addEventListener("input", debounce((event) => {
     const cursor = event.target.selectionStart;
     state.supplierSearch = event.target.value;
     state.supplierHistory = "";
-    renderSuppliersView();
-    const input = suppliersView.querySelector("#supplierSearchInput");
-    input?.focus();
-    input?.setSelectionRange(cursor, cursor);
-  });
+    void renderSuppliersView().then(() => {
+      const input = suppliersView.querySelector("#supplierSearchInput");
+      input?.focus();
+      input?.setSelectionRange(cursor, cursor);
+    });
+  }, 160));
   suppliersView.querySelectorAll("[data-supplier-history]").forEach((button) => {
     button.addEventListener("click", () => {
       state.supplierHistory = state.supplierHistory === button.dataset.supplierHistory ? "" : button.dataset.supplierHistory;
@@ -1824,6 +2415,7 @@ function supplierHistory(fornecedor) {
       ${processos.length ? `
         <div class="table-wrap compact-table">
           <table>
+            <caption class="sr-only">Processos vinculados a ${escapeHtml(fornecedor.razaoSocial)}</caption>
             <thead>
               <tr>
                 <th>Processo</th>
@@ -1836,8 +2428,8 @@ function supplierHistory(fornecedor) {
             <tbody>
               ${processos.map((processo) => `
                 <tr class="clickable-row" data-supplier-process="${escapeAttribute(processo.id)}">
-                  <td><button type="button" class="link-button">${empty(escapeHtml(processo.numeroProcesso))}</button></td>
-                  <td>${empty(escapeHtml(processo.numeroEmpenho))}</td>
+                  <td><button type="button" class="link-button">${empty(processo.numeroProcesso)}</button></td>
+                  <td>${empty(processo.numeroEmpenho)}</td>
                   <td class="money-cell">${money(processo.valorTotal)}</td>
                   <td>${statusBadges(processo)}</td>
                   <td>${dateCell(deadlineDate(processo))}</td>
@@ -1866,6 +2458,7 @@ function openSupplierInfoDialog(name = "") {
   supplierInfoForm.elements.telefones.value = (supplier.telefones || []).join("\n");
   supplierInfoForm.elements.enderecos.value = (supplier.enderecos || []).join("\n");
   supplierInfoForm.elements.observacoes.value = supplier.observacoes || "";
+  supplierInfoMessage.textContent = "";
   supplierInfoDialog?.showModal();
 }
 
@@ -1913,16 +2506,24 @@ async function renderAuditView() {
     .sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
   auditView.innerHTML = `
     <div class="content-header"><div><h1>Auditoria</h1><p>Eventos imutaveis de processos, acesso e seguranca.</p></div><button type="button" class="secondary" id="refreshAuditButton">Atualizar</button></div>
-    <div class="table-wrap"><table><thead><tr><th>Data</th><th>Evento</th><th>Ator</th><th>Alvo</th><th>Detalhes</th></tr></thead>
-      <tbody>${events.map((entry) => `<tr><td>${escapeHtml(formatDateTime(entry.date))}</td><td>${escapeHtml(entry.type)}</td><td>${escapeHtml(entry.actor)}</td><td>${escapeHtml(entry.target)}</td><td>${escapeHtml(entry.details)}</td></tr>`).join("")}</tbody>
+    <div class="table-wrap"><table><caption class="sr-only">Eventos de auditoria</caption><thead><tr><th>Data</th><th>Evento</th><th>Ator</th><th>Alvo</th><th>Detalhes</th></tr></thead>
+      <tbody>${events.length ? events.map((entry) => `<tr><td>${escapeHtml(formatDateTime(entry.date))}</td><td>${escapeHtml(entry.type)}</td><td>${escapeHtml(entry.actor)}</td><td>${escapeHtml(entry.target)}</td><td>${escapeHtml(entry.details)}</td></tr>`).join("") : '<tr class="empty-table-row"><td colspan="5">Nenhum evento registrado.</td></tr>'}</tbody>
     </table></div>
   `;
   auditView.querySelector("#refreshAuditButton")?.addEventListener("click", refreshAuditView);
 }
 
 async function refreshAuditView() {
-  await loadAuditData(true);
-  renderAuditView();
+  const button = auditView.querySelector("#refreshAuditButton");
+  setButtonBusy(button, true, "Atualizando...");
+  try {
+    await loadAuditData(true);
+    await renderAuditView();
+  } catch (error) {
+    renderSectionError(auditView, error.message || "Nao foi possivel atualizar a auditoria.", "audit");
+  } finally {
+    setButtonBusy(button, false);
+  }
 }
 
 async function loadAuditData(force = false) {
@@ -1931,7 +2532,7 @@ async function loadAuditData(force = false) {
   state.auditLoaded = true;
 }
 
-async function renderSettingsView() {
+async function renderSettingsView(message = "", messageType = "success") {
   if (!state.settings) {
     settingsView.innerHTML = `
       <div class="content-header">
@@ -1941,7 +2542,7 @@ async function renderSettingsView() {
       </div>
       <p class="empty-state">Carregando templates...</p>
     `;
-    state.settings = await loadSettings();
+    await ensureSettingsLoaded();
   }
 
   settingsView.innerHTML = `
@@ -1950,6 +2551,7 @@ async function renderSettingsView() {
         <h1>Templates</h1>
       </div>
     </div>
+    <p class="form-message settings-message ${message ? messageType : ""}" id="settingsMessage" role="status" aria-live="polite">${escapeHtml(message)}</p>
     <div class="settings-grid">
       ${settingsCard("templates", "Templates de e-mail", "Modelos usados nas notificacoes automaticas e reenvios manuais.")}
       ${settingsCard("notifications", "Prazos para notificacoes", `${state.settings.notificationRules.diasAvisoInterno.join(", ")} dias; oficio no dia ${state.settings.notificationRules.diaOficioFornecedor}.`)}
@@ -1969,6 +2571,21 @@ async function loadSettings() {
     if (error.message !== "Rota nao encontrada") throw error;
     return defaultSettings();
   }
+}
+
+async function ensureSettingsLoaded() {
+  if (state.settings) return state.settings;
+  if (state.settingsLoading) return state.settingsLoading;
+  const request = loadSettings()
+    .then((settings) => {
+      state.settings = settings;
+      return settings;
+    })
+    .finally(() => {
+      if (state.settingsLoading === request) state.settingsLoading = null;
+    });
+  state.settingsLoading = request;
+  return request;
 }
 
 function defaultSettings() {
@@ -2000,9 +2617,9 @@ function defaultSettings() {
 function settingsCard(panel, title, description) {
   return `
     <article class="settings-card ${state.settingsPanel === panel ? "active" : ""}">
-      <strong>${title}</strong>
-      <span>${description}</span>
-      <button type="button" class="secondary" data-settings-panel="${panel}">Configurar</button>
+      <strong>${escapeHtml(title)}</strong>
+      <span>${escapeHtml(description)}</span>
+      <button type="button" class="secondary" data-settings-panel="${escapeAttribute(panel)}">Configurar</button>
     </article>
   `;
 }
@@ -2012,16 +2629,19 @@ function renderSettingsPanel() {
   return renderEmailTemplateSettings();
 }
 
-async function renderUsersView() {
-  usersView.innerHTML = `
-    <div class="content-header"><div><h1>Usuarios e permissoes</h1></div></div>
-    <p class="empty-state">Carregando usuarios...</p>
-  `;
-  if (!state.settings) state.settings = await loadSettings();
+async function renderUsersView(message = "", messageType = "success") {
+  if (!state.settings) {
+    usersView.innerHTML = `
+      <div class="content-header"><div><h1>Usuarios e permissoes</h1></div></div>
+      <p class="empty-state" role="status">Carregando usuarios...</p>
+    `;
+    await ensureSettingsLoaded();
+  }
   usersView.innerHTML = `
     <div class="content-header">
       <div><h1>Usuarios e permissoes</h1><p>Gerencie acessos, perfis e senhas dos usuarios.</p></div>
     </div>
+    <p class="form-message users-message ${message ? messageType : ""}" id="usersMessage" role="status" aria-live="polite">${escapeHtml(message)}</p>
     <section class="settings-panel">${renderUserSettings()}</section>
   `;
   bindUserHandlers(usersView);
@@ -2062,24 +2682,24 @@ function renderUserSettings() {
       <label>Perfil
         <select name="role"><option value="almoxarifado">Almoxarifado</option><option value="auditor">Auditor</option><option value="admin">Administrador</option></select>
       </label>
-      <label>Senha inicial <input name="senhaTemporaria" type="password" minlength="8" required title="Minimo de 8 caracteres, com maiuscula, numero e caractere especial"></label>
+      <label>Senha inicial <input name="senhaTemporaria" type="password" autocomplete="new-password" minlength="8" maxlength="256" required title="Minimo de 8 caracteres, com maiuscula, numero e caractere especial que nao seja espaco"></label>
       <div class="actions"><button type="submit">Criar usuario</button></div>
     </form>
     <div class="module-list">
       ${state.settings.usuarios.map((user) => `
         <article class="module-row">
-          <div><strong>${escapeHtml(user.nome)}</strong><span>${escapeHtml(user.email)} · ${user.ativo ? "ativo" : "aguardando aprovacao"}</span>${user.justificativaAcesso ? `<span>${escapeHtml(user.justificativaAcesso)}</span>` : ""}</div>
+          <div><strong>${escapeHtml(user.nome)}</strong><span>${escapeHtml(user.email)} · ${user.ativo ? "ativo" : "inativo"}${user.precisaDefinirSenha ? " · troca de senha pendente" : ""}</span>${user.justificativaAcesso ? `<span>${escapeHtml(user.justificativaAcesso)}</span>` : ""}</div>
           <div class="document-actions">
-            <select data-user-role="${escapeAttribute(user.id)}">
+            <select data-user-role="${escapeAttribute(user.id)}" aria-label="Perfil de ${escapeAttribute(user.nome || user.email)}">
               ${["almoxarifado", "auditor", "admin"].map((role) => `<option value="${role}" ${user.role === role ? "selected" : ""}>${role}</option>`).join("")}
             </select>
-            <button type="button" class="secondary" data-toggle-user="${escapeAttribute(user.id)}" data-user-active="${user.ativo}">${user.ativo ? "Desativar" : "Ativar"}</button>
-            <button type="button" class="secondary" data-password-user="${escapeAttribute(user.id)}">Editar senha</button>
-            <button type="button" class="secondary" data-revoke-user="${escapeAttribute(user.id)}">Revogar sessoes</button>
-            <button type="button" class="secondary danger-button" data-delete-user="${escapeAttribute(user.id)}">Excluir</button>
+            <button type="button" class="secondary" data-toggle-user="${escapeAttribute(user.id)}" data-user-active="${user.ativo}" aria-label="${user.ativo ? "Desativar" : "Ativar"} ${escapeAttribute(user.nome || user.email)}">${user.ativo ? "Desativar" : "Ativar"}</button>
+            <button type="button" class="secondary" data-password-user="${escapeAttribute(user.id)}" aria-label="Redefinir senha de ${escapeAttribute(user.nome || user.email)}">Redefinir senha</button>
+            <button type="button" class="secondary" data-revoke-user="${escapeAttribute(user.id)}" aria-label="Revogar sessoes de ${escapeAttribute(user.nome || user.email)}">Revogar sessoes</button>
+            <button type="button" class="secondary danger-button" data-delete-user="${escapeAttribute(user.id)}" aria-label="Excluir ${escapeAttribute(user.nome || user.email)}">Excluir</button>
           </div>
         </article>
-      `).join("")}
+      `).join("") || '<p class="empty-state">Nenhum usuario cadastrado.</p>'}
     </div>
   `;
 }
@@ -2111,10 +2731,12 @@ function bindSettingsHandlers() {
   });
   settingsView.querySelector("#emailTemplatesForm")?.addEventListener("submit", saveEmailTemplates);
   settingsView.querySelectorAll("[data-remove-template-attachment]").forEach((button) => {
-    button.addEventListener("click", () => removeTemplateDocument(button.dataset.templateKey, button.dataset.removeTemplateAttachment));
+    button.addEventListener("click", () => void removeTemplateDocument(button.dataset.templateKey, button.dataset.removeTemplateAttachment));
   });
   settingsView.querySelectorAll("[data-download-document]").forEach((button) => {
-    button.addEventListener("click", () => downloadDocument(button.dataset.downloadDocument));
+    button.addEventListener("click", () => void downloadDocument(button.dataset.downloadDocument).catch((error) => {
+      void renderSettingsView(error.message || "Nao foi possivel baixar o documento.", "error");
+    }));
   });
   settingsView.querySelector("#notificationSettingsForm")?.addEventListener("submit", saveNotificationSettings);
   settingsView.querySelectorAll("[data-attach-template]").forEach((button) => {
@@ -2126,65 +2748,167 @@ function bindUserHandlers(root) {
   enhancePasswordFields(root);
   root.querySelector("#newManagedUserForm")?.addEventListener("submit", createManagedUser);
   root.querySelectorAll("[data-user-role]").forEach((select) => {
-    select.addEventListener("change", () => updateManagedUser(select.dataset.userRole, { role: select.value }));
+    select.addEventListener("change", () => updateManagedUser(select.dataset.userRole, { role: select.value }, select));
   });
   root.querySelectorAll("[data-toggle-user]").forEach((button) => {
-    button.addEventListener("click", () => updateManagedUser(button.dataset.toggleUser, { ativo: button.dataset.userActive !== "true" }));
+    button.addEventListener("click", () => updateManagedUser(button.dataset.toggleUser, { ativo: button.dataset.userActive !== "true" }, button));
   });
   root.querySelectorAll("[data-revoke-user]").forEach((button) => {
-    button.addEventListener("click", () => updateManagedUser(button.dataset.revokeUser, { revogarSessoes: true }));
+    button.addEventListener("click", () => updateManagedUser(button.dataset.revokeUser, { revogarSessoes: true }, button));
   });
   root.querySelectorAll("[data-password-user]").forEach((button) => {
-    button.addEventListener("click", () => editManagedUserPassword(button.dataset.passwordUser));
+    button.addEventListener("click", () => openManagedUserPasswordDialog(button.dataset.passwordUser));
   });
   root.querySelectorAll("[data-delete-user]").forEach((button) => {
-    button.addEventListener("click", () => deleteManagedUser(button.dataset.deleteUser));
+    button.addEventListener("click", () => deleteManagedUser(button.dataset.deleteUser, button));
   });
 }
 
 async function createManagedUser(event) {
   event.preventDefault();
+  const form = event.currentTarget;
   const body = Object.fromEntries(new FormData(event.currentTarget));
   if (!isValidPasswordInput(body.senhaTemporaria)) {
-    alert(passwordPolicyMessage());
+    await renderUsersView(passwordPolicyMessage(), "error");
     return;
   }
-  await api("/api/admin/users", { method: "POST", body: JSON.stringify(body) });
-  state.settings = await api("/api/settings");
-  renderUsersView();
+  setFormBusy(form, true, "Criando...");
+  try {
+    await api("/api/admin/users", { method: "POST", body: JSON.stringify(body) });
+    form.reset();
+    resetPasswordVisibility(form);
+    await reloadUsersAfterMutation("Usuario criado com sucesso.");
+  } catch (error) {
+    await renderUsersView(error.message || "Nao foi possivel criar o usuario.", "error");
+  } finally {
+    setFormBusy(form, false);
+  }
 }
 
-async function updateManagedUser(userId, changes) {
-  await api(`/api/admin/users/${encodeURIComponent(userId)}`, { method: "PATCH", body: JSON.stringify(changes) });
-  state.settings = await api("/api/settings");
-  renderUsersView();
+async function updateManagedUser(userId, changes, control = null) {
+  const affectsCurrentUser = isCurrentManagedUser(userId);
+  setControlBusy(control, true);
+  try {
+    await api(`/api/admin/users/${encodeURIComponent(userId)}`, { method: "PATCH", body: JSON.stringify(changes) });
+    const managedUser = state.settings?.usuarios?.find((user) => user.id === userId);
+    if (managedUser && Object.prototype.hasOwnProperty.call(changes, "role")) managedUser.role = changes.role;
+    if (managedUser && Object.prototype.hasOwnProperty.call(changes, "ativo")) managedUser.ativo = changes.ativo;
+    const message = changes.revogarSessoes ? "Sessoes revogadas." : "Usuario atualizado com sucesso.";
+    if (affectsCurrentUser) {
+      await revalidateSessionAfterSelfAdminMutation(message);
+      return;
+    }
+    await renderUsersView(message);
+  } catch (error) {
+    await renderUsersView(error.message || "Nao foi possivel atualizar o usuario.", "error");
+  } finally {
+    setControlBusy(control, false);
+  }
 }
 
-async function editManagedUserPassword(userId) {
-  const senha = prompt("Digite a nova senha do usuario (minimo de 8 caracteres, com maiuscula, numero e caractere especial):");
-  if (senha === null) return;
-  if (!isValidPasswordInput(senha)) {
-    alert(passwordPolicyMessage());
+function openManagedUserPasswordDialog(userId) {
+  const user = state.settings?.usuarios?.find((item) => item.id === userId);
+  if (!user || !adminPasswordDialog || !adminPasswordForm) return;
+  resetSensitiveForm(adminPasswordForm, adminPasswordMessage);
+  adminPasswordForm.elements.userId.value = userId;
+  adminPasswordUser.textContent = `Usuario: ${user.nome || user.email}`;
+  adminPasswordDialog.showModal();
+  adminPasswordForm.elements.senha.focus();
+}
+
+async function saveManagedUserPassword(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const data = Object.fromEntries(new FormData(form));
+  adminPasswordMessage.textContent = "";
+  if (data.senha !== data.confirmacao) {
+    adminPasswordMessage.textContent = "A confirmacao da senha deve ser identica.";
     return;
   }
-  await updateManagedUser(userId, { senha });
+  if (!isValidPasswordInput(data.senha)) {
+    adminPasswordMessage.textContent = passwordPolicyMessage();
+    return;
+  }
+  const affectsCurrentUser = isCurrentManagedUser(data.userId);
+  setFormBusy(form, true, "Redefinindo...");
+  try {
+    const updatedUser = await api(`/api/admin/users/${encodeURIComponent(data.userId)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ senha: data.senha })
+    });
+    const index = state.settings?.usuarios?.findIndex((user) => user.id === data.userId) ?? -1;
+    if (index >= 0) state.settings.usuarios[index] = { ...state.settings.usuarios[index], ...updatedUser };
+    adminPasswordDialog.close();
+    if (affectsCurrentUser) {
+      await revalidateSessionAfterSelfAdminMutation("Senha redefinida com sucesso.");
+      return;
+    }
+    await renderUsersView("Senha redefinida e sessoes anteriores revogadas.");
+  } catch (error) {
+    adminPasswordMessage.textContent = error.message || "Nao foi possivel redefinir a senha.";
+  } finally {
+    setFormBusy(form, false);
+  }
 }
 
-async function deleteManagedUser(userId) {
+async function deleteManagedUser(userId, control = null) {
   if (!confirm("Excluir este usuario?")) return;
+  const affectsCurrentUser = isCurrentManagedUser(userId);
+  setControlBusy(control, true);
   try {
     await api(`/api/admin/users/${encodeURIComponent(userId)}`, { method: "DELETE" });
     state.settings.usuarios = state.settings.usuarios.filter((user) => user.id !== userId);
-    renderUsersView();
-    state.settings = await api("/api/settings");
+    if (affectsCurrentUser) {
+      await revalidateSessionAfterSelfAdminMutation("Usuario excluido.");
+      return;
+    }
+    await renderUsersView("Usuario excluido com sucesso.");
   } catch (error) {
-    alert(error.message || "Nao foi possivel excluir o usuario.");
+    await renderUsersView(error.message || "Nao foi possivel excluir o usuario.", "error");
+  } finally {
+    setControlBusy(control, false);
+  }
+}
+
+function isCurrentManagedUser(userId) {
+  const managedUser = state.settings?.usuarios?.find((user) => user.id === userId);
+  return Boolean(
+    managedUser?.email
+      && currentUser?.email
+      && String(managedUser.email).trim().toLowerCase() === String(currentUser.email).trim().toLowerCase()
+  );
+}
+
+async function revalidateSessionAfterSelfAdminMutation(successMessage) {
+  try {
+    const user = await api("/auth/session", { skipAuthRedirect: true });
+    setCurrentUser(user);
+    await openSection("dashboard");
+    showAppNotice(successMessage);
+    return true;
+  } catch (error) {
+    clearClientSession();
+    showAuth();
+    authMessage.textContent = error.status === 401
+      ? "Sua sessao foi encerrada devido a alteracao no proprio usuario. Entre novamente para continuar."
+      : "A alteracao foi salva, mas nao foi possivel revalidar sua sessao. Entre novamente para continuar.";
+    return false;
+  }
+}
+
+async function reloadUsersAfterMutation(successMessage) {
+  try {
+    state.settings = await api("/api/settings");
+    await renderUsersView(successMessage);
+  } catch (error) {
+    await renderUsersView(`${successMessage} Nao foi possivel atualizar a lista agora.`, "warning");
   }
 }
 
 async function saveEmailTemplates(event) {
   event.preventDefault();
   if (settingsFallbackActive()) return;
+  const form = event.currentTarget;
   const data = Object.fromEntries(new FormData(event.currentTarget));
   const emailTemplates = {};
   Object.keys(state.settings.emailTemplates).forEach((key) => {
@@ -2194,11 +2918,18 @@ async function saveEmailTemplates(event) {
       anexos: state.settings.emailTemplates[key]?.anexos || []
     };
   });
-  state.settings = await api("/api/settings/email-templates", {
-    method: "PUT",
-    body: JSON.stringify({ emailTemplates })
-  });
-  renderSettingsView();
+  setFormBusy(form, true, "Salvando...");
+  try {
+    state.settings = await api("/api/settings/email-templates", {
+      method: "PUT",
+      body: JSON.stringify({ emailTemplates })
+    });
+    await renderSettingsView("Templates salvos com sucesso.");
+  } catch (error) {
+    await renderSettingsView(error.message || "Nao foi possivel salvar os templates.", "error");
+  } finally {
+    setFormBusy(form, false);
+  }
 }
 
 function templateAttachmentList(templateKey, anexos = []) {
@@ -2226,6 +2957,7 @@ async function attachTemplateDocument(templateKey) {
   if (!templateKey || settingsFallbackActive()) return;
   const file = await pickDocumentFile();
   if (!file) return;
+  if (!validateSelectedDocument(file)) return;
   try {
     const contentBase64 = await fileToBase64(file);
     state.settings = await api(`/api/settings/email-templates/${encodeURIComponent(templateKey)}/attachments`, {
@@ -2245,38 +2977,47 @@ async function attachTemplateDocument(templateKey) {
 async function removeTemplateDocument(templateKey, attachmentId) {
   if (!templateKey || !attachmentId || settingsFallbackActive()) return;
   if (!confirm("Remover este anexo do template?")) return;
-  state.settings = await api(`/api/settings/email-templates/${encodeURIComponent(templateKey)}/attachments/${encodeURIComponent(attachmentId)}`, {
-    method: "DELETE"
-  });
-  renderSettingsView();
+  try {
+    state.settings = await api(`/api/settings/email-templates/${encodeURIComponent(templateKey)}/attachments/${encodeURIComponent(attachmentId)}`, {
+      method: "DELETE"
+    });
+    await renderSettingsView("Anexo removido com sucesso.");
+  } catch (error) {
+    await renderSettingsView(error.message || "Nao foi possivel remover o anexo.", "error");
+  }
 }
 
 async function downloadDocument(path) {
   if (!path) return;
   const response = await fetch(path, {
-    headers: authToken ? { authorization: `Bearer ${authToken}` } : {}
+    credentials: "same-origin"
   });
+  if (response.status === 401) handleUnauthorized();
   if (!response.ok) throw new Error("Nao foi possivel baixar o documento.");
   const blobUrl = URL.createObjectURL(await response.blob());
-  const link = document.createElement("a");
-  link.href = blobUrl;
-  link.download = "";
-  link.click();
-  setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+  triggerBlobDownload(blobUrl);
 }
 
 async function saveNotificationSettings(event) {
   event.preventDefault();
   if (settingsFallbackActive()) return;
+  const form = event.currentTarget;
   const data = Object.fromEntries(new FormData(event.currentTarget));
-  state.settings = await api("/api/settings/notifications", {
-    method: "PUT",
-    body: JSON.stringify({
-      diasAvisoInterno: String(data.diasAvisoInterno || "").split(/[\n,; ]+/),
-      diaOficioFornecedor: Number(data.diaOficioFornecedor || 30)
-    })
-  });
-  renderSettingsView();
+  setFormBusy(form, true, "Salvando...");
+  try {
+    state.settings = await api("/api/settings/notifications", {
+      method: "PUT",
+      body: JSON.stringify({
+        diasAvisoInterno: String(data.diasAvisoInterno || "").split(/[\n,; ]+/),
+        diaOficioFornecedor: Number(data.diaOficioFornecedor || 30)
+      })
+    });
+    await renderSettingsView("Prazos salvos com sucesso.");
+  } catch (error) {
+    await renderSettingsView(error.message || "Nao foi possivel salvar os prazos.", "error");
+  } finally {
+    setFormBusy(form, false);
+  }
 }
 
 function settingsFallbackActive() {
@@ -2319,60 +3060,69 @@ function readMaterials() {
 
 function fillSelect(select, items, placeholder) {
   if (!select) return;
-  select.innerHTML = [`<option value="">${placeholder}</option>`]
-    .concat(items.map((item) => `<option value="${item}">${item}</option>`))
+  select.innerHTML = [`<option value="">${escapeHtml(placeholder)}</option>`]
+    .concat(items.map((item) => `<option value="${escapeAttribute(item)}">${escapeHtml(item)}</option>`))
     .join("");
 }
 
 function renderQuickFilters() {
   const filters = ["Todos", ...state.meta.filtrosRapidos];
   quickFilterBar.innerHTML = filters.map((label) => `
-    <button type="button" class="filter-chip ${label === "Todos" ? "active" : ""}" data-filter="${label === "Todos" ? "" : label}">
-      ${label === "Todos" ? "▽ " : ""}${label}
+    <button type="button" class="filter-chip ${(label === "Todos" ? "" : label) === quickFilter.value ? "active" : ""}" data-filter="${escapeAttribute(label === "Todos" ? "" : label)}" aria-pressed="${String((label === "Todos" ? "" : label) === quickFilter.value)}">
+      ${label === "Todos" ? "▽ " : ""}${escapeHtml(label)}
     </button>
   `).join("");
 
-  quickFilterBar.addEventListener("click", async (event) => {
+  if (quickFilterBar.dataset.bound === "true") return;
+  quickFilterBar.dataset.bound = "true";
+  quickFilterBar.addEventListener("click", (event) => {
     const chip = event.target.closest(".filter-chip");
     if (!chip) return;
     quickFilter.value = chip.dataset.filter;
     quickFilterBar.querySelectorAll(".filter-chip").forEach((button) => {
       button.classList.toggle("active", button === chip);
+      button.setAttribute("aria-pressed", String(button === chip));
     });
-    await refresh();
+    void refresh({ reload: false });
   });
-}
-
-function renderYearOptions() {
-  if (!yearFilter) return;
-  const years = [...new Set(state.processos
-    .map((processo) => deadlineDate(processo) ? new Date(`${deadlineDate(processo)}T00:00:00`).getFullYear() : "")
-    .filter(Boolean))]
-    .sort((a, b) => b - a);
-
-  yearFilter.innerHTML = '<option value="">Ano: Todos</option>'
-    + years.map((year) => `<option value="${year}">Ano: ${year}</option>`).join("");
-  if (years.includes(2026)) yearFilter.value = "2026";
 }
 
 async function api(path, options = {}) {
-  const identityHeaders = currentUser
-    ? {
-        "x-user-email": currentUser.email,
-        "x-user-name": currentUser.name
-      }
-    : {};
+  const requestSessionGeneration = sessionGeneration;
+  const {
+    skipAuthRedirect = false,
+    legacyToken = "",
+    headers: suppliedHeaders = {},
+    ...fetchOptions
+  } = options;
+  const headers = new Headers(suppliedHeaders);
+  if (fetchOptions.body && !headers.has("content-type")) headers.set("content-type", "application/json");
+  if (legacyToken) headers.set("authorization", `Bearer ${legacyToken}`);
   const response = await fetch(path, {
-    ...options,
-    headers: {
-      "content-type": "application/json",
-      ...identityHeaders,
-      ...(authToken ? { authorization: `Bearer ${authToken}` } : {}),
-      ...(options.headers || {})
-    }
+    ...fetchOptions,
+    credentials: "same-origin",
+    headers
   });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error || "Falha na operacao");
+  const text = await response.text();
+  if (requestSessionGeneration !== sessionGeneration) {
+    const error = new Error("A requisicao pertence a uma sessao encerrada.");
+    error.name = "AbortError";
+    throw error;
+  }
+  let data = {};
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = { error: response.ok ? "Resposta invalida do servidor." : "Falha na operacao." };
+    }
+  }
+  if (!response.ok) {
+    const error = new Error(data.error || "Falha na operacao");
+    error.status = response.status;
+    if (response.status === 401 && !skipAuthRedirect) handleUnauthorized();
+    throw error;
+  }
   return data;
 }
 
@@ -2422,12 +3172,6 @@ function overdueDays(processo) {
   return Math.max(0, Number(processo.diasDecorridos || 0) - 30);
 }
 
-function canCancelInUi(processo) {
-  if (!processo || ["Anulado", "Pago"].includes(processo.status) || currentUser.role === "auditor") return false;
-  if (isCurrentUserAdmin()) return true;
-  return processo.criadoPorEmail === currentUser.email;
-}
-
 function isCurrentUserAdmin() {
   return currentUser.role === "admin";
 }
@@ -2438,12 +3182,6 @@ function empty(value) {
 
 function money(value) {
   return Number(value || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
-}
-
-function monthLabel(value) {
-  if (value === "Sem data") return value;
-  const [, month] = String(value).split("-");
-  return ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"][Number(month) - 1] || value;
 }
 
 function compactMoney(value) {
@@ -2473,62 +3211,8 @@ function normalizeDateInput(value) {
   return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === iso ? iso : "";
 }
 
-function enhancePasswordFields(root = document) {
-  root.querySelectorAll('input[type="password"]:not([data-password-enhanced])').forEach((input) => {
-    input.dataset.passwordEnhanced = "true";
-    const wrapper = document.createElement("span");
-    wrapper.className = "password-input-wrap";
-    input.parentNode.insertBefore(wrapper, input);
-    wrapper.append(input);
-    const toggle = document.createElement("button");
-    toggle.type = "button";
-    toggle.className = "password-toggle";
-    updatePasswordToggle(toggle, false);
-    toggle.addEventListener("click", () => {
-      const showing = input.type === "text";
-      input.type = showing ? "password" : "text";
-      updatePasswordToggle(toggle, !showing);
-    });
-    wrapper.append(toggle);
-  });
-}
-
-function updatePasswordToggle(toggle, passwordVisible) {
-  toggle.innerHTML = passwordVisible ? eyeOpenIcon() : eyeOffIcon();
-  toggle.setAttribute("aria-label", passwordVisible ? "Ocultar senha" : "Mostrar senha");
-  toggle.setAttribute("title", passwordVisible ? "Ocultar senha" : "Mostrar senha");
-  toggle.setAttribute("aria-pressed", String(passwordVisible));
-}
-
-function eyeOpenIcon() {
-  return `
-    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"></path>
-      <circle cx="12" cy="12" r="2.75"></circle>
-    </svg>
-  `;
-}
-
-function eyeOffIcon() {
-  return `
-    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <path d="M3 3l18 18"></path>
-      <path d="M10.6 6.15A10.2 10.2 0 0 1 12 6c6 0 9.5 6 9.5 6a17.7 17.7 0 0 1-3.05 3.65M6.2 6.2C3.85 7.75 2.5 12 2.5 12s3.5 6 9.5 6a9.9 9.9 0 0 0 3.2-.53"></path>
-      <path d="M9.9 9.9a2.75 2.75 0 0 0 4.2 4.2"></path>
-    </svg>
-  `;
-}
-
-function isValidPasswordInput(password = "") {
-  const value = String(password);
-  return value.length >= 8
-    && /\p{Lu}/u.test(value)
-    && /\p{N}/u.test(value)
-    && /[^\p{L}\p{N}]/u.test(value);
-}
-
 function passwordPolicyMessage() {
-  return "A senha deve ter no minimo 8 caracteres, incluindo uma letra maiuscula, um numero e um caractere especial.";
+  return PASSWORD_POLICY_MESSAGE;
 }
 
 function daysCell(processo) {
@@ -2673,12 +3357,15 @@ function visibleAuditEntries(processo) {
 }
 
 function formatDate(value) {
-  return String(value || "").slice(0, 10);
+  return displayDate(String(value || "").slice(0, 10)) || "-";
 }
 
 function formatDateTime(value) {
   if (!value) return "-";
-  return new Date(value).toLocaleString("pt-BR");
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "-";
+  const pad = (part) => String(part).padStart(2, "0");
+  return `${pad(date.getDate())}-${pad(date.getMonth() + 1)}-${date.getFullYear()} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
 function statusLabel(status = "") {
@@ -2702,4 +3389,66 @@ function debounce(fn, wait) {
     clearTimeout(timer);
     timer = setTimeout(() => fn(...args), wait);
   };
+}
+
+function setButtonBusy(button, busy, busyLabel = "Aguarde...") {
+  if (!button) return;
+  if (busy) {
+    if (!button.dataset.idleLabel) button.dataset.idleLabel = button.textContent;
+    button.disabled = true;
+    button.textContent = busyLabel;
+    button.setAttribute("aria-busy", "true");
+    return;
+  }
+  button.disabled = false;
+  if (button.dataset.idleLabel) button.textContent = button.dataset.idleLabel;
+  delete button.dataset.idleLabel;
+  button.removeAttribute("aria-busy");
+}
+
+function setFormBusy(form, busy, busyLabel = "Salvando...") {
+  if (!form) return;
+  const submit = form.querySelector('button[type="submit"], button:not([type])');
+  setButtonBusy(submit, busy, busyLabel);
+  form.setAttribute("aria-busy", String(busy));
+}
+
+function setControlBusy(control, busy) {
+  if (!control) return;
+  control.disabled = busy;
+  if (busy) control.setAttribute("aria-busy", "true");
+  else control.removeAttribute("aria-busy");
+}
+
+function resetSensitiveForm(form, messageElement) {
+  form?.reset();
+  resetPasswordVisibility(form);
+  if (messageElement) messageElement.textContent = "";
+}
+
+function renderInlineError(container, message) {
+  if (!container) return;
+  container.replaceChildren();
+  const error = document.createElement("p");
+  error.className = "form-message error";
+  error.setAttribute("role", "alert");
+  error.textContent = message;
+  container.append(error);
+}
+
+function renderSectionError(container, message, section) {
+  if (!container) return;
+  container.replaceChildren();
+  const wrapper = document.createElement("section");
+  wrapper.className = "section-error";
+  const text = document.createElement("p");
+  text.setAttribute("role", "alert");
+  text.textContent = message;
+  const retry = document.createElement("button");
+  retry.type = "button";
+  retry.className = "secondary";
+  retry.textContent = "Tentar novamente";
+  retry.addEventListener("click", () => openSection(section), { once: true });
+  wrapper.append(text, retry);
+  container.append(wrapper);
 }
