@@ -335,7 +335,7 @@ export async function requestHandler(req, res) {
     }
 
     if (url.pathname.startsWith("/uploads/")) {
-      await serveUpload(req, res, url);
+      await serveUpload(req, res, url.pathname);
       return;
     }
 
@@ -1904,8 +1904,7 @@ async function serveStatic(req, res, pathname) {
   }, { request: req, etag: true, root: ROOT });
 }
 
-async function serveUpload(req, res, url) {
-  const pathname = url.pathname;
+async function serveUpload(req, res, pathname) {
   const user = await sessionUser(req);
   if (!user) {
     sendJson(res, 401, { error: "Faca login para acessar documentos." });
@@ -1929,17 +1928,10 @@ async function serveUpload(req, res, url) {
     return;
   }
 
-  const inline = url.searchParams.get("inline") === "1" && canPreviewUploadInline(reference);
   await serveFile(res, fullPath, {
     "cache-control": "private, no-store",
-    "content-disposition": `${inline ? "inline" : "attachment"}; filename="${safeName(reference.fileName || "documento")}"`,
-    ...(inline ? { "x-frame-options": "SAMEORIGIN" } : {})
+    "content-disposition": `attachment; filename="${safeName(reference.fileName || "documento")}"`
   }, { root: UPLOAD_ROOT, mode: 0o600 });
-}
-
-function canPreviewUploadInline(reference = {}) {
-  const mimeType = String(reference.mimeType || contentTypeForPath(reference.fileName || "")).toLowerCase();
-  return ["application/pdf", "image/png", "image/jpeg"].includes(mimeType);
 }
 
 function findUploadReference(store, pathname) {
@@ -2095,7 +2087,7 @@ function applySecurityHeaders(res) {
   res.setHeader("x-content-type-options", "nosniff");
   res.setHeader("x-frame-options", "DENY");
   res.setHeader("strict-transport-security", "max-age=31536000; includeSubDomains");
-  res.setHeader("content-security-policy", "default-src 'self'; script-src 'self'; frame-src 'self'; connect-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'");
+  res.setHeader("content-security-policy", "default-src 'self'; script-src 'self'; frame-src blob:; connect-src 'self'; img-src 'self' blob: data: https:; style-src 'self' 'unsafe-inline'");
   res.setHeader("referrer-policy", "strict-origin-when-cross-origin");
   res.setHeader("permissions-policy", "camera=(), microphone=(), geolocation=()");
 }

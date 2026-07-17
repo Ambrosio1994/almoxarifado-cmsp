@@ -137,7 +137,6 @@
               </div>
               <p id="detailSubtitle"></p>
             </div>
-            <button type="button" class="download-button" id="downloadProcessButton">Baixar processo completo</button>
           </div>
 
           <nav class="detail-tabs" aria-label="Modulos do processo" role="tablist">
@@ -167,7 +166,7 @@
           <label>Numero do processo <input name="numeroProcesso" maxlength="20"></label>
           <label>Numero do empenho <input name="numeroEmpenho" maxlength="20"></label>
         </div>
-        <label>Data do processo <input name="dataProcesso" type="text" inputmode="numeric" placeholder="DD-MM-AAAA" pattern="\d{2}-\d{2}-\d{4}" maxlength="10"></label>
+        <label>Data do processo <input name="dataProcesso" type="text" inputmode="numeric" data-date-input placeholder="DDMMAAAA" pattern="\d{2}-\d{2}-\d{4}" maxlength="10"></label>
         <label>Fornecedor <input name="fornecedor" maxlength="100"></label>
 
         <section class="materials-section">
@@ -221,7 +220,7 @@
       <form id="deliveryForm" class="process-form" novalidate>
         <p class="selected-file" id="deliveryDialogDescription">Informe a data e as quantidades recebidas de cada material.</p>
         <label>Data da entrega
-          <input name="data" type="text" inputmode="numeric" autocomplete="off" placeholder="DD-MM-AAAA" pattern="\d{2}-\d{2}-\d{4}" maxlength="10" required>
+          <input name="data" type="text" inputmode="numeric" autocomplete="off" data-date-input placeholder="DDMMAAAA" pattern="\d{2}-\d{2}-\d{4}" maxlength="10" required>
         </label>
         <fieldset class="delivery-fieldset">
           <legend>Materiais recebidos</legend>
@@ -246,7 +245,7 @@
       <form id="processStepForm" class="process-form" novalidate>
         <p class="selected-file" id="processStepDialogDescription"></p>
         <label id="processStepDateGroup"><span id="processStepDateLabel">Data</span>
-          <input name="data" type="text" inputmode="numeric" autocomplete="off" placeholder="DD-MM-AAAA" pattern="\d{2}-\d{2}-\d{4}" maxlength="10">
+          <input name="data" type="text" inputmode="numeric" autocomplete="off" data-date-input placeholder="DDMMAAAA" pattern="\d{2}-\d{2}-\d{4}" maxlength="10">
         </label>
         <div class="actions">
           <button type="button" class="secondary" id="cancelProcessStep">Cancelar</button>
@@ -288,6 +287,18 @@
           <span>Um unico PDF com os documentos PDF anexados ao processo.</span>
         </button>
       </div>
+    </dialog>
+
+    <dialog id="documentPreviewDialog" class="document-preview-dialog" aria-labelledby="documentPreviewDialogTitle">
+      <form method="dialog" class="dialog-header">
+        <strong id="documentPreviewDialogTitle">Visualizar documento</strong>
+        <button type="submit" class="secondary">Fechar</button>
+      </form>
+      <div id="documentPreviewContent" class="document-preview-content" aria-busy="false"></div>
+      <div class="actions document-preview-actions">
+        <button type="button" class="secondary" id="documentPreviewDownload">Baixar</button>
+      </div>
+      <p class="form-message" id="documentPreviewMessage" role="alert" aria-live="assertive"></p>
     </dialog>
 
     <dialog id="documentMetadataDialog" class="small-dialog" aria-labelledby="documentMetadataDialogTitle">

@@ -52,6 +52,11 @@ let detailController = null;
 let detailSequence = 0;
 let handlingUnauthorized = false;
 let sessionGeneration = 0;
+let timelinePreviewSequence = 0;
+let documentPreviewSequence = 0;
+let documentPreviewPath = "";
+let documentPreviewUrl = "";
+const timelinePreviewUrls = new Set();
 const authScreen = document.querySelector("#authScreen");
 const appShell = document.querySelector("#appShell");
 const appStatus = document.querySelector("#appStatus");
@@ -116,9 +121,13 @@ const detailStatusBadges = document.querySelector("#detailStatusBadges");
 const detailSubtitle = document.querySelector("#detailSubtitle");
 const detailPanel = document.querySelector("#detailPanel");
 const detailTabs = document.querySelectorAll(".detail-tab");
-const downloadProcessButton = document.querySelector("#downloadProcessButton");
 const downloadDialog = document.querySelector("#downloadDialog");
 const downloadChoices = document.querySelectorAll("[data-download-format]");
+const documentPreviewDialog = document.querySelector("#documentPreviewDialog");
+const documentPreviewDialogTitle = document.querySelector("#documentPreviewDialogTitle");
+const documentPreviewContent = document.querySelector("#documentPreviewContent");
+const documentPreviewMessage = document.querySelector("#documentPreviewMessage");
+const documentPreviewDownload = document.querySelector("#documentPreviewDownload");
 const supplierInfoDialog = document.querySelector("#supplierInfoDialog");
 const supplierInfoForm = document.querySelector("#supplierInfoForm");
 const supplierInfoMessage = document.querySelector("#supplierInfoMessage");
@@ -148,8 +157,17 @@ const adminPasswordForm = document.querySelector("#adminPasswordForm");
 const adminPasswordUser = document.querySelector("#adminPasswordUser");
 const adminPasswordMessage = document.querySelector("#adminPasswordMessage");
 
+bindDateInputs();
 initTheme();
 await initAuth();
+
+function bindDateInputs() {
+  document.querySelectorAll("[data-date-input]").forEach((input) => {
+    input.addEventListener("input", () => {
+      input.value = formatDateInput(input.value);
+    });
+  });
+}
 
 function initTheme() {
   const savedTheme = localStorage.getItem("almoxTheme") || "light";
@@ -352,6 +370,8 @@ function clearClientSession() {
   refreshSequence += 1;
   dashboardSequence += 1;
   detailSequence += 1;
+  clearTimelineDocumentPreviews();
+  resetDocumentPreviewDialog();
   state.settings = null;
   state.settingsLoading = null;
   state.auditLoaded = false;
@@ -368,6 +388,7 @@ function clearClientSession() {
     processStepDialog,
     cancelProcessDialog,
     downloadDialog,
+    documentPreviewDialog,
     documentMetadataDialog,
     supplierInfoDialog,
     changePasswordDialog,
@@ -912,11 +933,6 @@ function setTabActive(tab, active) {
   if (active && tab.id) detailPanel.setAttribute("aria-labelledby", tab.id);
 }
 
-downloadProcessButton.addEventListener("click", () => {
-  if (!state.selectedProcess) return;
-  downloadDialog?.showModal();
-});
-
 downloadChoices.forEach((button) => {
   button.addEventListener("click", async () => {
     if (!state.selectedProcess) return;
@@ -928,6 +944,16 @@ downloadChoices.forEach((button) => {
     }
   });
 });
+
+documentPreviewDownload?.addEventListener("click", async () => {
+  if (!documentPreviewPath) return;
+  try {
+    await downloadDocument(documentPreviewPath);
+  } catch (error) {
+    if (documentPreviewMessage) documentPreviewMessage.textContent = error.message || "Nao foi possivel baixar o documento.";
+  }
+});
+documentPreviewDialog?.addEventListener("close", resetDocumentPreviewDialog);
 
 supplierInfoForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -1033,6 +1059,11 @@ sidebarResizer?.addEventListener("pointercancel", () => {
 
 detailPanel.addEventListener("click", async (event) => {
   try {
+    if (event.target.dataset.downloadProcess) {
+      if (state.selectedProcess) downloadDialog?.showModal();
+      return;
+    }
+
     if (event.target.dataset.openEdit) {
       openProcessDialog(state.selectedProcess);
     }
@@ -1054,7 +1085,7 @@ detailPanel.addEventListener("click", async (event) => {
 
     const openPath = event.target.dataset.openDocument;
     if (openPath) {
-      openDocument(openPath);
+      await openDocument(openPath);
     }
 
     const downloadPath = event.target.dataset.downloadDocument;
@@ -1385,7 +1416,9 @@ function renderDetailPanel() {
     emails: renderEmailsModule
   };
 
+  clearTimelineDocumentPreviews();
   detailPanel.innerHTML = (renderers[state.detailTab] || renderTimelineModule)(processo);
+  if (state.detailTab === "timeline") void hydrateTimelineDocumentPreviews();
 }
 
 function renderGeneralModule(processo) {
@@ -1429,6 +1462,9 @@ function renderDocumentsModule(processo) {
 
   return `
     <div class="module-list">
+      <div class="detail-actions">
+        <button type="button" class="download-button" data-download-process="true">Baixar processo completo</button>
+      </div>
       ${documents.map(([key, label, value]) => {
         const doc = documentInfo(value);
         return `
@@ -3163,37 +3199,94 @@ async function removeTemplateDocument(templateKey, attachmentId) {
 }
 
 async function downloadDocument(path) {
-  if (!path) return;
-  const response = await fetch(path, {
-    credentials: "same-origin"
-  });
-  if (response.status === 401) handleUnauthorized();
-  if (!response.ok) throw new Error("Nao foi possivel baixar o documento.");
-  const blobUrl = URL.createObjectURL(await response.blob());
+  const blobUrl = URL.createObjectURL(await fetchDocumentBlob(path));
   triggerBlobDownload(blobUrl);
 }
 
-function openDocument(path) {
-  const previewUrl = documentInlineUrl(path);
-  if (!previewUrl) throw new Error("Caminho de documento invalido.");
-  const link = document.createElement("a");
-  link.href = previewUrl;
-  link.target = "_blank";
-  link.rel = "noopener";
-  document.body.append(link);
-  link.click();
-  link.remove();
+async function fetchDocumentBlob(path) {
+  const documentPath = normalizeDocumentPath(path);
+  if (!documentPath) throw new Error("Caminho de documento invalido.");
+  const response = await fetch(documentPath, { credentials: "same-origin" });
+  if (response.status === 401) {
+    handleUnauthorized();
+    throw new Error("Sua sessao expirou.");
+  }
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.error || "Nao foi possivel carregar o documento.");
+  }
+  return response.blob();
 }
 
-function documentInlineUrl(path) {
+function normalizeDocumentPath(path) {
   try {
     const url = new URL(path, window.location.origin);
     if (url.origin !== window.location.origin || !url.pathname.startsWith("/uploads/")) return "";
-    url.searchParams.set("inline", "1");
     return `${url.pathname}${url.search}`;
   } catch {
     return "";
   }
+}
+
+async function openDocument(path) {
+  const documentPath = normalizeDocumentPath(path);
+  if (!documentPath) throw new Error("Caminho de documento invalido.");
+  if (!documentPreviewDialog || !documentPreviewContent) {
+    await downloadDocument(documentPath);
+    return;
+  }
+
+  resetDocumentPreviewDialog();
+  documentPreviewPath = documentPath;
+  documentPreviewDialogTitle.textContent = "Visualizar documento";
+  documentPreviewContent.setAttribute("aria-busy", "true");
+  documentPreviewContent.textContent = "Carregando documento...";
+  if (!documentPreviewDialog.open) documentPreviewDialog.showModal();
+  const sequence = ++documentPreviewSequence;
+
+  try {
+    const blob = await fetchDocumentBlob(documentPath);
+    if (sequence !== documentPreviewSequence || !documentPreviewDialog.open) return;
+    documentPreviewUrl = URL.createObjectURL(blob);
+    documentPreviewContent.replaceChildren(createDocumentPreviewElement(documentPreviewUrl, blob, documentPath, "Documento"));
+  } catch (error) {
+    if (sequence === documentPreviewSequence && documentPreviewMessage) {
+      documentPreviewMessage.textContent = error.message || "Nao foi possivel abrir o documento.";
+    }
+  } finally {
+    if (sequence === documentPreviewSequence) documentPreviewContent?.setAttribute("aria-busy", "false");
+  }
+}
+
+function resetDocumentPreviewDialog() {
+  documentPreviewSequence += 1;
+  if (documentPreviewUrl) URL.revokeObjectURL(documentPreviewUrl);
+  documentPreviewUrl = "";
+  documentPreviewPath = "";
+  documentPreviewContent?.replaceChildren();
+  documentPreviewContent?.setAttribute("aria-busy", "false");
+  if (documentPreviewMessage) documentPreviewMessage.textContent = "";
+}
+
+function createDocumentPreviewElement(blobUrl, blob, path, title) {
+  const mimeType = String(blob.type || "").toLowerCase();
+  const fileName = String(path || "").toLowerCase();
+  if (mimeType === "application/pdf" || fileName.endsWith(".pdf")) {
+    const frame = document.createElement("iframe");
+    frame.title = `Previa da primeira pagina de ${title}`;
+    frame.src = `${blobUrl}#page=1&view=FitH`;
+    return frame;
+  }
+  if (["image/png", "image/jpeg"].includes(mimeType) || /\.(png|jpe?g)$/.test(fileName)) {
+    const image = document.createElement("img");
+    image.src = blobUrl;
+    image.alt = title;
+    return image;
+  }
+  const message = document.createElement("p");
+  message.className = "selected-file";
+  message.textContent = "Este formato nao possui visualizacao integrada. Use Baixar para abrir no aplicativo adequado.";
+  return message;
 }
 
 async function saveNotificationSettings(event) {
@@ -3407,10 +3500,16 @@ function displayDate(value) {
   return match ? `${match[3]}-${match[2]}-${match[1]}` : String(value);
 }
 
+function formatDateInput(value = "") {
+  const digits = String(value).replace(/\D/g, "").slice(0, 8);
+  const parts = [digits.slice(0, 2), digits.slice(2, 4), digits.slice(4, 8)].filter(Boolean);
+  return parts.join("-");
+}
+
 function normalizeDateInput(value) {
-  const match = String(value || "").trim().match(/^(\d{2})-(\d{2})-(\d{4})$/);
-  if (!match) return "";
-  const iso = `${match[3]}-${match[2]}-${match[1]}`;
+  const digits = String(value || "").replace(/\D/g, "");
+  if (digits.length !== 8) return "";
+  const iso = `${digits.slice(4, 8)}-${digits.slice(2, 4)}-${digits.slice(0, 2)}`;
   const parsed = new Date(`${iso}T00:00:00Z`);
   return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === iso ? iso : "";
 }
@@ -3490,28 +3589,62 @@ function timelineEventClass(event) {
 function documentTimelinePreview(documento = {}) {
   const path = String(documento.path || "");
   const title = documento.nome || documento.fileName || "Documento anexado";
-  const previewUrl = documentInlineUrl(path);
-  if (!previewUrl) return "";
+  const documentPath = normalizeDocumentPath(path);
+  if (!documentPath) return "";
   return `
     <div class="timeline-document-preview">
-      ${documentTimelinePreviewContent(documento, previewUrl, title)}
+      ${documentTimelinePreviewContent(documento, documentPath, title)}
       <span>${escapeHtml(title)}</span>
       <button type="button" class="secondary small-action" data-open-document="${escapeAttribute(path)}">Abrir documento</button>
     </div>
   `;
 }
 
-function documentTimelinePreviewContent(documento = {}, previewUrl = "", title = "") {
+function documentTimelinePreviewContent(documento = {}, path = "", title = "") {
   const mimeType = String(documento.mimeType || "").toLowerCase();
   const fileName = String(documento.fileName || documento.nome || "").toLowerCase();
   const accessibleTitle = `Previa da primeira pagina de ${title}`;
   if (mimeType === "application/pdf" || fileName.endsWith(".pdf")) {
-    return `<iframe title="${escapeAttribute(accessibleTitle)}" src="${escapeAttribute(`${previewUrl}#page=1&view=FitH`)}" loading="lazy" referrerpolicy="no-referrer"></iframe>`;
+    return `<div class="timeline-document-preview-media"><iframe title="${escapeAttribute(accessibleTitle)}" data-document-preview="${escapeAttribute(path)}" loading="lazy" aria-busy="true"></iframe><span data-document-preview-loading>Carregando previa...</span></div>`;
   }
   if (["image/png", "image/jpeg"].includes(mimeType) || /\.(png|jpe?g)$/.test(fileName)) {
-    return `<img src="${escapeAttribute(previewUrl)}" alt="${escapeAttribute(accessibleTitle)}" loading="lazy" referrerpolicy="no-referrer">`;
+    return `<div class="timeline-document-preview-media"><img data-document-preview="${escapeAttribute(path)}" alt="${escapeAttribute(accessibleTitle)}" loading="lazy" aria-busy="true"><span data-document-preview-loading>Carregando previa...</span></div>`;
   }
   return '<span class="timeline-document-preview-unavailable">Previa disponivel para PDF ou imagem.</span>';
+}
+
+async function hydrateTimelineDocumentPreviews() {
+  const sequence = timelinePreviewSequence;
+  const previews = [...detailPanel.querySelectorAll("[data-document-preview]")];
+  await Promise.all(previews.map(async (preview) => {
+    try {
+      const blob = await fetchDocumentBlob(preview.dataset.documentPreview);
+      if (sequence !== timelinePreviewSequence || !preview.isConnected || state.detailTab !== "timeline") return;
+      const blobUrl = URL.createObjectURL(blob);
+      if (sequence !== timelinePreviewSequence || !preview.isConnected || state.detailTab !== "timeline") {
+        URL.revokeObjectURL(blobUrl);
+        return;
+      }
+      timelinePreviewUrls.add(blobUrl);
+      preview.src = preview.tagName === "IFRAME" ? `${blobUrl}#page=1&view=FitH` : blobUrl;
+      preview.setAttribute("aria-busy", "false");
+      preview.parentElement?.querySelector("[data-document-preview-loading]")?.remove();
+    } catch {
+      if (sequence !== timelinePreviewSequence || !preview.isConnected) return;
+      const container = preview.parentElement;
+      preview.remove();
+      const message = document.createElement("span");
+      message.className = "timeline-document-preview-unavailable";
+      message.textContent = "Nao foi possivel carregar a previa.";
+      container?.append(message);
+    }
+  }));
+}
+
+function clearTimelineDocumentPreviews() {
+  timelinePreviewSequence += 1;
+  for (const blobUrl of timelinePreviewUrls) URL.revokeObjectURL(blobUrl);
+  timelinePreviewUrls.clear();
 }
 
 function documentFromAuditEntry(processo = {}, entry = {}) {
