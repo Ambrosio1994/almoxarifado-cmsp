@@ -44,6 +44,7 @@ export const QUICK_FILTERS = [
 ];
 
 export const REQUIRED_DOCUMENT_KEYS = ["processoSped", "notaEmpenho", "notaFiscal"];
+export const LIQUIDATION_DOCUMENT_KEYS = ["processoSped", "notaEmpenho"];
 
 export const DOCUMENT_LABELS = {
   processoSped: "Processo SPED",
@@ -191,7 +192,7 @@ export function canRemoveDocument(processo = {}, documentKey = "") {
 
 export function processHasRequiredDocuments(processo = {}) {
   const documentos = processo.documentos || {};
-  return REQUIRED_DOCUMENT_KEYS.every((key) => Boolean(documentos[key]));
+  return LIQUIDATION_DOCUMENT_KEYS.some((key) => Boolean(documentos[key]));
 }
 
 export function isMutationRequest(method = "") {

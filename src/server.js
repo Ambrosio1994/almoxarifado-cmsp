@@ -335,7 +335,7 @@ export async function requestHandler(req, res) {
     }
 
     if (url.pathname.startsWith("/uploads/")) {
-      await serveUpload(req, res, url.pathname);
+      await serveUpload(req, res, url);
       return;
     }
 
@@ -1904,7 +1904,8 @@ async function serveStatic(req, res, pathname) {
   }, { request: req, etag: true, root: ROOT });
 }
 
-async function serveUpload(req, res, pathname) {
+async function serveUpload(req, res, url) {
+  const pathname = url.pathname;
   const user = await sessionUser(req);
   if (!user) {
     sendJson(res, 401, { error: "Faca login para acessar documentos." });
@@ -1928,10 +1929,17 @@ async function serveUpload(req, res, pathname) {
     return;
   }
 
+  const inline = url.searchParams.get("inline") === "1" && canPreviewUploadInline(reference);
   await serveFile(res, fullPath, {
     "cache-control": "private, no-store",
-    "content-disposition": `attachment; filename="${safeName(reference.fileName || "documento")}"`
+    "content-disposition": `${inline ? "inline" : "attachment"}; filename="${safeName(reference.fileName || "documento")}"`,
+    ...(inline ? { "x-frame-options": "SAMEORIGIN" } : {})
   }, { root: UPLOAD_ROOT, mode: 0o600 });
+}
+
+function canPreviewUploadInline(reference = {}) {
+  const mimeType = String(reference.mimeType || contentTypeForPath(reference.fileName || "")).toLowerCase();
+  return ["application/pdf", "image/png", "image/jpeg"].includes(mimeType);
 }
 
 function findUploadReference(store, pathname) {
@@ -2087,7 +2095,7 @@ function applySecurityHeaders(res) {
   res.setHeader("x-content-type-options", "nosniff");
   res.setHeader("x-frame-options", "DENY");
   res.setHeader("strict-transport-security", "max-age=31536000; includeSubDomains");
-  res.setHeader("content-security-policy", "default-src 'self'; script-src 'self'; frame-src 'none'; connect-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'");
+  res.setHeader("content-security-policy", "default-src 'self'; script-src 'self'; frame-src 'self'; connect-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'");
   res.setHeader("referrer-policy", "strict-origin-when-cross-origin");
   res.setHeader("permissions-policy", "camera=(), microphone=(), geolocation=()");
 }
@@ -3173,7 +3181,7 @@ function validateProcessForStatus(processo = {}) {
   }
   if (["Enviado para liquidacao", "Liquidado", "Pago"].includes(processo.status)
       && !processHasRequiredDocuments(processo)) {
-    return "Anexe Processo SPED, Nota de Empenho e Nota Fiscal em PDF antes da liquidacao.";
+    return "Anexe pelo menos o Processo SPED ou a Nota de Empenho em PDF antes da liquidacao.";
   }
   if (["Enviado para liquidacao", "Liquidado", "Pago"].includes(processo.status) && !processo.dataEnvioLiquidacao) {
     return "Informe a data de envio para liquidacao antes de avancar.";

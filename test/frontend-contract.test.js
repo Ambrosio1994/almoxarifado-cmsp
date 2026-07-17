@@ -78,6 +78,14 @@ describe("contrato visual e de navegacao", () => {
     assert.match(app, /return state\.detailAudit/);
   });
 
+  it("mostra previa do documento anexado na linha do tempo e o abre em nova guia", () => {
+    assert.match(app, /documentTimelinePreviewContent/);
+    assert.match(app, /<iframe title=.*#page=1&view=FitH/);
+    assert.match(app, /data-open-document=/);
+    assert.match(app, /function openDocument\(path\)/);
+    assert.match(app, /url\.searchParams\.set\("inline", "1"\)/);
+  });
+
   it("preserva IDs dos materiais e mostra o historico das entregas", () => {
     assert.match(app, /row\.dataset\.materialId = material\.id/);
     assert.match(app, /materialId: balance\.material\.id/);

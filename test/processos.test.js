@@ -242,12 +242,16 @@ describe("regras de processo", () => {
     assert.equal(validateDocumentUpload("imagem.png", "image/png", Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])), true);
   });
 
-  it("identifica quando todos os documentos obrigatorios estao anexados", () => {
+  it("exige Processo SPED ou Nota de Empenho para enviar para liquidacao", () => {
     assert.equal(processHasRequiredDocuments({
       documentos: {
-        processoSped: { fileName: "processo.pdf" },
-        notaEmpenho: { fileName: "ne.pdf" },
-        notaFiscal: { fileName: "nf.pdf" }
+        processoSped: { fileName: "processo.pdf" }
+      }
+    }), true);
+
+    assert.equal(processHasRequiredDocuments({
+      documentos: {
+        notaEmpenho: { fileName: "ne.pdf" }
       }
     }), true);
 
@@ -255,6 +259,12 @@ describe("regras de processo", () => {
       documentos: {
         processoSped: { fileName: "processo.pdf" },
         notaEmpenho: { fileName: "ne.pdf" }
+      }
+    }), true);
+
+    assert.equal(processHasRequiredDocuments({
+      documentos: {
+        notaFiscal: { fileName: "nf.pdf" }
       }
     }), false);
   });
