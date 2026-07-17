@@ -12,7 +12,9 @@ ENV UPLOAD_STORAGE_ROOT=/data/uploads
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY --chown=node:node . .
-RUN mkdir -p /data/uploads && chown node:node /data/uploads
+RUN apk add --no-cache poppler-utils \
+  && mkdir -p /data/uploads \
+  && chown node:node /data/uploads
 VOLUME ["/data/uploads"]
 EXPOSE 3000
 USER node

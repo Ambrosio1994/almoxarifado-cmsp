@@ -34,11 +34,13 @@ import {
 } from "./domain/processos.js";
 import {
   detectStoreBackend,
+  readAuditStore,
   readProcessesSnapshot,
   readProcessesStore,
   readSettingsStore,
   readStore,
   readStoreRevision,
+  readSuppliersStore,
   readUserByEmail,
   writeStore as persistStore
 } from "./storage.js";
@@ -63,7 +65,6 @@ import {
 import {
   createPrivateFile,
   ensurePrivateDirectory,
-  FileSizeLimitError,
   hardenPrivateTree,
   openRegularFileNoFollow,
   privateFileMetadata,
@@ -618,6 +619,21 @@ async function handleApi(req, res, url) {
     const filtered = filterProcesses(store.processos, Object.fromEntries(url.searchParams));
     const enriched = applyQuickFilter(filtered.map((processo) => enrichProcess(processo)), url.searchParams.get("filtroRapido"));
     sendProcessesExport(res, enriched, format);
+    return;
+  }
+
+  // These read-only sections used to load the complete application state.
+  // Query only their own collection when PostgreSQL is active so large process
+  // and document histories do not delay the Suppliers and Audit screens.
+  if (req.method === "GET" && url.pathname === "/api/suppliers") {
+    const store = await readSuppliersStore();
+    sendJson(res, 200, store.fornecedores);
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/audit") {
+    const store = await readAuditStore();
+    sendJson(res, 200, store.auditoria);
     return;
   }
 
@@ -1560,11 +1576,6 @@ async function handleApi(req, res, url) {
     return;
   }
 
-  if (req.method === "GET" && url.pathname === "/api/suppliers") {
-    sendJson(res, 200, store.fornecedores);
-    return;
-  }
-
   if (req.method === "POST" && url.pathname === "/api/suppliers") {
     if (!["admin", "almoxarifado"].includes(role)) {
       sendJson(res, 403, { error: "Seu perfil possui acesso somente para consulta." });
@@ -1598,11 +1609,6 @@ async function handleApi(req, res, url) {
       metadata: { supplierId: updated.id, created: index < 0 }
     })]);
     sendJson(res, index >= 0 ? 200 : 201, updated);
-    return;
-  }
-
-  if (req.method === "GET" && url.pathname === "/api/audit") {
-    sendJson(res, 200, store.auditoria);
     return;
   }
 
@@ -2585,7 +2591,7 @@ async function emailTemplateAttachments(template = {}) {
       attachments.push({
         fileName: attachment.fileName || "anexo",
         mimeType: attachment.mimeType || contentTypeForPath(fullPath),
-        content: await readFile(fullPath)
+        content: await readPrivateUpload(fullPath, MAX_UPLOAD_BYTES)
       });
     } catch {
       // Missing attachments should not block the notification itself.
@@ -2960,10 +2966,6 @@ function attachmentByteSize(attachment) {
   return Number.isSafeInteger(value) && value > 0 ? value : 0;
 }
 
-function totalAttachmentBytes(attachments = []) {
-  return attachments.reduce((total, attachment) => total + attachmentByteSize(attachment), 0);
-}
-
 export async function totalStoredAttachmentBytes(attachments = [], maximumBytes = Number.MAX_SAFE_INTEGER) {
   let total = 0;
   for (const attachment of attachments || []) {
@@ -2980,15 +2982,24 @@ export async function totalStoredAttachmentBytes(attachments = [], maximumBytes 
 async function storedAttachmentByteSize(attachment) {
   if (!attachment) return 0;
   const declaredSize = attachmentByteSize(attachment);
-  if (declaredSize) return declaredSize;
   const fullPath = uploadReferenceFilePath(attachment.path);
-  if (!fullPath) return 0;
+  if (!fullPath) return declaredSize;
   try {
     return (await privateFileMetadata(fullPath, { root: UPLOAD_ROOT, mode: 0o600 })).size;
   } catch (error) {
-    if (error.code === "ENOENT") return 0;
+    // A legacy record can reference a removed upload. Preserve its declared
+    // size so inconsistent metadata cannot be used to bypass quotas.
+    if (error.code === "ENOENT") return declaredSize;
     throw error;
   }
+}
+
+async function readPrivateUpload(fullPath, maximumBytes) {
+  return (await readRegularFileLimited(fullPath, {
+    root: UPLOAD_ROOT,
+    mode: 0o600,
+    maximumBytes
+  })).content;
 }
 
 export function stableLegacyId(prefix, ...parts) {
@@ -3433,7 +3444,7 @@ async function processDocumentEntries(processo) {
         const fullPath = normalize(join(UPLOAD_ROOT, relative));
         if (!isPathWithin(UPLOAD_ROOT, fullPath)) continue;
         try {
-          const data = await readFile(fullPath);
+          const data = await readPrivateUpload(fullPath, MAX_UPLOAD_BYTES);
           enforceAggregateDownloadLimit(entries, data);
           entries.push({
             name: `documentos/${safeName(key)}-${index + 1}-${safeName(item.fileName || "documento.pdf")}`,
@@ -3451,7 +3462,7 @@ async function processDocumentEntries(processo) {
     const fullPath = normalize(join(UPLOAD_ROOT, relative));
     if (!isPathWithin(UPLOAD_ROOT, fullPath)) continue;
     try {
-      const data = await readFile(fullPath);
+      const data = await readPrivateUpload(fullPath, MAX_UPLOAD_BYTES);
       enforceAggregateDownloadLimit(entries, data);
       entries.push({
         name: `documentos/${safeName(key)}-${safeName(value.fileName || "documento.pdf")}`,
