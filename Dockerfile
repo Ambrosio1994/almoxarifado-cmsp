@@ -8,6 +8,7 @@ RUN npm ci --omit=dev
 FROM base AS runtime
 ENV NODE_ENV=production
 ENV PORT=3000
+ENV APP_TIME_ZONE=America/Sao_Paulo
 ENV UPLOAD_STORAGE_ROOT=/data/uploads
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules

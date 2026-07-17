@@ -6,7 +6,7 @@ import {
 } from "./password-fields.js";
 
 const state = {
-  meta: { status: [], filtrosRapidos: [] },
+  meta: { status: [], filtrosRapidos: [], transicoes: {} },
   processos: [],
   dashboardMetrics: {},
   dashboardCharts: { execucaoMensal: [], distribuicaoStatus: [] },
@@ -65,6 +65,7 @@ const loginForm = document.querySelector("#loginForm");
 const passwordStep = document.querySelector("#passwordStep");
 const emailSubmitButton = document.querySelector("#emailSubmitButton");
 const authMessage = document.querySelector("#authMessage");
+const publicConsultButton = document.querySelector("#publicConsultButton");
 const logoutButton = document.querySelector("#logoutButton");
 const statusFilter = document.querySelector("#statusFilter");
 const quickFilter = document.querySelector("#quickFilter");
@@ -75,6 +76,7 @@ const processDialog = document.querySelector("#processDialog");
 const processDialogTitle = document.querySelector("#processDialogTitle");
 const newProcessButton = document.querySelector("#newProcessButton");
 const downloadProcessesButton = document.querySelector("#downloadProcessesButton");
+const refreshProcessesButton = document.querySelector("#refreshProcessesButton");
 const processExportFormat = document.querySelector("#processExportFormat");
 const addMaterialButton = document.querySelector("#addMaterialButton");
 const materialsList = document.querySelector("#materialsList");
@@ -93,6 +95,10 @@ const deliveryDialogTitle = document.querySelector("#deliveryDialogTitle");
 const deliveryMaterials = document.querySelector("#deliveryMaterials");
 const deliveryMessage = document.querySelector("#deliveryMessage");
 const cancelDelivery = document.querySelector("#cancelDelivery");
+const cancelProcessDialog = document.querySelector("#cancelProcessDialog");
+const cancelProcessForm = document.querySelector("#cancelProcessForm");
+const cancelProcessMessage = document.querySelector("#cancelProcessMessage");
+const closeCancelProcess = document.querySelector("#closeCancelProcess");
 const processListView = document.querySelector("#processListView");
 const processDetailView = document.querySelector("#processDetailView");
 const backToProcesses = document.querySelector("#backToProcesses");
@@ -204,7 +210,23 @@ function bindAuthEvents() {
     }
   });
 
+  publicConsultButton?.addEventListener("click", async () => {
+    setButtonBusy(publicConsultButton, true, "Abrindo...");
+    try {
+      setCurrentUser({ name: "Consulta publica", role: "publico", publico: true });
+      showApp();
+      await bootSafely();
+    } finally {
+      setButtonBusy(publicConsultButton, false);
+    }
+  });
+
   logoutButton.addEventListener("click", async () => {
+    if (currentUser?.publico) {
+      clearClientSession();
+      showAuth();
+      return;
+    }
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 8000);
     const logoutRequest = fetch("/auth/logout", {
@@ -232,11 +254,13 @@ function bindAuthEvents() {
   });
 
   sidebarProfile?.addEventListener("click", () => {
+    if (currentUser?.publico) return;
     if (changePasswordDialog && !changePasswordDialog.open) changePasswordDialog.showModal();
   });
   sidebarProfile?.addEventListener("keydown", (event) => {
     if (["Enter", " "].includes(event.key)) {
       event.preventDefault();
+      if (currentUser?.publico) return;
       if (changePasswordDialog && !changePasswordDialog.open) changePasswordDialog.showModal();
     }
   });
@@ -350,6 +374,7 @@ function clearClientSession() {
     dialog,
     editObservationDialog,
     deliveryDialog,
+    cancelProcessDialog,
     downloadDialog,
     documentMetadataDialog,
     supplierInfoDialog,
@@ -367,7 +392,7 @@ function clearClientSession() {
 }
 
 function resetApplicationData() {
-  state.meta = { status: [], filtrosRapidos: [] };
+  state.meta = { status: [], filtrosRapidos: [], transicoes: {} };
   state.processos = [];
   state.dashboardMetrics = {};
   state.dashboardCharts = { execucaoMensal: [], distribuicaoStatus: [] };
@@ -420,11 +445,13 @@ function handleUnauthorized() {
 
 function setCurrentUser(user) {
   currentUser = {
-    email: user.email,
+    id: user.id || "",
+    email: user.email || "",
     name: user.nome || user.name || user.email,
     role: user.role || "almoxarifado",
     foto: user.foto || "",
-    precisaDefinirSenha: Boolean(user.precisaDefinirSenha)
+    precisaDefinirSenha: Boolean(user.precisaDefinirSenha),
+    publico: Boolean(user.publico)
   };
   applyRoleVisibility();
   renderSidebarProfile();
@@ -514,12 +541,21 @@ function renderSidebarProfile() {
 
 function applyRoleVisibility() {
   const role = currentUser?.role || "";
+  const isPublic = role === "publico";
+  document.querySelector('[data-section="suppliers"]')?.classList.toggle("hidden", isPublic);
   document.querySelector('[data-section="settings"]')?.classList.toggle("hidden", role !== "admin");
   document.querySelector('[data-section="users"]')?.classList.toggle("hidden", role !== "admin");
   document.querySelector('[data-section="audit"]')?.classList.toggle("hidden", !["admin", "auditor"].includes(role));
   document.querySelector('[data-detail-tab="emails"]')?.classList.toggle("hidden", !["admin", "auditor"].includes(role));
-  newProcessButton?.classList.toggle("hidden", role === "auditor");
-  observationForm?.classList.toggle("hidden", role === "auditor");
+  document.querySelectorAll('[data-detail-tab]:not([data-detail-tab="general"]):not([data-detail-tab="emails"])').forEach((tab) => {
+    tab.classList.toggle("hidden", isPublic);
+  });
+  newProcessButton?.classList.toggle("hidden", ["auditor", "publico"].includes(role));
+  observationForm?.classList.toggle("hidden", ["auditor", "publico"].includes(role));
+  downloadProcessButton?.classList.toggle("hidden", isPublic);
+  if (logoutButton) logoutButton.textContent = isPublic ? "Entrar" : "Sair";
+  sidebarProfile?.setAttribute("aria-label", isPublic ? "Consulta publica" : "Abrir configuracoes da conta");
+  if (sidebarProfile) sidebarProfile.tabIndex = isPublic ? -1 : 0;
 }
 
 sidebarAvatarImage?.addEventListener("error", () => {
@@ -626,7 +662,7 @@ async function renderProcessesView() {
   if (!state.processesLoaded) {
     table.innerHTML = '<tr class="empty-table-row"><td colspan="10" role="status">Carregando processos...</td></tr>';
   }
-  await ensureProcessesLoaded();
+  await ensureProcessesLoaded({ force: true });
   applyProcessFilters();
   renderProcessData();
 }
@@ -698,7 +734,8 @@ async function downloadProcesses() {
   params.set("format", format);
   setButtonBusy(downloadProcessesButton, true, "Gerando...");
   try {
-    const response = await fetch(`/api/processes/download?${params}`, { credentials: "same-origin" });
+    const route = currentUser?.publico ? "/api/processes/export" : "/api/processes/download";
+    const response = await fetch(`${route}?${params}`, { credentials: "same-origin" });
     if (response.status === 401) {
       handleUnauthorized();
       return;
@@ -802,9 +839,19 @@ processForm.addEventListener("submit", async (event) => {
   }
 });
 
-document.querySelector("#clearForm").addEventListener("click", clearForm);
+document.querySelector("#clearForm").addEventListener("click", () => clearForm({ preserveIdentity: true }));
 newProcessButton.addEventListener("click", () => openProcessDialog());
 downloadProcessesButton?.addEventListener("click", downloadProcesses);
+refreshProcessesButton?.addEventListener("click", async () => {
+  setButtonBusy(refreshProcessesButton, true, "Atualizando...");
+  try {
+    await refresh({ reload: true, updateDashboard: false });
+  } catch (error) {
+    showAppError(error.message || "Nao foi possivel atualizar os empenhos.");
+  } finally {
+    setButtonBusy(refreshProcessesButton, false);
+  }
+});
 addMaterialButton.addEventListener("click", () => addMaterialRow());
 searchInput.addEventListener("input", debounce(() => refresh({ reload: false }), 180));
 statusFilter.addEventListener("change", () => refresh({ reload: false }));
@@ -1053,6 +1100,17 @@ detailPanel.addEventListener("click", async (event) => {
       await registerPartialDelivery();
     }
 
+    if (event.target.dataset.cancelProcess) {
+      cancelProcessForm?.reset();
+      if (cancelProcessMessage) cancelProcessMessage.textContent = "";
+      cancelProcessDialog?.showModal();
+      cancelProcessForm?.elements.motivo?.focus();
+    }
+
+    if (event.target.dataset.inactivateProcess) {
+      await inactivateSelectedProcess();
+    }
+
     if (event.target.dataset.showNewData) {
       const step = nextProcessStep(state.selectedProcess);
       if (["Entrega parcial", "Entregue"].includes(step?.status)) {
@@ -1191,6 +1249,35 @@ deliveryForm?.addEventListener("input", (event) => {
   event.target.removeAttribute("aria-invalid");
   deliveryMessage.textContent = "";
 });
+closeCancelProcess?.addEventListener("click", () => cancelProcessDialog?.close());
+cancelProcessDialog?.addEventListener("close", () => {
+  cancelProcessForm?.reset();
+  if (cancelProcessMessage) cancelProcessMessage.textContent = "";
+});
+cancelProcessForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const processo = state.selectedProcess;
+  const motivo = String(new FormData(event.currentTarget).get("motivo") || "").trim();
+  if (!processo || !motivo || motivo.length > 1000) {
+    cancelProcessMessage.textContent = "Informe um motivo de anulacao com ate 1000 caracteres.";
+    return;
+  }
+  setFormBusy(event.currentTarget, true, "Anulando...");
+  try {
+    const updated = await api(`/api/processes/${processo.id}/cancel`, {
+      method: "POST",
+      body: JSON.stringify({ motivo })
+    });
+    state.selectedProcess = updated;
+    cancelProcessDialog.close();
+    renderProcessDetail();
+    await refreshAfterMutation("O empenho foi anulado");
+  } catch (error) {
+    cancelProcessMessage.textContent = error.message || "Nao foi possivel anular o empenho.";
+  } finally {
+    setFormBusy(event.currentTarget, false);
+  }
+});
 
 function fillForm(processo) {
   processForm.elements.id.value = processo.id;
@@ -1206,12 +1293,15 @@ function fillForm(processo) {
   formMessage.textContent = "Editando processo selecionado.";
 }
 
-function clearForm() {
+function clearForm({ preserveIdentity = false } = {}) {
+  const id = preserveIdentity ? processForm.elements.id.value : "";
+  const versao = preserveIdentity ? processForm.elements.versao.value : "";
   processForm.reset();
-  processForm.elements.id.value = "";
-  processForm.elements.versao.value = "";
+  processForm.elements.id.value = id;
+  processForm.elements.versao.value = versao;
   formMessage.textContent = "";
   renderMaterialRows();
+  if (id) formMessage.textContent = "Campos limpos. O salvamento continuara alterando o processo selecionado.";
 }
 
 function openProcessDialog(processo = null) {
@@ -1242,6 +1332,11 @@ async function openProcessDetail(processo, returnSection = "processes") {
   if (sectionTitle) sectionTitle.textContent = "Empenhos";
   detailTabs.forEach((tab) => setTabActive(tab, tab.dataset.detailTab === "general"));
   renderProcessDetail();
+
+  if (currentUser?.publico) {
+    detailController = null;
+    return;
+  }
 
   void ensureSuppliersLoaded().then(() => {
     if (sequence === detailSequence && state.selectedProcess?.id === processo.id) renderProcessDetail();
@@ -1325,12 +1420,14 @@ function renderGeneralModule(processo) {
       ${detailField("Data de envio para liquidacao", dateCell(processo.dataEnvioLiquidacao))}
       ${detailField("Data de liquidacao", dateCell(processo.dataLiquidacao))}
       ${detailField("Data de pagamento", dateCell(processo.dataPagamento))}
-      ${detailField("Dias decorridos", deadlineDate(processo) && !["Entregue", "Liquidado", "Pago", "Anulado"].includes(processo.status) ? `${processo.diasDecorridos} dias` : "-")}
+      ${detailField("Dias decorridos", deadlineDate(processo) && !hasReachedDeliveryInUi(processo) && processo.status !== "Anulado" ? `${processo.diasDecorridos} dias` : "-")}
       ${processo.status === "Anulado" ? detailField("Motivo da anulacao", processo.motivoAnulacao) : ""}
     </div>
     <div class="detail-actions">
       ${canEditGeneralInUi(processo) ? '<button type="button" class="detail-primary-action" data-open-edit="true">Editar dados do processo</button>' : ""}
       ${newDataButton(processo)}
+      ${canCancelProcessInUi(processo) ? '<button type="button" class="secondary danger-action" data-cancel-process="true">Anular empenho</button>' : ""}
+      ${canInactivateProcessInUi(processo) ? '<button type="button" class="secondary danger-action" data-inactivate-process="true">Inativar empenho</button>' : ""}
     </div>
     ${newDataPanel(processo)}
   `;
@@ -1358,7 +1455,7 @@ function renderDocumentsModule(processo) {
           </div>
           <div class="document-actions">
             ${doc.path ? "" : `<button type="button" class="secondary" data-attach-document="${key}" ${canAttachDocumentInUi(processo, key) ? "" : "disabled"}>Anexar</button>`}
-            <button type="button" class="secondary danger-action" ${doc.path && canAttachDocumentInUi(processo, key) ? `data-remove-document="${key}"` : "disabled"}>Remover</button>
+            <button type="button" class="secondary danger-action" ${doc.path && canRemoveDocumentInUi(processo, key) ? `data-remove-document="${key}"` : "disabled"}>Remover</button>
             <button type="button" class="secondary" ${doc.path ? `data-download-document="${escapeAttribute(doc.path)}"` : "disabled"}>Baixar</button>
           </div>
         </article>
@@ -1372,7 +1469,7 @@ function renderDocumentsModule(processo) {
               <span>${escapeHtml(doc.fileName)}</span>
             </div>
             <div class="document-actions">
-              <button type="button" class="secondary danger-action" ${canAttachDocumentInUi(processo, "complementares") ? `data-remove-document="complementares:${index}"` : "disabled"}>Remover</button>
+              <button type="button" class="secondary danger-action" ${canRemoveDocumentInUi(processo, "complementares") ? `data-remove-document="complementares:${index}"` : "disabled"}>Remover</button>
               <button type="button" class="secondary" data-download-document="${escapeAttribute(doc.path)}">Baixar</button>
             </div>
           </article>
@@ -1404,16 +1501,29 @@ function renderTimelineModule(processo) {
 }
 
 function renderDeliveriesModule(processo) {
-  const delivered = ["Entrega parcial", "Entregue", "Liquidado", "Pago"].includes(processo.status);
+  const deliveries = Array.isArray(processo.entregas) ? processo.entregas : [];
   return `
     <div class="module-list">
       <article class="module-row">
         <div>
-          <strong>${delivered ? "Entrega registrada" : "Nenhuma entrega registrada"}</strong>
-          <span>${delivered ? `Data: ${dateCell(processo.dataEntrega)}` : "Use este modulo para registrar quantidade entregue, pendente e data da entrega."}</span>
+          <strong>${deliveries.length ? `${deliveries.length} entrega(s) registrada(s)` : "Nenhuma entrega registrada"}</strong>
+          <span>${deliveries.length ? `Ultima entrega: ${dateCell(processo.dataEntrega)}` : "Use este modulo para registrar quantidade entregue, pendente e data da entrega."}</span>
         </div>
         ${canRegisterDeliveryInUi(processo) ? '<button type="button" class="secondary" data-register-partial-delivery="true">Registrar entrega parcial</button>' : ""}
       </article>
+      ${deliveries.map((entrega, deliveryIndex) => `
+        <article class="module-row delivery-history-item">
+          <div>
+            <strong>Entrega ${deliveryIndex + 1} · ${dateCell(entrega.data)}</strong>
+            <span>${escapeHtml((entrega.itens || []).map((item) => {
+              const material = deliveryMaterialForItem(processo, item);
+              return `${material?.descricao || "Material"}: ${formatQuantity(item.quantidade)}`;
+            }).join("; ") || "Sem itens informados")}</span>
+            <span>Recebido por: ${escapeHtml(entrega.recebidoPor || "Nao informado")}</span>
+            ${entrega.observacao ? `<span>Observacao: ${escapeHtml(entrega.observacao)}</span>` : ""}
+          </div>
+        </article>
+      `).join("")}
     </div>
   `;
 }
@@ -1511,9 +1621,9 @@ async function refreshAudit() {
 
 async function attachDocument(documentKey) {
   if (!state.selectedProcess) return;
-  const file = await pickDocumentFile();
+  const file = await pickDocumentFile(documentKey);
   if (!file) return;
-  if (!validateSelectedDocument(file)) return;
+  if (!validateSelectedDocument(file, documentKey)) return;
   if (documentKey === "complementares") {
     openComplementaryDocumentForm(file);
     return;
@@ -1530,8 +1640,8 @@ async function attachDocument(documentKey) {
       })
     });
     state.selectedProcess = updatedProcess;
-    await refresh();
     renderProcessDetail();
+    await refreshAfterMutation("O documento foi anexado");
   } catch (error) {
     alert(error.message || "Nao foi possivel anexar o documento.");
   }
@@ -1553,6 +1663,7 @@ async function saveComplementaryDocument() {
   const data = Object.fromEntries(new FormData(documentMetadataForm));
   const titulo = String(data.titulo || "").trim();
   if (!titulo) return;
+  setFormBusy(documentMetadataForm, true, "Salvando...");
   try {
     const contentBase64 = await fileToBase64(file);
     const updatedProcess = await api(`/api/processes/${state.selectedProcess.id}/documents`, {
@@ -1569,10 +1680,12 @@ async function saveComplementaryDocument() {
     state.pendingDocumentFile = null;
     documentMetadataDialog.close();
     state.selectedProcess = updatedProcess;
-    await refresh();
     renderProcessDetail();
+    await refreshAfterMutation("O documento foi anexado");
   } catch (error) {
     alert(error.message || "Nao foi possivel anexar o documento.");
+  } finally {
+    setFormBusy(documentMetadataForm, false);
   }
 }
 
@@ -1583,12 +1696,11 @@ async function removeDocument(documentKey) {
     method: "DELETE"
   });
   state.selectedProcess = updatedProcess;
-  await refresh();
-  await refreshAudit();
   renderProcessDetail();
+  await refreshAfterMutation("O documento foi removido");
 }
 
-function pickDocumentFile() {
+function pickDocumentFile(documentKey = "complementares") {
   return new Promise((resolve) => {
     const input = document.createElement("input");
     let settled = false;
@@ -1598,7 +1710,9 @@ function pickDocumentFile() {
       resolve(file || null);
     };
     input.type = "file";
-    input.accept = ".pdf,.xlsx,.xls,.csv,.docx,.doc,.odt,.ods,.txt,.png,.jpg,.jpeg,application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/msword";
+    input.accept = documentKey === "complementares"
+      ? ".pdf,.xlsx,.xls,.csv,.docx,.doc,.odt,.ods,.txt,.png,.jpg,.jpeg,application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/msword"
+      : ".pdf,application/pdf";
     input.addEventListener("change", () => finish(input.files?.[0]), { once: true });
     input.addEventListener("cancel", () => finish(null), { once: true });
     window.addEventListener("focus", () => setTimeout(() => {
@@ -1608,10 +1722,16 @@ function pickDocumentFile() {
   });
 }
 
-function validateSelectedDocument(file) {
-  if (file.size <= MAX_DOCUMENT_FILE_BYTES) return true;
-  alert("O arquivo deve ter no maximo 15 MB.");
-  return false;
+function validateSelectedDocument(file, documentKey = "complementares") {
+  if (file.size > MAX_DOCUMENT_FILE_BYTES) {
+    alert("O arquivo deve ter no maximo 15 MB.");
+    return false;
+  }
+  if (documentKey !== "complementares" && file.type !== "application/pdf" && !String(file.name || "").toLowerCase().endsWith(".pdf")) {
+    alert("Processo SPED, Nota de Empenho e Nota Fiscal devem ser enviados em PDF.");
+    return false;
+  }
+  return true;
 }
 
 function fileToBase64(file) {
@@ -1669,24 +1789,29 @@ async function saveNewProcessData() {
     openDeliveryDialog(dateField?.value || "", status === "Entregue");
     return;
   }
-  const date = normalizeDateInput(dateField?.value);
   const step = nextProcessStep(state.selectedProcess);
-  if (!status || !date) {
+  const allowedValue = state.meta.transicoes?.[state.selectedProcess.status];
+  const allowed = Array.isArray(allowedValue) ? allowedValue : (allowedValue ? [allowedValue] : []);
+  if (!step || status !== step.status || (allowed.length && !allowed.includes(status))) {
+    alert("A proxima etapa mudou. Atualize a tela e tente novamente.");
+    return;
+  }
+  const date = step.field ? normalizeDateInput(dateField?.value) : "";
+  if (!status || (step.field && !date)) {
     alert("Informe a data para salvar.");
     return;
   }
 
   const overrides = { status };
-  if (step?.field) overrides[step.field] = date;
+  if (step.field) overrides[step.field] = date;
 
   const updatedProcess = await api(`/api/processes/${state.selectedProcess.id}`, {
     method: "PUT",
     body: JSON.stringify(processUpdatePayload(overrides))
   });
   state.selectedProcess = updatedProcess;
-  await refresh();
-  await refreshAudit();
   renderProcessDetail();
+  await refreshAfterMutation("A etapa foi salva");
 }
 function registerPartialDelivery() {
   openDeliveryDialog(state.selectedProcess?.dataEntrega || "", false);
@@ -1724,13 +1849,24 @@ function openDeliveryDialog(date = "", complete = false) {
 function deliveryBalanceRows(processo) {
   const delivered = new Map();
   (processo.entregas || []).forEach((entrega) => (entrega.itens || []).forEach((item) => {
-    delivered.set(item.materialIndex, (delivered.get(item.materialIndex) || 0) + Number(item.quantidade || 0));
+    const material = deliveryMaterialForItem(processo, item);
+    const key = material?.id || `index:${item.materialIndex}`;
+    delivered.set(key, (delivered.get(key) || 0) + Number(item.quantidade || 0));
   }));
   return (processo.materiais || []).map((material, materialIndex) => ({
     material,
     materialIndex,
-    remaining: Math.max(0, Number(material.quantidade || 0) - (delivered.get(materialIndex) || 0))
+    remaining: Math.max(0, Number(material.quantidade || 0) - (delivered.get(material.id || `index:${materialIndex}`) || 0))
   })).filter((item) => item.remaining > 0);
+}
+
+function deliveryMaterialForItem(processo, item = {}) {
+  const materials = processo.materiais || [];
+  if (item.materialId) {
+    const byId = materials.find((material) => material.id === item.materialId);
+    if (byId) return byId;
+  }
+  return materials[Number(item.materialIndex)] || null;
 }
 
 async function saveDeliveryFromDialog(event) {
@@ -1772,7 +1908,7 @@ async function saveDeliveryFromDialog(event) {
       firstInvalidInput ||= input;
       return;
     }
-    if (quantidade > 0) itens.push({ materialIndex, quantidade });
+    if (quantidade > 0) itens.push({ materialIndex, materialId: balance.material.id, quantidade });
   });
   if (firstInvalidInput) {
     deliveryMessage.textContent = "Revise as quantidades: cada valor deve ser numerico e nao pode superar o saldo indicado.";
@@ -1790,7 +1926,7 @@ async function saveDeliveryFromDialog(event) {
   try {
     updatedProcess = await api(`/api/processes/${processo.id}/deliveries`, {
       method: "POST",
-      body: JSON.stringify({ data, itens })
+      body: JSON.stringify({ data, itens, observacao: String(deliveryForm.elements.observacao?.value || "").trim() })
     });
   } catch (error) {
     deliveryMessage.textContent = error.message || "Nao foi possivel registrar a entrega.";
@@ -1879,6 +2015,7 @@ function escapeHtml(value = "") {
 }
 
 async function openSection(section) {
+  if (currentUser?.publico && !["dashboard", "processes"].includes(section)) section = "dashboard";
   if (["users", "settings"].includes(section) && currentUser?.role !== "admin") section = "dashboard";
   if (section === "audit" && !["admin", "auditor"].includes(currentUser?.role)) section = "dashboard";
   state.activeSection = section;
@@ -2150,9 +2287,9 @@ function newDataPanel(processo) {
     <div class="new-data-panel hidden" data-new-data-panel>
       <input type="hidden" data-detail-status value="${step.status}">
       <span class="new-data-title">${step.title}</span>
-      <label>Data
+      ${step.field ? `<label>Data
         <input type="text" inputmode="numeric" placeholder="DD-MM-AAAA" pattern="\\d{2}-\\d{2}-\\d{4}" maxlength="10" data-detail-date required>
-      </label>
+      </label>` : ""}
       <button type="button" class="secondary" data-update-status="true">Salvar</button>
     </div>
   `;
@@ -2168,10 +2305,9 @@ function nextProcessStep(processo) {
       field: "dataEnvioFornecedor"
     },
     "Empenho enviado ao fornecedor": {
-      button: "Registrar entrega",
-      title: "Informe a data de entrega",
-      status: "Entregue",
-      field: "dataEntrega"
+      button: "Enviar para aguardando entrega",
+      title: "Confirme que o empenho esta aguardando entrega",
+      status: "Aguardando entrega"
     },
     "Aguardando entrega": {
       button: "Registrar entrega",
@@ -2186,10 +2322,9 @@ function nextProcessStep(processo) {
       field: "dataEntrega"
     },
     "Entregue": {
-      button: "Registrar envio para liquidacao",
-      title: "Informe a data de envio para liquidacao",
-      status: "Enviado para liquidacao",
-      field: "dataEnvioLiquidacao"
+      button: "Preparar envio para liquidacao",
+      title: "Confirme que o processo esta aguardando envio para liquidacao",
+      status: "Aguardando envio para liquidacao"
     },
     "Aguardando envio para liquidacao": {
       button: "Registrar envio para liquidacao",
@@ -2214,10 +2349,48 @@ function nextProcessStep(processo) {
 }
 function canEditGeneralInUi(processo) {
   if (!processo || processo.status === "Anulado") return false;
-  if (currentUser.role === "auditor") return false;
+  if (["auditor", "publico"].includes(currentUser.role)) return false;
   if (processo.status === "Pago") return false;
   if (processo.status === "Liquidado") return isCurrentUserAdmin();
   return true;
+}
+
+function canCancelProcessInUi(processo) {
+  if (!processo || processo.inativo || ["Anulado", "Pago"].includes(processo.status)) return false;
+  if (isCurrentUserAdmin()) return true;
+  if (currentUser?.role !== "almoxarifado" || processo.status === "Liquidado") return false;
+  if (processo.criadoPorId) return Boolean(currentUser?.id) && processo.criadoPorId === currentUser.id;
+  return Boolean(processo.criadoPorEmail && currentUser?.email && processo.criadoPorEmail === currentUser.email);
+}
+
+function canInactivateProcessInUi(processo) {
+  return Boolean(processo && !processo.inativo && processo.status !== "Pago" && isCurrentUserAdmin());
+}
+
+async function inactivateSelectedProcess() {
+  const processo = state.selectedProcess;
+  if (!canInactivateProcessInUi(processo)) return;
+  if (!confirm("Inativar este empenho? Ele deixara de aparecer nas listas ativas.")) return;
+  const updated = await api(`/api/processes/${processo.id}/inactivate`, { method: "POST" });
+  state.selectedProcess = updated;
+  closeProcessDetail();
+  await refreshAfterMutation("O empenho foi inativado");
+}
+
+async function refreshAfterMutation(successPrefix = "A alteracao foi salva") {
+  try {
+    await refresh();
+  } catch (error) {
+    showAppError(`${successPrefix}, mas a lista nao foi atualizada: ${error.message}`);
+    if (state.selectedProcess) renderProcessDetail();
+    return;
+  }
+  try {
+    await refreshAudit();
+  } catch (error) {
+    showAppError(`${successPrefix} e a lista foi atualizada, mas a auditoria nao: ${error.message}`);
+  }
+  if (state.selectedProcess) renderProcessDetail();
 }
 
 function processById(processId) {
@@ -2237,10 +2410,18 @@ function canRegisterDeliveryInUi(processo) {
 }
 
 function canAttachDocumentInUi(processo, documentKey) {
-  if (!processo || processo.inativo || ["Anulado", "Pago"].includes(processo.status) || !documentKey || currentUser.role === "auditor") return false;
+  if (!processo || processo.inativo || ["Anulado", "Pago"].includes(processo.status) || !documentKey || ["auditor", "publico"].includes(currentUser.role)) return false;
+  if (processo.status === "Liquidado" && !isCurrentUserAdmin()) return false;
   if (documentKey === "notaFiscal") {
     return ["Entrega parcial", "Entregue", "Aguardando envio para liquidacao", "Enviado para liquidacao", "Liquidado"].includes(processo.status);
   }
+  return true;
+}
+
+function canRemoveDocumentInUi(processo, documentKey) {
+  if (!canAttachDocumentInUi(processo, documentKey)) return false;
+  const required = ["processoSped", "notaEmpenho", "notaFiscal"].includes(String(documentKey || "").split(":")[0]);
+  if (required && ["Enviado para liquidacao", "Liquidado", "Pago"].includes(processo.status)) return false;
   return true;
 }
 
@@ -2995,10 +3176,11 @@ function renderMaterialRows(materiais = [{ descricao: "", valorUnitario: "", qua
 function addMaterialRow(material = { descricao: "", valorUnitario: "", quantidade: "" }) {
   const row = document.createElement("div");
   row.className = "material-row";
+  row.dataset.materialId = material.id || "";
   row.innerHTML = `
     <label>Descricao <input data-material-field="descricao" maxlength="100" value="${escapeAttribute(material.descricao || "")}"></label>
     <label>Valor unitario <input data-material-field="valorUnitario" type="number" min="0" step="0.01" value="${Number(material.valorUnitario || 0) || ""}"></label>
-    <label>Quantidade <input data-material-field="quantidade" type="number" min="0" step="1" value="${Number(material.quantidade || 0) || ""}"></label>
+    <label>Quantidade <input data-material-field="quantidade" type="number" min="0" step="any" value="${Number(material.quantidade || 0) || ""}"></label>
     <button type="button" class="secondary remove-material" data-remove-material="true">Remover</button>
   `;
   materialsList.append(row);
@@ -3011,6 +3193,7 @@ function ensureOneMaterialRow() {
 function readMaterials() {
   return [...materialsList.querySelectorAll(".material-row")]
     .map((row) => ({
+      ...(row.dataset.materialId ? { id: row.dataset.materialId } : {}),
       descricao: row.querySelector('[data-material-field="descricao"]').value.trim(),
       valorUnitario: Number(row.querySelector('[data-material-field="valorUnitario"]').value || 0),
       quantidade: Number(row.querySelector('[data-material-field="quantidade"]').value || 0)
@@ -3125,7 +3308,11 @@ function statusBadges(processo) {
 }
 
 function isOverdue(processo) {
-  return processo.diasDecorridos > 30 && !["Entregue", "Liquidado", "Pago", "Anulado"].includes(processo.status);
+  return processo.diasDecorridos > 30 && !hasReachedDeliveryInUi(processo) && processo.status !== "Anulado";
+}
+
+function hasReachedDeliveryInUi(processo = {}) {
+  return ["Entregue", "Aguardando envio para liquidacao", "Enviado para liquidacao", "Liquidado", "Pago"].includes(processo.status);
 }
 
 function overdueDays(processo) {
@@ -3177,14 +3364,14 @@ function passwordPolicyMessage() {
 
 function daysCell(processo) {
   if (!deadlineDate(processo)) return "-";
-  if (["Entregue", "Liquidado", "Pago", "Anulado"].includes(processo.status)) return "-";
+  if (hasReachedDeliveryInUi(processo) || processo.status === "Anulado") return "-";
   return `<span class="days ${processo.faixaPrazo}">${processo.diasDecorridos}</span>`;
 }
 
 function timelineEvents(processo) {
   const explicitEvents = [
     processo.status === "Entrega parcial" && processo.dataEntrega && { label: "Entrega parcial", date: processo.dataEntrega },
-    ["Entregue", "Liquidado", "Pago"].includes(processo.status) && processo.dataEntrega && { label: "Entregue", date: processo.dataEntrega },
+    hasReachedDeliveryInUi(processo) && processo.dataEntrega && { label: "Entregue", date: processo.dataEntrega },
     processo.dataEnvioLiquidacao && { label: "Enviado para liquidacao", date: processo.dataEnvioLiquidacao },
     ["Liquidado", "Pago"].includes(processo.status) && { label: "Liquidado", date: processo.dataLiquidacao || processo.dataEnvioLiquidacao || processo.atualizadoEm },
     processo.status === "Pago" && { label: "Pago", date: processo.dataPagamento || processo.atualizadoEm },

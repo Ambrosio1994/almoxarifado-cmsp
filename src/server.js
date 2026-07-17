@@ -13,19 +13,24 @@ import {
   canAttachDocument,
   canCancelProcess,
   canEditProcess,
+  canRemoveDocument,
   createAuditEntry,
+  dateKeyInTimeZone,
   dashboardAvailableYears,
   dashboardMetrics,
   dashboardMonthlyExecution,
   dashboardStatusDistribution,
-  enrichProcess,
+  enrichProcess as enrichDomainProcess,
   filterProcesses,
+  hasProcessReachedDelivery,
   isPdfDocument,
   isPublicConsultation,
   mutationRequiresAuthenticatedUser,
+  isValidStatusTransition,
   processDeadlineDate,
   processHasRequiredDocuments,
   QUICK_FILTERS,
+  PROCESS_TRANSITIONS,
   REQUIRED_DOCUMENT_KEYS,
   summarizeMaterials,
   STATUS,
@@ -92,6 +97,7 @@ const SMTP_AUTH_PASSWORD = EMAIL_CONFIGURATION.authPassword;
 const EMAIL_FROM_ADDRESS = EMAIL_CONFIGURATION.fromAddress;
 const EMAIL_FROM_NAME = process.env.EMAIL_FROM_NAME || "Almoxarifado CMSP";
 const EMAIL_CHECK_INTERVAL_MS = positiveRuntimeInteger(process.env.EMAIL_CHECK_INTERVAL_MS, 60 * 60 * 1000);
+const APP_TIME_ZONE = process.env.APP_TIME_ZONE || "America/Sao_Paulo";
 const EMAIL_SCHEDULER_START_DELAY_MS = 10_000;
 const EMAIL_SCHEDULER_GRACE_PERIOD_MS = Math.max(60_000, EMAIL_SCHEDULER_START_DELAY_MS * 2);
 const EMAIL_SCHEDULER_STALE_AFTER_MS = EMAIL_CHECK_INTERVAL_MS + EMAIL_SCHEDULER_GRACE_PERIOD_MS;
@@ -121,6 +127,8 @@ const MAX_PROCESS_UPLOAD_BYTES = positiveRuntimeInteger(process.env.MAX_PROCESS_
 const MAX_TEMPLATE_UPLOAD_BYTES = positiveRuntimeInteger(process.env.MAX_TEMPLATE_UPLOAD_BYTES, 50 * 1024 * 1024);
 const MAX_EMAIL_ATTACHMENT_BYTES = positiveRuntimeInteger(process.env.MAX_EMAIL_ATTACHMENT_BYTES, 15 * 1024 * 1024);
 const MAX_PROCESS_DOCUMENTS = positiveRuntimeInteger(process.env.MAX_PROCESS_DOCUMENTS, 50);
+const MAX_PROCESS_MATERIALS = positiveRuntimeInteger(process.env.MAX_PROCESS_MATERIALS, 200);
+const MAX_MATERIAL_LINE_CENTS = Number.MAX_SAFE_INTEGER;
 const MAX_TEMPLATE_ATTACHMENTS = positiveRuntimeInteger(process.env.MAX_TEMPLATE_ATTACHMENTS, 20);
 const MAX_UPLOAD_FILENAME_LENGTH = 255;
 const MAX_UPLOAD_MIME_LENGTH = 100;
@@ -176,6 +184,10 @@ const DEFAULT_SETTINGS = {
   },
   responsaveis: []
 };
+
+function enrichProcess(processo, now = new Date()) {
+  return enrichDomainProcess(processo, now, APP_TIME_ZONE);
+}
 
 export function createWorkLimiter(maxConcurrency = 1, maxQueue = 1) {
   const concurrency = Math.max(1, Math.floor(Number(maxConcurrency) || 1));
@@ -518,7 +530,7 @@ async function handleAuth(req, res, url) {
 
 async function handleApi(req, res, url) {
   if (req.method === "GET" && url.pathname === "/api/meta") {
-    sendJson(res, 200, { status: STATUS, filtrosRapidos: QUICK_FILTERS });
+    sendJson(res, 200, { status: STATUS, filtrosRapidos: QUICK_FILTERS, transicoes: PROCESS_TRANSITIONS });
     return;
   }
 
@@ -1039,6 +1051,11 @@ async function handleApi(req, res, url) {
       versao: 1,
       inativo: false
     };
+    const statusError = validateProcessForStatus(processo);
+    if (statusError) {
+      sendJson(res, 400, { error: statusError });
+      return;
+    }
 
     store.processos.unshift(processo);
     store.auditoria.unshift(createAuditEntry({
@@ -1067,8 +1084,18 @@ async function handleApi(req, res, url) {
     }
 
     const current = store.processos[index];
+    current.materiais = enrichProcess(current).materiais;
     if (!canEditProcess(current, role, body.status)) {
       sendJson(res, 403, { error: "Este processo nao pode ser alterado neste status." });
+      return;
+    }
+
+    const currentMaterialIds = new Set(current.materiais.map((material) => String(material.id || "")));
+    const unknownMaterialId = (Array.isArray(body.materiais) ? body.materiais : [])
+      .map((material) => normalizeMaterialId(material?.id))
+      .find((materialId) => materialId && !currentMaterialIds.has(materialId));
+    if (unknownMaterialId) {
+      sendJson(res, 400, { error: "Um material existente possui identificador desconhecido. Atualize a tela antes de salvar." });
       return;
     }
 
@@ -1088,11 +1115,11 @@ async function handleApi(req, res, url) {
       return;
     }
 
+    const sanitized = sanitizeProcessInput(body, current);
     const updated = {
       ...current,
-      ...sanitizeProcessInput(body, current),
+      ...sanitized,
       id: current.id,
-      materiais: sanitizeMaterials(body.materiais || current.materiais || current),
       numeroNotaFiscal: current.numeroNotaFiscal,
       versao: current.versao + 1,
       atualizadoEm: new Date().toISOString()
@@ -1106,6 +1133,18 @@ async function handleApi(req, res, url) {
     if (deliveryExceedsOrdered(updated.entregas || [], [], updated.materiais || [])) {
       sendJson(res, 400, { error: "Os materiais nao podem ficar abaixo das quantidades ja recebidas." });
       return;
+    }
+    if ((updated.entregas || []).length) {
+      const deliveryComplete = deliveryIsComplete(updated.entregas, updated.materiais || []);
+      if (hasProcessReachedDelivery(current) && !deliveryComplete) {
+        if (current.status !== "Entregue" || (body.status && body.status !== current.status)) {
+          sendJson(res, 400, { error: "Materiais de um processo em liquidacao nao podem criar saldo pendente de entrega." });
+          return;
+        }
+        updated.status = "Entrega parcial";
+      } else if (current.status === "Entrega parcial" && deliveryComplete) {
+        updated.status = "Entregue";
+      }
     }
 
     store.processos[index] = updated;
@@ -1124,6 +1163,11 @@ async function handleApi(req, res, url) {
   const cancelMatch = url.pathname.match(/^\/api\/processes\/([^/]+)\/cancel$/);
   if (cancelMatch && req.method === "POST") {
     const body = await readJson(req);
+    const cancellationReason = typeof body?.motivo === "string" ? body.motivo.trim() : "";
+    if (!cancellationReason || cancellationReason.length > 1_000) {
+      sendJson(res, 400, { error: "Informe um motivo de anulacao com ate 1000 caracteres." });
+      return;
+    }
     const index = store.processos.findIndex((processo) => processo.id === cancelMatch[1]);
     if (index === -1) {
       sendJson(res, 404, { error: "Processo nao encontrado" });
@@ -1139,7 +1183,7 @@ async function handleApi(req, res, url) {
     const updated = {
       ...current,
       status: "Anulado",
-      motivoAnulacao: body.motivo || "Nao informado",
+      motivoAnulacao: cancellationReason,
       anuladoEm: new Date().toISOString(),
       anuladoPor: usuario,
       versao: Number(current.versao || 0) + 1,
@@ -1178,6 +1222,7 @@ async function handleApi(req, res, url) {
       sendJson(res, 400, { error: "Informe a data de envio do empenho ao fornecedor antes de registrar entrega." });
       return;
     }
+    processo.materiais = enrichProcess(processo).materiais;
     const data = safeDate(body.data);
     const items = sanitizeDeliveryItems(body.itens, processo.materiais || []);
     if (!data || !items.length) {
@@ -1185,6 +1230,11 @@ async function handleApi(req, res, url) {
       return;
     }
     const previousDeliveries = Array.isArray(processo.entregas) ? processo.entregas : [];
+    const deliveryDateError = validateDeliveryDate(processo, data, previousDeliveries);
+    if (deliveryDateError) {
+      sendJson(res, 400, { error: deliveryDateError });
+      return;
+    }
     if (deliveryExceedsOrdered(previousDeliveries, items, processo.materiais || [])) {
       sendJson(res, 400, { error: "A quantidade entregue nao pode superar a quantidade empenhada." });
       return;
@@ -1218,6 +1268,14 @@ async function handleApi(req, res, url) {
     const processo = store.processos.find((item) => item.id === inactivateMatch[1]);
     if (!processo) {
       sendJson(res, 404, { error: "Processo nao encontrado" });
+      return;
+    }
+    if (processo.status === "Pago") {
+      sendJson(res, 403, { error: "Processos pagos permanecem bloqueados e nao podem ser inativados." });
+      return;
+    }
+    if (processo.inativo) {
+      sendJson(res, 409, { error: "Este processo ja esta inativo." });
       return;
     }
     processo.inativo = true;
@@ -1491,7 +1549,7 @@ async function handleApi(req, res, url) {
       return;
     }
     const documentKey = decodeURIComponent(documentItemMatch[2]);
-    if (!canAttachDocument(current, documentKey)) {
+    if (!canRemoveDocument(current, documentKey)) {
       sendJson(res, 400, { error: "Este documento nao pode ser removido neste momento." });
       return;
     }
@@ -1751,6 +1809,7 @@ export function publicProcess(processo = {}) {
     dataPagamento: String(processo.dataPagamento || ""),
     valorTotal: Number(processo.valorTotal || 0),
     diasDecorridos: Number(processo.diasDecorridos || 0),
+    faixaPrazo: String(processo.faixaPrazo || "ok"),
     documentosDisponiveis: Object.keys(processo.documentos || {}).filter((key) => Boolean(processo.documentos[key]))
   };
 }
@@ -2332,7 +2391,7 @@ async function runDueEmailNotifications(options = {}) {
   const store = await readStore();
   const settings = ensureSettings(store);
   const history = ensureEmailHistory(store);
-  const today = new Date().toISOString().slice(0, 10);
+  const today = dateKeyInTimeZone(new Date(), APP_TIME_ZONE);
   const testRecipient = normalizeEmail(options.testRecipient || "");
   const candidates = dueEmailCandidates(store, settings, today, {
     force: options.force,
@@ -2473,7 +2532,7 @@ function dueEmailCandidates(store, settings, today, options = {}) {
   const fornecedores = Array.isArray(store.fornecedores) ? store.fornecedores : [];
   const active = (store.processos || [])
     .map((processo) => enrichProcess(processo))
-    .filter((processo) => !processo.inativo && !["Entregue", "Liquidado", "Pago", "Anulado"].includes(processo.status))
+    .filter((processo) => !processo.inativo && processo.status !== "Anulado" && !hasProcessReachedDelivery(processo))
     .filter((processo) => !options.processId || processo.id === options.processId);
   const candidates = [];
 
@@ -3041,14 +3100,37 @@ function sanitizeNotificationRules(input = {}) {
   };
 }
 
-function sanitizeMaterials(input) {
+function sanitizeMaterials(input, currentMaterials = []) {
   const items = Array.isArray(input) ? input : legacyMaterials(input);
+  const currentById = new Map((Array.isArray(currentMaterials) ? currentMaterials : [])
+    .filter((item) => item?.id)
+    .map((item) => [String(item.id), item]));
+  const currentByDescription = new Map();
+  for (const material of Array.isArray(currentMaterials) ? currentMaterials : []) {
+    const description = String(material?.descricao || "").trim();
+    if (!description) continue;
+    currentByDescription.set(description, [...(currentByDescription.get(description) || []), material]);
+  }
+  const usedIds = new Set();
   return items
-    .map((item) => ({
-      descricao: String(item.descricao || "").trim().slice(0, 100),
-      valorUnitario: nonNegativeNumber(item.valorUnitario),
-      quantidade: nonNegativeNumber(item.quantidade)
-    }))
+    .map((item, index) => {
+      const requestedId = normalizeMaterialId(item?.id);
+      const currentAtIndex = currentMaterials[index] || {};
+      const description = String(item?.descricao || "").trim();
+      const descriptionMatches = currentByDescription.get(description) || [];
+      const uniqueDescriptionMatch = descriptionMatches.length === 1 ? descriptionMatches[0] : null;
+      const existing = currentById.get(requestedId)
+        || (!requestedId && uniqueDescriptionMatch && !usedIds.has(String(uniqueDescriptionMatch.id || "")) ? uniqueDescriptionMatch : null)
+        || (!requestedId && !usedIds.has(String(currentAtIndex.id || "")) ? currentAtIndex : {});
+      const id = requestedId || normalizeMaterialId(existing?.id) || crypto.randomUUID();
+      usedIds.add(id);
+      return {
+        id,
+        descricao: description.slice(0, 100),
+        valorUnitario: nonNegativeNumber(item?.valorUnitario),
+        quantidade: nonNegativeNumber(item?.quantidade)
+      };
+    })
     .filter((item) => item.descricao);
 }
 
@@ -3058,7 +3140,7 @@ function sanitizeProcessInput(input = {}, current = {}) {
     numeroProcesso: String(value("numeroProcesso") || "").trim().slice(0, 20),
     numeroEmpenho: String(value("numeroEmpenho") || "").trim().slice(0, 20),
     fornecedor: String(value("fornecedor") || "").trim().slice(0, 100),
-    materiais: sanitizeMaterials(value("materiais") || input),
+    materiais: sanitizeMaterials(value("materiais") || input, current.materiais || []),
     dataProcesso: safeDate(value("dataProcesso")),
     dataEnvioEmpenho: safeDate(value("dataEnvioEmpenho")),
     dataEnvioFornecedor: safeDate(value("dataEnvioFornecedor")),
@@ -3072,26 +3154,44 @@ function sanitizeProcessInput(input = {}, current = {}) {
 }
 
 export function validateProcessBody(input = {}) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return "O corpo do processo deve ser um objeto JSON.";
   if (!String(input.numeroProcesso || "").trim() && !String(input.numeroEmpenho || "").trim()) {
     return "Informe o numero do processo, o numero do empenho ou ambos.";
   }
   if (String(input.numeroProcesso || "").trim().length > 20) return "O numero do processo deve ter no maximo 20 caracteres.";
   if (String(input.numeroEmpenho || "").trim().length > 20) return "O numero do empenho deve ter no maximo 20 caracteres.";
   if (String(input.fornecedor || "").trim().length > 100) return "O fornecedor deve ter no maximo 100 caracteres.";
-  if (Array.isArray(input.materiais) && input.materiais.some((item) => String(item.descricao || "").trim().length > 100)) {
-    return "A descricao do material deve ter no maximo 100 caracteres.";
+  if (input.numeroProcesso && !normalizeProcessIdentifier(input.numeroProcesso)) return "Informe uma numeracao de processo com letras ou numeros.";
+  if (input.numeroEmpenho && !normalizeProcessIdentifier(input.numeroEmpenho)) return "Informe um numero de empenho com letras ou numeros.";
+  if (Object.prototype.hasOwnProperty.call(input, "materiais") && !Array.isArray(input.materiais)) {
+    return "Materiais deve ser uma lista.";
   }
   const dateFields = ["dataProcesso", "dataEnvioEmpenho", "dataEnvioFornecedor", "dataEntrega", "dataEnvioLiquidacao", "dataLiquidacao", "dataPagamento"];
   for (const field of dateFields) {
     if (input[field] && !safeDate(input[field])) return `Data invalida no campo ${field}.`;
   }
+  const chronologyError = validateProcessChronology(input);
+  if (chronologyError) return chronologyError;
   if (input.status && !STATUS.includes(input.status)) return "Status invalido.";
   if (Array.isArray(input.materiais)) {
+    if (input.materiais.length > MAX_PROCESS_MATERIALS) return `Cada processo aceita no maximo ${MAX_PROCESS_MATERIALS} materiais.`;
+    const ids = new Set();
     for (const material of input.materiais) {
+      if (!material || typeof material !== "object" || Array.isArray(material)) return "Cada material deve ser um objeto valido.";
+      if (String(material.descricao || "").trim().length > 100) return "A descricao do material deve ter no maximo 100 caracteres.";
+      if (material.id) {
+        const id = normalizeMaterialId(material.id);
+        if (!id || ids.has(id)) return "Os materiais devem possuir identificadores validos e unicos.";
+        ids.add(id);
+      }
       const price = Number(material.valorUnitario || 0);
       const quantity = Number(material.quantidade || 0);
       if (!Number.isFinite(price) || price < 0 || !Number.isFinite(quantity) || quantity < 0) {
         return "Valores e quantidades dos materiais devem ser numeros nao negativos.";
+      }
+      const lineCents = Math.round((price * quantity + Number.EPSILON) * 100);
+      if (!Number.isSafeInteger(lineCents) || lineCents > MAX_MATERIAL_LINE_CENTS) {
+        return "O valor total de cada material deve ser finito e estar dentro do limite financeiro permitido.";
       }
     }
   }
@@ -3103,7 +3203,7 @@ function validateProcessForStatus(processo = {}) {
       && !processDeadlineDate(processo)) {
     return "Informe a data de envio do empenho ao fornecedor antes de avancar.";
   }
-  if (["Entregue", "Aguardando envio para liquidacao", "Enviado para liquidacao", "Liquidado", "Pago"].includes(processo.status)
+  if (hasProcessReachedDelivery(processo)
       && !processo.dataEntrega) {
     return "Registre o recebimento antes de avancar.";
   }
@@ -3111,9 +3211,51 @@ function validateProcessForStatus(processo = {}) {
       && !processHasRequiredDocuments(processo)) {
     return "Anexe Processo SPED, Nota de Empenho e Nota Fiscal em PDF antes da liquidacao.";
   }
-  if (["Liquidado", "Pago"].includes(processo.status) && !processo.dataEnvioLiquidacao) {
+  if (["Enviado para liquidacao", "Liquidado", "Pago"].includes(processo.status) && !processo.dataEnvioLiquidacao) {
     return "Informe a data de envio para liquidacao antes de avancar.";
   }
+  if (["Liquidado", "Pago"].includes(processo.status) && !processo.dataLiquidacao) {
+    return "Informe a data de liquidacao antes de avancar.";
+  }
+  if (processo.status === "Pago" && !processo.dataPagamento) {
+    return "Informe a data de pagamento antes de concluir o processo.";
+  }
+  const chronologyError = validateProcessChronology(processo);
+  if (chronologyError) return chronologyError;
+  return "";
+}
+
+function validateProcessChronology(processo = {}) {
+  const datedEvents = [
+    ["dataProcesso", safeDate(processo.dataProcesso), "data do processo"],
+    ["dataEnvioFornecedor", processDeadlineDate(processo), "envio ao fornecedor"],
+    ["dataEntrega", safeDate(processo.dataEntrega), "entrega"],
+    ["dataEnvioLiquidacao", safeDate(processo.dataEnvioLiquidacao), "envio para liquidacao"],
+    ["dataLiquidacao", safeDate(processo.dataLiquidacao), "liquidacao"],
+    ["dataPagamento", safeDate(processo.dataPagamento), "pagamento"]
+  ].filter(([, value]) => value);
+  const today = dateKeyInTimeZone(new Date(), APP_TIME_ZONE);
+  const future = datedEvents.find(([, value]) => value > today);
+  if (future) return `A data de ${future[2]} nao pode estar no futuro.`;
+  for (let index = 1; index < datedEvents.length; index += 1) {
+    if (datedEvents[index][1] < datedEvents[index - 1][1]) {
+      return `A data de ${datedEvents[index][2]} nao pode ser anterior a ${datedEvents[index - 1][2]}.`;
+    }
+  }
+  return "";
+}
+
+function validateDeliveryDate(processo = {}, deliveryDate = "", previousDeliveries = []) {
+  const today = dateKeyInTimeZone(new Date(), APP_TIME_ZONE);
+  if (deliveryDate > today) return "A data de entrega nao pode estar no futuro.";
+  const sentDate = processDeadlineDate(processo);
+  if (sentDate && deliveryDate < sentDate) return "A data de entrega nao pode ser anterior ao envio ao fornecedor.";
+  const latestDelivery = previousDeliveries
+    .map((delivery) => safeDate(delivery.data))
+    .filter(Boolean)
+    .sort()
+    .at(-1);
+  if (latestDelivery && deliveryDate < latestDelivery) return "A nova entrega nao pode ser anterior a uma entrega ja registrada.";
   return "";
 }
 
@@ -3151,48 +3293,61 @@ function nonNegativeNumber(value) {
   return Number.isFinite(number) && number >= 0 ? number : 0;
 }
 
-function isValidStatusTransition(currentStatus, nextStatus) {
-  if (currentStatus === nextStatus) return true;
-  if (["Entrega parcial", "Entregue"].includes(nextStatus)) return false;
-  const workflow = STATUS.filter((status) => status !== "Anulado");
-  const currentIndex = workflow.indexOf(currentStatus);
-  return currentIndex >= 0 && workflow[currentIndex + 1] === nextStatus;
-}
-
 function sanitizeDeliveryItems(input, materials) {
   if (!Array.isArray(input)) return [];
   return input.map((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return null;
     const materialIndex = Number(item.materialIndex);
     return {
       materialIndex,
+      materialId: String(materials[materialIndex]?.id || ""),
       descricao: String(materials[materialIndex]?.descricao || "").trim(),
       quantidade: nonNegativeNumber(item.quantidade)
     };
-  }).filter((item) => Number.isInteger(item.materialIndex) && item.descricao && item.quantidade > 0);
+  }).filter((item) => item && Number.isInteger(item.materialIndex) && item.materialId && item.descricao && item.quantidade > 0);
 }
 
-function deliveredTotals(deliveries = []) {
+function deliveredTotals(deliveries = [], materials = []) {
   const totals = new Map();
   for (const delivery of deliveries) {
     for (const item of delivery.itens || []) {
-      totals.set(item.materialIndex, (totals.get(item.materialIndex) || 0) + Number(item.quantidade || 0));
+      const materialId = deliveryMaterialId(item, materials);
+      if (!materialId) continue;
+      totals.set(materialId, (totals.get(materialId) || 0) + Number(item.quantidade || 0));
     }
   }
   return totals;
 }
 
 function deliveryExceedsOrdered(previous, nextItems, materials) {
-  const totals = deliveredTotals([...previous, { itens: nextItems }]);
-  return [...totals.entries()].some(([index, delivered]) => (
-    !materials[index] || delivered > Number(materials[index].quantidade || 0)
+  const totals = deliveredTotals([...previous, { itens: nextItems }], materials);
+  const materialsById = new Map(materials.map((material) => [String(material.id || ""), material]));
+  return [...totals.entries()].some(([materialId, delivered]) => (
+    !materialsById.has(materialId) || delivered > Number(materialsById.get(materialId).quantidade || 0)
   ));
 }
 
 function deliveryIsComplete(deliveries, materials) {
-  const totals = deliveredTotals(deliveries);
-  return materials.length > 0 && materials.every((material, index) => (
-    (totals.get(index) || 0) >= Number(material.quantidade || 0)
+  const totals = deliveredTotals(deliveries, materials);
+  return materials.length > 0 && materials.every((material) => (
+    (totals.get(String(material.id || "")) || 0) >= Number(material.quantidade || 0)
   ));
+}
+
+function deliveryMaterialId(item = {}, materials = []) {
+  if (item.materialId && materials.some((material) => String(material.id || "") === String(item.materialId))) {
+    return String(item.materialId);
+  }
+  const descriptionMatches = materials.filter((material) => (
+    String(material.descricao || "").trim() === String(item.descricao || "").trim()
+  ));
+  if (descriptionMatches.length === 1) return String(descriptionMatches[0].id || "");
+  return String(materials[Number(item.materialIndex)]?.id || "");
+}
+
+function normalizeMaterialId(value = "") {
+  const id = String(value || "").trim();
+  return id && id.length <= 120 && /^[a-zA-Z0-9._:-]+$/.test(id) ? id : "";
 }
 
 function processChanges(before = {}, after = {}) {
