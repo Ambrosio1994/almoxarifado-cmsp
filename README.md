@@ -59,7 +59,7 @@ Validacoes ja concluidas em 2026-07-08:
 - A importacao legada inicial foi concluida; novas execucoes exigem dry-run, backup e confirmacao do database alvo.
 - `POST /auth/login` em producao retornou `200` com cookie de sessao `HttpOnly`.
 - `GET /auth/session` em producao retornou `200`.
-- `GET /api/processes` em producao retornou `200` lendo do Postgres.
+- `GET /api/processes` com sessao autenticada retornou `200` lendo do Postgres.
 
 Pendencias atuais:
 
@@ -69,7 +69,7 @@ Pendencias atuais:
 
 ## O que este início já cobre
 
-- Consulta pública de processos.
+- Consulta de processos por usuarios autenticados.
 - Dashboard com indicadores principais.
 - Painel anual com processos agrupados pelo ano do empenho e valores financeiros reconhecidos no ano de cada evento; empenhos anulados nao compoem os totais financeiros.
 - Cadastro e edição inicial de processos.

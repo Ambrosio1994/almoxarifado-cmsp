@@ -24,8 +24,7 @@ import {
   filterProcesses,
   hasProcessReachedDelivery,
   isPdfDocument,
-  isPublicConsultation,
-  mutationRequiresAuthenticatedUser,
+  isMutationRequest,
   isValidStatusTransition,
   processDeadlineDate,
   processHasRequiredDocuments,
@@ -529,46 +528,33 @@ async function handleAuth(req, res, url) {
 }
 
 async function handleApi(req, res, url) {
-  if (req.method === "GET" && url.pathname === "/api/meta") {
-    sendJson(res, 200, { status: STATUS, filtrosRapidos: QUICK_FILTERS, transicoes: PROCESS_TRANSITIONS });
-    return;
-  }
-
-  if (mutationRequiresAuthenticatedUser(req.method) && usesCookieSession(req) && !isSameOriginMutation(req)) {
+  if (isMutationRequest(req.method) && usesCookieSession(req) && !isSameOriginMutation(req)) {
     sendJson(res, 403, { error: "Origem da requisicao nao autorizada." });
     return;
   }
 
   const authenticatedUser = await sessionUser(req);
-  if (mutationRequiresAuthenticatedUser(req.method) && !authenticatedUser) {
+  if (!authenticatedUser) {
     sendJson(res, 401, { error: "Faca login para continuar." });
     return;
   }
-  if (!authenticatedUser && !isPublicConsultation(req.method, url.pathname)) {
-    sendJson(res, 401, { error: "Faca login para continuar." });
-    return;
-  }
-  const user = authenticatedUser
-    ? {
-        id: authenticatedUser.id,
-        email: authenticatedUser.email,
-        name: authenticatedUser.nome,
-        role: resolveRole(authenticatedUser)
-      }
-    : publicUserContext();
+  const user = {
+    id: authenticatedUser.id,
+    email: authenticatedUser.email,
+    name: authenticatedUser.nome,
+    role: resolveRole(authenticatedUser)
+  };
   const role = user.role;
   const usuario = user.name;
   const auditActor = { usuario, usuarioEmail: user.email, usuarioId: user.id };
-  const securityActor = authenticatedUser
-    ? { actorUserId: authenticatedUser.id, actorEmail: authenticatedUser.email }
-    : { actorEmail: user.email };
+  const securityActor = { actorUserId: authenticatedUser.id, actorEmail: authenticatedUser.email };
 
-  if (!roleCanMutate(role) && mutationRequiresAuthenticatedUser(req.method)) {
+  if (!roleCanMutate(role) && isMutationRequest(req.method)) {
     sendJson(res, 403, { error: "O perfil de auditor possui acesso somente para consulta." });
     return;
   }
 
-  if (authenticatedUser?.precisaDefinirSenha && mutationRequiresAuthenticatedUser(req.method)) {
+  if (authenticatedUser?.precisaDefinirSenha && isMutationRequest(req.method)) {
     await recordSecurityEventSafely("first_password_required", {
       actorUserId: authenticatedUser.id,
       actorEmail: authenticatedUser.email,
@@ -585,6 +571,11 @@ async function handleApi(req, res, url) {
   }
   if (requiresAuditAccess(req.method, url.pathname) && !["admin", "auditor"].includes(role)) {
     sendJson(res, 403, { error: "Esta operacao exige perfil de auditor ou administrador." });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/meta") {
+    sendJson(res, 200, { status: STATUS, filtrosRapidos: QUICK_FILTERS, transicoes: PROCESS_TRANSITIONS });
     return;
   }
 
@@ -630,11 +621,11 @@ async function handleApi(req, res, url) {
     const filtered = filterProcesses(store.processos, Object.fromEntries(url.searchParams));
     const enriched = filtered.map((processo) => enrichProcess(processo));
     const result = applyQuickFilter(enriched, url.searchParams.get("filtroRapido"));
-    sendJson(res, 200, authenticatedUser ? result : result.map(publicProcess));
+    sendJson(res, 200, result);
     return;
   }
 
-  if (req.method === "GET" && ["/api/processes/export", "/api/processes/export/", "/api/processes/download", "/api/processes/download/"].includes(url.pathname)) {
+  if (req.method === "GET" && ["/api/processes/download", "/api/processes/download/"].includes(url.pathname)) {
     const store = await readProcessesStore();
     const format = String(url.searchParams.get("format") || "csv").toLowerCase();
     const filtered = filterProcesses(store.processos, Object.fromEntries(url.searchParams));
@@ -1290,6 +1281,17 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  const processAuditMatch = url.pathname.match(/^\/api\/processes\/([^/]+)\/audit$/);
+  if (processAuditMatch && req.method === "GET") {
+    const processo = store.processos.find((item) => item.id === processAuditMatch[1]);
+    if (!processo) {
+      sendJson(res, 404, { error: "Processo nao encontrado" });
+      return;
+    }
+    sendJson(res, 200, store.auditoria.filter((entry) => entry.processoId === processo.id));
+    return;
+  }
+
   const obsMatch = url.pathname.match(/^\/api\/processes\/([^/]+)\/observations$/);
   if (obsMatch && req.method === "GET") {
     const observacoes = store.observacoes
@@ -1682,17 +1684,6 @@ async function handleApi(req, res, url) {
   sendJson(res, 404, { error: "Rota nao encontrada" });
 }
 
-function publicUserContext() {
-  const email = "publico@consulta.local";
-  const name = "Consulta publica";
-  return {
-    id: "",
-    email,
-    name,
-    role: resolveRole({ email })
-  };
-}
-
 export function requiresAdmin(method = "", pathname = "") {
   if (pathname === "/api/emails/run-due") return true;
   if (pathname === "/api/emails/status") return true;
@@ -1785,33 +1776,6 @@ async function ensureUsers(store) {
     })]);
   }
   localAdminBootstrapped = true;
-}
-
-export function publicProcess(processo = {}) {
-  const materiais = (Array.isArray(processo.materiais) ? processo.materiais : []).map((material) => ({
-    descricao: String(material.descricao || ""),
-    valorUnitario: Number(material.valorUnitario || 0),
-    quantidade: Number(material.quantidade || 0)
-  }));
-  return {
-    id: String(processo.id || ""),
-    numeroProcesso: String(processo.numeroProcesso || ""),
-    numeroEmpenho: String(processo.numeroEmpenho || ""),
-    fornecedor: String(processo.fornecedor || ""),
-    materiais,
-    status: String(processo.status || ""),
-    dataProcesso: String(processo.dataProcesso || ""),
-    dataEnvioEmpenho: String(processo.dataEnvioEmpenho || ""),
-    dataEnvioFornecedor: String(processo.dataEnvioFornecedor || ""),
-    dataEntrega: String(processo.dataEntrega || ""),
-    dataEnvioLiquidacao: String(processo.dataEnvioLiquidacao || ""),
-    dataLiquidacao: String(processo.dataLiquidacao || ""),
-    dataPagamento: String(processo.dataPagamento || ""),
-    valorTotal: Number(processo.valorTotal || 0),
-    diasDecorridos: Number(processo.diasDecorridos || 0),
-    faixaPrazo: String(processo.faixaPrazo || "ok"),
-    documentosDisponiveis: Object.keys(processo.documentos || {}).filter((key) => Boolean(processo.documentos[key]))
-  };
 }
 
 function createSession(user) {

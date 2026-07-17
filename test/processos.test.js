@@ -17,10 +17,9 @@ import {
   filterProcesses,
   isAllowedDocument,
   isPdfDocument,
-  isPublicConsultation,
+  isMutationRequest,
   isProcessOverdue,
   isValidStatusTransition,
-  mutationRequiresAuthenticatedUser,
   normalizeMaterials,
   processHasRequiredDocuments,
   summarizeMaterials,
@@ -279,18 +278,10 @@ describe("regras de processo", () => {
     assert.equal(validateProcessDocumentUpload("complementares", "foto.png", "image/png", png), true);
   });
 
-  it("libera consultas publicas e exige autenticacao em alteracoes", () => {
-    assert.equal(isPublicConsultation("GET", "/api/processes"), true);
-    assert.equal(isPublicConsultation("GET", "/api/dashboard"), true);
-    assert.equal(isPublicConsultation("GET", "/health"), true);
-    assert.equal(isPublicConsultation("GET", "/api/processes/export"), true);
-    assert.equal(isPublicConsultation("GET", "/api/settings"), false);
-    assert.equal(isPublicConsultation("GET", "/api/audit"), false);
-    assert.equal(isPublicConsultation("GET", "/api/processes/abc/download"), false);
-    assert.equal(isPublicConsultation("POST", "/api/processes"), false);
-    assert.equal(mutationRequiresAuthenticatedUser("GET"), false);
-    assert.equal(mutationRequiresAuthenticatedUser("POST"), true);
-    assert.equal(mutationRequiresAuthenticatedUser("DELETE"), true);
+  it("identifica mutacoes HTTP", () => {
+    assert.equal(isMutationRequest("GET"), false);
+    assert.equal(isMutationRequest("POST"), true);
+    assert.equal(isMutationRequest("DELETE"), true);
   });
 
   it("persiste e invalida sessoes no fallback em memoria", async () => {

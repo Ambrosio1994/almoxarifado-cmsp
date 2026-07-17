@@ -23,6 +23,7 @@ const state = {
   emailHistoryLoaded: false,
   securityAudit: [],
   detailObservations: [],
+  detailAudit: [],
   deliveryDraft: null,
   observationProcessId: null,
   selectedProcess: null,
@@ -65,7 +66,6 @@ const loginForm = document.querySelector("#loginForm");
 const passwordStep = document.querySelector("#passwordStep");
 const emailSubmitButton = document.querySelector("#emailSubmitButton");
 const authMessage = document.querySelector("#authMessage");
-const publicConsultButton = document.querySelector("#publicConsultButton");
 const logoutButton = document.querySelector("#logoutButton");
 const statusFilter = document.querySelector("#statusFilter");
 const quickFilter = document.querySelector("#quickFilter");
@@ -210,23 +210,7 @@ function bindAuthEvents() {
     }
   });
 
-  publicConsultButton?.addEventListener("click", async () => {
-    setButtonBusy(publicConsultButton, true, "Abrindo...");
-    try {
-      setCurrentUser({ name: "Consulta publica", role: "publico", publico: true });
-      showApp();
-      await bootSafely();
-    } finally {
-      setButtonBusy(publicConsultButton, false);
-    }
-  });
-
   logoutButton.addEventListener("click", async () => {
-    if (currentUser?.publico) {
-      clearClientSession();
-      showAuth();
-      return;
-    }
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 8000);
     const logoutRequest = fetch("/auth/logout", {
@@ -254,13 +238,11 @@ function bindAuthEvents() {
   });
 
   sidebarProfile?.addEventListener("click", () => {
-    if (currentUser?.publico) return;
     if (changePasswordDialog && !changePasswordDialog.open) changePasswordDialog.showModal();
   });
   sidebarProfile?.addEventListener("keydown", (event) => {
     if (["Enter", " "].includes(event.key)) {
       event.preventDefault();
-      if (currentUser?.publico) return;
       if (changePasswordDialog && !changePasswordDialog.open) changePasswordDialog.showModal();
     }
   });
@@ -405,6 +387,7 @@ function resetApplicationData() {
   state.securityAudit = [];
   state.emailHistory = [];
   state.detailObservations = [];
+  state.detailAudit = [];
   state.deliveryDraft = null;
   state.observationProcessId = null;
   state.selectedProcess = null;
@@ -450,8 +433,7 @@ function setCurrentUser(user) {
     name: user.nome || user.name || user.email,
     role: user.role || "almoxarifado",
     foto: user.foto || "",
-    precisaDefinirSenha: Boolean(user.precisaDefinirSenha),
-    publico: Boolean(user.publico)
+    precisaDefinirSenha: Boolean(user.precisaDefinirSenha)
   };
   applyRoleVisibility();
   renderSidebarProfile();
@@ -541,21 +523,12 @@ function renderSidebarProfile() {
 
 function applyRoleVisibility() {
   const role = currentUser?.role || "";
-  const isPublic = role === "publico";
-  document.querySelector('[data-section="suppliers"]')?.classList.toggle("hidden", isPublic);
   document.querySelector('[data-section="settings"]')?.classList.toggle("hidden", role !== "admin");
   document.querySelector('[data-section="users"]')?.classList.toggle("hidden", role !== "admin");
   document.querySelector('[data-section="audit"]')?.classList.toggle("hidden", !["admin", "auditor"].includes(role));
   document.querySelector('[data-detail-tab="emails"]')?.classList.toggle("hidden", !["admin", "auditor"].includes(role));
-  document.querySelectorAll('[data-detail-tab]:not([data-detail-tab="general"]):not([data-detail-tab="emails"])').forEach((tab) => {
-    tab.classList.toggle("hidden", isPublic);
-  });
-  newProcessButton?.classList.toggle("hidden", ["auditor", "publico"].includes(role));
-  observationForm?.classList.toggle("hidden", ["auditor", "publico"].includes(role));
-  downloadProcessButton?.classList.toggle("hidden", isPublic);
-  if (logoutButton) logoutButton.textContent = isPublic ? "Entrar" : "Sair";
-  sidebarProfile?.setAttribute("aria-label", isPublic ? "Consulta publica" : "Abrir configuracoes da conta");
-  if (sidebarProfile) sidebarProfile.tabIndex = isPublic ? -1 : 0;
+  newProcessButton?.classList.toggle("hidden", role === "auditor");
+  observationForm?.classList.toggle("hidden", role === "auditor");
 }
 
 sidebarAvatarImage?.addEventListener("error", () => {
@@ -734,8 +707,7 @@ async function downloadProcesses() {
   params.set("format", format);
   setButtonBusy(downloadProcessesButton, true, "Gerando...");
   try {
-    const route = currentUser?.publico ? "/api/processes/export" : "/api/processes/download";
-    const response = await fetch(`${route}?${params}`, { credentials: "same-origin" });
+    const response = await fetch(`/api/processes/download?${params}`, { credentials: "same-origin" });
     if (response.status === 401) {
       handleUnauthorized();
       return;
@@ -831,7 +803,10 @@ processForm.addEventListener("submit", async (event) => {
     await refresh();
     await refreshAudit();
     if (wasSelected) {
-      state.detailObservations = await loadDetailObservations(savedProcess.id);
+      [state.detailObservations, state.detailAudit] = await Promise.all([
+        loadDetailObservations(savedProcess.id),
+        loadDetailAudit(savedProcess.id)
+      ]);
       renderProcessDetail();
     }
   } catch (error) {
@@ -893,7 +868,6 @@ detailTabs.forEach((tab) => {
     detailTabs.forEach((item) => setTabActive(item, item === tab));
     detailPanel.setAttribute("aria-busy", "true");
     try {
-      if (state.detailTab === "timeline" && !state.auditLoaded && ["admin", "auditor"].includes(currentUser.role)) await loadAuditData();
       if (state.detailTab === "emails" && !state.emailHistoryLoaded && ["admin", "auditor"].includes(currentUser.role)) {
         state.emailHistory = await api("/api/emails/history");
         state.emailHistoryLoaded = true;
@@ -1321,6 +1295,7 @@ async function openProcessDetail(processo, returnSection = "processes") {
   state.detailReturnSection = returnSection;
   state.detailTab = "general";
   state.detailObservations = [];
+  state.detailAudit = [];
   state.detailObservationsError = "";
   processListView.classList.add("hidden");
   dashboardView.classList.add("hidden");
@@ -1333,18 +1308,17 @@ async function openProcessDetail(processo, returnSection = "processes") {
   detailTabs.forEach((tab) => setTabActive(tab, tab.dataset.detailTab === "general"));
   renderProcessDetail();
 
-  if (currentUser?.publico) {
-    detailController = null;
-    return;
-  }
-
   void ensureSuppliersLoaded().then(() => {
     if (sequence === detailSequence && state.selectedProcess?.id === processo.id) renderProcessDetail();
   }).catch(() => null);
   try {
-    const observations = await loadDetailObservations(processo.id, { signal: controller.signal });
+    const [observations, auditEntries] = await Promise.all([
+      loadDetailObservations(processo.id, { signal: controller.signal }),
+      loadDetailAudit(processo.id, { signal: controller.signal })
+    ]);
     if (sequence !== detailSequence || state.selectedProcess?.id !== processo.id) return;
     state.detailObservations = observations;
+    state.detailAudit = auditEntries;
     renderProcessDetail();
   } catch (error) {
     if (error.name !== "AbortError" && sequence === detailSequence && state.selectedProcess?.id === processo.id) {
@@ -1596,6 +1570,10 @@ function supplierFor(processo) {
 
 async function loadDetailObservations(processId, options = {}) {
   return api(`/api/processes/${processId}/observations`, options);
+}
+
+async function loadDetailAudit(processId, options = {}) {
+  return api(`/api/processes/${processId}/audit`, options);
 }
 
 async function ensureSuppliersLoaded() {
@@ -1941,6 +1919,7 @@ async function saveDeliveryFromDialog(event) {
   try {
     await refresh();
     await refreshAudit();
+    await refreshDetailAudit();
     renderProcessDetail();
   } catch (error) {
     showAppError(`A entrega foi registrada, mas a lista nao foi atualizada: ${error.message}`);
@@ -1982,7 +1961,10 @@ function processUpdatePayload(overrides = {}) {
 async function refreshObservationViews() {
   if (state.observationProcessId) await loadObservations();
   if (state.selectedProcess) {
-    state.detailObservations = await loadDetailObservations(state.selectedProcess.id);
+    [state.detailObservations, state.detailAudit] = await Promise.all([
+      loadDetailObservations(state.selectedProcess.id),
+      loadDetailAudit(state.selectedProcess.id)
+    ]);
     if (["timeline", "observations"].includes(state.detailTab)) renderDetailPanel();
   }
 }
@@ -2015,7 +1997,6 @@ function escapeHtml(value = "") {
 }
 
 async function openSection(section) {
-  if (currentUser?.publico && !["dashboard", "processes"].includes(section)) section = "dashboard";
   if (["users", "settings"].includes(section) && currentUser?.role !== "admin") section = "dashboard";
   if (section === "audit" && !["admin", "auditor"].includes(currentUser?.role)) section = "dashboard";
   state.activeSection = section;
@@ -2349,7 +2330,7 @@ function nextProcessStep(processo) {
 }
 function canEditGeneralInUi(processo) {
   if (!processo || processo.status === "Anulado") return false;
-  if (["auditor", "publico"].includes(currentUser.role)) return false;
+  if (currentUser.role === "auditor") return false;
   if (processo.status === "Pago") return false;
   if (processo.status === "Liquidado") return isCurrentUserAdmin();
   return true;
@@ -2387,10 +2368,16 @@ async function refreshAfterMutation(successPrefix = "A alteracao foi salva") {
   }
   try {
     await refreshAudit();
+    await refreshDetailAudit();
   } catch (error) {
     showAppError(`${successPrefix} e a lista foi atualizada, mas a auditoria nao: ${error.message}`);
   }
   if (state.selectedProcess) renderProcessDetail();
+}
+
+async function refreshDetailAudit() {
+  if (!state.selectedProcess) return;
+  state.detailAudit = await loadDetailAudit(state.selectedProcess.id);
 }
 
 function processById(processId) {
@@ -2410,7 +2397,7 @@ function canRegisterDeliveryInUi(processo) {
 }
 
 function canAttachDocumentInUi(processo, documentKey) {
-  if (!processo || processo.inativo || ["Anulado", "Pago"].includes(processo.status) || !documentKey || ["auditor", "publico"].includes(currentUser.role)) return false;
+  if (!processo || processo.inativo || ["Anulado", "Pago"].includes(processo.status) || !documentKey || currentUser.role === "auditor") return false;
   if (processo.status === "Liquidado" && !isCurrentUserAdmin()) return false;
   if (documentKey === "notaFiscal") {
     return ["Entrega parcial", "Entregue", "Aguardando envio para liquidacao", "Enviado para liquidacao", "Liquidado"].includes(processo.status);
@@ -3497,7 +3484,7 @@ function humanizeCamelCase(value = "") {
 }
 
 function visibleAuditEntries(processo) {
-  return state.auditoria
+  return state.detailAudit
     .filter((entry) => entry.processoId === processo.id)
     .filter((entry) => entry.acao !== "Carga inicial")
     .sort((a, b) => new Date(a.criadoEm) - new Date(b.criadoEm));

@@ -37,8 +37,7 @@
 - Processos nao devem ser excluidos fisicamente; devem ser marcados como inativos.
 - Apos `Pago`, o processo fica permanentemente bloqueado para edicao.
 - Todas as alteracoes devem gerar auditoria imutavel.
-- Consultas publicas nao exigem autenticacao.
-- Alteracoes exigem usuario autenticado e autorizado.
+- Consultas exigem usuario autenticado; alteracoes tambem exigem autorizacao.
 
 ## Notificacoes
 

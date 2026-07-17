@@ -194,21 +194,7 @@ export function processHasRequiredDocuments(processo = {}) {
   return REQUIRED_DOCUMENT_KEYS.every((key) => Boolean(documentos[key]));
 }
 
-export function isPublicConsultation(method = "", pathname = "") {
-  if (String(method).toUpperCase() !== "GET") return false;
-  return [
-    /^\/api\/meta$/,
-    /^\/health$/,
-    /^\/api\/dashboard$/,
-    /^\/api\/dashboard\/execucao-mensal$/,
-    /^\/api\/dashboard\/distribuicao-status$/,
-    /^\/api\/dashboard\/charts$/,
-    /^\/api\/processes$/,
-    /^\/api\/processes\/export\/?$/
-  ].some((pattern) => pattern.test(pathname));
-}
-
-export function mutationRequiresAuthenticatedUser(method = "") {
+export function isMutationRequest(method = "") {
   return String(method).toUpperCase() !== "GET";
 }
 
