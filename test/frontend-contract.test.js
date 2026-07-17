@@ -54,6 +54,16 @@ describe("contrato visual e de navegacao", () => {
     assert.doesNotMatch(app, /\bprompt\s*\(/);
   });
 
+  it("pede confirmacao em dialogo para cada etapa registrada nos dados gerais", () => {
+    assert.match(html, /<dialog id="processStepDialog"[^>]*aria-labelledby="processStepDialogTitle"[^>]*aria-describedby="processStepDialogDescription"/);
+    assert.match(html, /id="processStepForm"/);
+    assert.match(html, /id="cancelProcessStep">Cancelar<\/button>/);
+    assert.match(app, /openProcessStepDialog\(step\)/);
+    assert.match(app, /button: "Registrar envio para liquidação"/);
+    assert.match(app, /dateLabel: "Data do envio para liquidação"/);
+    assert.doesNotMatch(app, /newDataPanel/);
+  });
+
   it("oferece atualizacao explicita e anulacao motivada", () => {
     assert.doesNotMatch(html, /id="publicConsultButton"/);
     assert.doesNotMatch(app, /\bpublico\b/);

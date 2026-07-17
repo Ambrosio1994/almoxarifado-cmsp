@@ -232,9 +232,27 @@
         </label>
         <div class="actions">
           <button type="button" class="secondary" id="cancelDelivery">Cancelar</button>
-          <button type="submit">Salvar entrega</button>
+          <button type="submit">Salvar</button>
         </div>
         <p class="form-message" id="deliveryMessage" role="alert" aria-live="assertive"></p>
+      </form>
+    </dialog>
+
+    <dialog id="processStepDialog" class="small-dialog" aria-labelledby="processStepDialogTitle" aria-describedby="processStepDialogDescription">
+      <form method="dialog" class="dialog-header">
+        <strong id="processStepDialogTitle">Registrar etapa</strong>
+        <button type="submit" class="secondary">Fechar</button>
+      </form>
+      <form id="processStepForm" class="process-form" novalidate>
+        <p class="selected-file" id="processStepDialogDescription"></p>
+        <label id="processStepDateGroup"><span id="processStepDateLabel">Data</span>
+          <input name="data" type="text" inputmode="numeric" autocomplete="off" placeholder="DD-MM-AAAA" pattern="\d{2}-\d{2}-\d{4}" maxlength="10">
+        </label>
+        <div class="actions">
+          <button type="button" class="secondary" id="cancelProcessStep">Cancelar</button>
+          <button type="submit">Salvar</button>
+        </div>
+        <p class="form-message" id="processStepMessage" role="alert" aria-live="assertive"></p>
       </form>
     </dialog>
 

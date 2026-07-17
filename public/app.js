@@ -25,6 +25,7 @@ const state = {
   detailObservations: [],
   detailAudit: [],
   deliveryDraft: null,
+  processStepDraft: null,
   observationProcessId: null,
   selectedProcess: null,
   detailReturnSection: "processes",
@@ -95,6 +96,14 @@ const deliveryDialogTitle = document.querySelector("#deliveryDialogTitle");
 const deliveryMaterials = document.querySelector("#deliveryMaterials");
 const deliveryMessage = document.querySelector("#deliveryMessage");
 const cancelDelivery = document.querySelector("#cancelDelivery");
+const processStepDialog = document.querySelector("#processStepDialog");
+const processStepForm = document.querySelector("#processStepForm");
+const processStepDialogTitle = document.querySelector("#processStepDialogTitle");
+const processStepDialogDescription = document.querySelector("#processStepDialogDescription");
+const processStepDateGroup = document.querySelector("#processStepDateGroup");
+const processStepDateLabel = document.querySelector("#processStepDateLabel");
+const processStepMessage = document.querySelector("#processStepMessage");
+const cancelProcessStep = document.querySelector("#cancelProcessStep");
 const cancelProcessDialog = document.querySelector("#cancelProcessDialog");
 const cancelProcessForm = document.querySelector("#cancelProcessForm");
 const cancelProcessMessage = document.querySelector("#cancelProcessMessage");
@@ -356,6 +365,7 @@ function clearClientSession() {
     dialog,
     editObservationDialog,
     deliveryDialog,
+    processStepDialog,
     cancelProcessDialog,
     downloadDialog,
     documentMetadataDialog,
@@ -389,6 +399,7 @@ function resetApplicationData() {
   state.detailObservations = [];
   state.detailAudit = [];
   state.deliveryDraft = null;
+  state.processStepDraft = null;
   state.observationProcessId = null;
   state.selectedProcess = null;
   state.detailReturnSection = "processes";
@@ -1066,10 +1077,6 @@ detailPanel.addEventListener("click", async (event) => {
       await deleteObservation(deleteObservationId);
     }
 
-    if (event.target.dataset.updateStatus) {
-      await saveNewProcessData();
-    }
-
     if (event.target.dataset.registerPartialDelivery) {
       await registerPartialDelivery();
     }
@@ -1087,13 +1094,12 @@ detailPanel.addEventListener("click", async (event) => {
 
     if (event.target.dataset.showNewData) {
       const step = nextProcessStep(state.selectedProcess);
+      if (!step) return;
       if (["Entrega parcial", "Entregue"].includes(step?.status)) {
         openDeliveryDialog("", step.status === "Entregue");
         return;
       }
-      const panel = detailPanel.querySelector("[data-new-data-panel]");
-      panel?.classList.toggle("hidden");
-      panel?.querySelector("[data-detail-date]")?.focus();
+      openProcessStepDialog(step);
     }
   } catch (error) {
     if (error.name !== "AbortError") alert(error.message || "Nao foi possivel concluir a operacao.");
@@ -1222,6 +1228,13 @@ deliveryDialog?.addEventListener("close", resetDeliveryDialog);
 deliveryForm?.addEventListener("input", (event) => {
   event.target.removeAttribute("aria-invalid");
   deliveryMessage.textContent = "";
+});
+processStepForm?.addEventListener("submit", saveProcessStep);
+cancelProcessStep?.addEventListener("click", () => processStepDialog?.close());
+processStepDialog?.addEventListener("close", resetProcessStepDialog);
+processStepForm?.addEventListener("input", (event) => {
+  event.target.removeAttribute("aria-invalid");
+  if (processStepMessage) processStepMessage.textContent = "";
 });
 closeCancelProcess?.addEventListener("click", () => cancelProcessDialog?.close());
 cancelProcessDialog?.addEventListener("close", () => {
@@ -1403,7 +1416,6 @@ function renderGeneralModule(processo) {
       ${canCancelProcessInUi(processo) ? '<button type="button" class="secondary danger-action" data-cancel-process="true">Anular empenho</button>' : ""}
       ${canInactivateProcessInUi(processo) ? '<button type="button" class="secondary danger-action" data-inactivate-process="true">Inativar empenho</button>' : ""}
     </div>
-    ${newDataPanel(processo)}
   `;
 }
 
@@ -1758,39 +1770,86 @@ async function deleteObservation(observationId) {
   }
 }
 
-async function saveNewProcessData() {
-  if (!state.selectedProcess) return;
-  const statusField = detailPanel.querySelector("[data-detail-status]");
-  const dateField = detailPanel.querySelector("[data-detail-date]");
-  const status = statusField?.value;
-  if (["Entrega parcial", "Entregue"].includes(status)) {
-    openDeliveryDialog(dateField?.value || "", status === "Entregue");
-    return;
+function openProcessStepDialog(step) {
+  const processo = state.selectedProcess;
+  if (!processo || !step || !processStepDialog || !processStepForm) return;
+
+  resetProcessStepDialog();
+  state.processStepDraft = {
+    processId: processo.id,
+    fromStatus: processo.status,
+    status: step.status,
+    field: step.field || ""
+  };
+  processStepDialogTitle.textContent = step.button;
+  processStepDialogDescription.textContent = step.title;
+  processStepDateGroup?.classList.toggle("hidden", !step.field);
+  if (processStepDateLabel) processStepDateLabel.textContent = step.dateLabel || "Data";
+
+  const dateInput = processStepForm.elements.data;
+  if (dateInput) {
+    dateInput.required = Boolean(step.field);
+    dateInput.value = step.field ? displayDate(processo[step.field]) : "";
   }
-  const step = nextProcessStep(state.selectedProcess);
-  const allowedValue = state.meta.transicoes?.[state.selectedProcess.status];
-  const allowed = Array.isArray(allowedValue) ? allowedValue : (allowedValue ? [allowedValue] : []);
-  if (!step || status !== step.status || (allowed.length && !allowed.includes(status))) {
-    alert("A proxima etapa mudou. Atualize a tela e tente novamente.");
-    return;
-  }
-  const date = step.field ? normalizeDateInput(dateField?.value) : "";
-  if (!status || (step.field && !date)) {
-    alert("Informe a data para salvar.");
+  processStepDialog.showModal();
+  requestAnimationFrame(() => (step.field ? dateInput : processStepForm.querySelector('button[type="submit"]'))?.focus());
+}
+
+async function saveProcessStep(event) {
+  event.preventDefault();
+  const draft = state.processStepDraft;
+  const processo = state.selectedProcess;
+  if (!draft || !processo || processo.id !== draft.processId) {
+    processStepDialog?.close();
     return;
   }
 
-  const overrides = { status };
+  const step = nextProcessStep(processo);
+  const allowedValue = state.meta.transicoes?.[processo.status];
+  const allowed = Array.isArray(allowedValue) ? allowedValue : (allowedValue ? [allowedValue] : []);
+  if (!step || processo.status !== draft.fromStatus || step.status !== draft.status || (step.field || "") !== draft.field
+      || (allowed.length && !allowed.includes(step.status))) {
+    if (processStepMessage) processStepMessage.textContent = "A proxima etapa mudou. Atualize a tela e tente novamente.";
+    return;
+  }
+
+  const dateInput = processStepForm?.elements.data;
+  const date = step.field ? normalizeDateInput(dateInput?.value) : "";
+  if (step.field && !date) {
+    if (processStepMessage) processStepMessage.textContent = "Informe uma data valida para salvar.";
+    dateInput?.setAttribute("aria-invalid", "true");
+    dateInput?.focus();
+    return;
+  }
+
+  const overrides = { status: step.status };
   if (step.field) overrides[step.field] = date;
 
-  const updatedProcess = await api(`/api/processes/${state.selectedProcess.id}`, {
-    method: "PUT",
-    body: JSON.stringify(processUpdatePayload(overrides))
-  });
-  state.selectedProcess = updatedProcess;
-  renderProcessDetail();
-  await refreshAfterMutation("A etapa foi salva");
+  setFormBusy(processStepForm, true, "Salvando...");
+  try {
+    const updatedProcess = await api(`/api/processes/${processo.id}`, {
+      method: "PUT",
+      body: JSON.stringify(processUpdatePayload(overrides))
+    });
+    state.selectedProcess = updatedProcess;
+    processStepDialog?.close();
+    renderProcessDetail();
+    await refreshAfterMutation("A etapa foi salva");
+  } catch (error) {
+    if (processStepMessage) processStepMessage.textContent = error.message || "Nao foi possivel salvar a etapa.";
+  } finally {
+    setFormBusy(processStepForm, false);
+  }
 }
+
+function resetProcessStepDialog() {
+  state.processStepDraft = null;
+  processStepForm?.reset();
+  processStepForm?.querySelectorAll("[aria-invalid]").forEach((input) => input.removeAttribute("aria-invalid"));
+  processStepDateGroup?.classList.remove("hidden");
+  if (processStepMessage) processStepMessage.textContent = "";
+}
+
 function registerPartialDelivery() {
   openDeliveryDialog(state.selectedProcess?.dataEntrega || "", false);
 }
@@ -2260,34 +2319,19 @@ function newDataButton(processo) {
   return `<button type="button" class="secondary" data-show-new-data="true">${step.button}</button>`;
 }
 
-function newDataPanel(processo) {
-  if (!canEditGeneralInUi(processo)) return "";
-  const step = nextProcessStep(processo);
-  if (!step || ["Entrega parcial", "Entregue"].includes(step.status)) return "";
-  return `
-    <div class="new-data-panel hidden" data-new-data-panel>
-      <input type="hidden" data-detail-status value="${step.status}">
-      <span class="new-data-title">${step.title}</span>
-      ${step.field ? `<label>Data
-        <input type="text" inputmode="numeric" placeholder="DD-MM-AAAA" pattern="\\d{2}-\\d{2}-\\d{4}" maxlength="10" data-detail-date required>
-      </label>` : ""}
-      <button type="button" class="secondary" data-update-status="true">Salvar</button>
-    </div>
-  `;
-}
-
 function nextProcessStep(processo) {
   if (!processo || ["Pago", "Anulado"].includes(processo.status)) return null;
   const steps = {
     "Enviado para SALC": {
-      button: "Registrar envio de empenho para fornecedor",
-      title: "Informe a data de envio do empenho para fornecedor",
+      button: "Registrar envio ao fornecedor",
+      title: "Informe a data do envio ao fornecedor.",
       status: "Empenho enviado ao fornecedor",
-      field: "dataEnvioFornecedor"
+      field: "dataEnvioFornecedor",
+      dateLabel: "Data do envio ao fornecedor"
     },
     "Empenho enviado ao fornecedor": {
-      button: "Enviar para aguardando entrega",
-      title: "Confirme que o empenho esta aguardando entrega",
+      button: "Confirmar aguardando entrega",
+      title: "Confirme que o empenho esta aguardando entrega.",
       status: "Aguardando entrega"
     },
     "Aguardando entrega": {
@@ -2303,27 +2347,30 @@ function nextProcessStep(processo) {
       field: "dataEntrega"
     },
     "Entregue": {
-      button: "Preparar envio para liquidacao",
-      title: "Confirme que o processo esta aguardando envio para liquidacao",
+      button: "Confirmar aguardando envio para liquidação",
+      title: "Confirme que o processo esta aguardando envio para liquidação.",
       status: "Aguardando envio para liquidacao"
     },
     "Aguardando envio para liquidacao": {
-      button: "Registrar envio para liquidacao",
-      title: "Informe a data de envio para liquidacao",
+      button: "Registrar envio para liquidação",
+      title: "Informe a data do envio para liquidação.",
       status: "Enviado para liquidacao",
-      field: "dataEnvioLiquidacao"
+      field: "dataEnvioLiquidacao",
+      dateLabel: "Data do envio para liquidação"
     },
     "Enviado para liquidacao": {
-      button: "Registrar liquidacao",
-      title: "Informe a data de liquidacao",
+      button: "Registrar liquidação",
+      title: "Informe a data da liquidação.",
       status: "Liquidado",
-      field: "dataLiquidacao"
+      field: "dataLiquidacao",
+      dateLabel: "Data da liquidação"
     },
     "Liquidado": {
       button: "Registrar pagamento",
-      title: "Informe a data de pagamento",
+      title: "Informe a data do pagamento.",
       status: "Pago",
-      field: "dataPagamento"
+      field: "dataPagamento",
+      dateLabel: "Data do pagamento"
     }
   };
   return steps[processo.status] || null;
