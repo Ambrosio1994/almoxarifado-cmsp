@@ -44,8 +44,15 @@ describe("contrato visual e de navegacao", () => {
     assert.match(html, /name="numeroProcesso" maxlength="20"/);
     assert.match(html, /name="numeroEmpenho" maxlength="20"/);
     assert.match(html, /name="fornecedor" maxlength="100"/);
-    assert.match(html, /name="dataProcesso"[\s\S]*?placeholder="DD-MM-AAAA"[\s\S]*?maxlength="10"/);
+    assert.match(html, /name="dataProcesso"[\s\S]*?data-date-input[\s\S]*?placeholder="DDMMAAAA"[\s\S]*?maxlength="10"/);
     assert.match(html, /name="conteudo"[^>]*minlength="1"[^>]*maxlength="350"/);
+  });
+
+  it("formata datas digitadas somente com numeros", () => {
+    assert.match(html, /data-date-input/g);
+    assert.match(app, /function formatDateInput\(value = ""\)/);
+    assert.match(app, /String\(value\)\.replace\(\/\\D\/g, ""\)\.slice\(0, 8\)/);
+    assert.match(app, /parts\.join\("-"\)/);
   });
 
   it("usa dialog acessivel para entregas e nao usa prompt nativo", () => {
@@ -64,6 +71,13 @@ describe("contrato visual e de navegacao", () => {
     assert.doesNotMatch(app, /newDataPanel/);
   });
 
+  it("oferece o download completo somente no modulo Documentos", () => {
+    assert.doesNotMatch(html, /id="downloadProcessButton"/);
+    const documentsModule = app.slice(app.indexOf("function renderDocumentsModule"), app.indexOf("function renderTimelineModule"));
+    assert.match(documentsModule, /data-download-process="true"/);
+    assert.match(app, /event\.target\.dataset\.downloadProcess/);
+  });
+
   it("oferece atualizacao explicita e anulacao motivada", () => {
     assert.doesNotMatch(html, /id="publicConsultButton"/);
     assert.doesNotMatch(app, /\bpublico\b/);
@@ -78,12 +92,15 @@ describe("contrato visual e de navegacao", () => {
     assert.match(app, /return state\.detailAudit/);
   });
 
-  it("mostra previa do documento anexado na linha do tempo e o abre em nova guia", () => {
+  it("mostra previa do documento anexado na linha do tempo e o abre em dialogo", () => {
     assert.match(app, /documentTimelinePreviewContent/);
-    assert.match(app, /<iframe title=.*#page=1&view=FitH/);
+    assert.match(app, /data-document-preview=/);
+    assert.match(app, /hydrateTimelineDocumentPreviews/);
+    assert.match(app, /frame\.src = `\$\{blobUrl\}#page=1&view=FitH`/);
     assert.match(app, /data-open-document=/);
     assert.match(app, /function openDocument\(path\)/);
-    assert.match(app, /url\.searchParams\.set\("inline", "1"\)/);
+    assert.match(app, /URL\.createObjectURL\(blob\)/);
+    assert.doesNotMatch(app, /documentInlineUrl/);
   });
 
   it("preserva IDs dos materiais e mostra o historico das entregas", () => {

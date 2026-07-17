@@ -689,7 +689,7 @@ describe("rotas http", () => {
     assert.match(longName.json().error, /nome do arquivo/i);
   });
 
-  it("permite abrir PDF anexado em modo de previa autenticada", async () => {
+  it("mantem PDF anexado protegido para a previa autenticada via Blob", async () => {
     const { token } = await authenticatedAs("almoxarifado");
     const created = await postJson("/api/processes", token, {
       numeroProcesso: `PREVIEW-${crypto.randomUUID().slice(0, 8)}`
@@ -707,21 +707,14 @@ describe("rotas http", () => {
 
     const preview = await invokeRequest({
       method: "GET",
-      path: `${path}?inline=1`,
-      headers: { authorization: `Bearer ${token}` }
-    });
-    assert.equal(preview.statusCode, 200);
-    assert.match(preview.headers["content-disposition"], /^inline;/);
-    assert.equal(preview.headers["x-frame-options"], "SAMEORIGIN");
-    assert.equal(preview.headers["content-type"], "application/pdf");
-
-    const download = await invokeRequest({
-      method: "GET",
       path,
       headers: { authorization: `Bearer ${token}` }
     });
-    assert.equal(download.statusCode, 200);
-    assert.match(download.headers["content-disposition"], /^attachment;/);
+    assert.equal(preview.statusCode, 200);
+    assert.match(preview.headers["content-disposition"], /^attachment;/);
+    assert.equal(preview.headers["x-frame-options"], "DENY");
+    assert.equal(preview.headers["content-type"], "application/pdf");
+    assert.match(preview.headers["content-security-policy"], /frame-src blob:/);
   });
 
   it("impede auditor de criar processos", async () => {
