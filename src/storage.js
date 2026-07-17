@@ -99,6 +99,26 @@ export async function readProcessesStore() {
   return { ...emptyStore(), processos: processes.rows.map(deserializeRecord) };
 }
 
+export async function readSuppliersStore() {
+  if (!(await requireConfiguredDatabase())) return readStore();
+  const suppliers = await query(`
+    SELECT data
+    FROM app_suppliers
+    ORDER BY COALESCE(updated_at, created_at) DESC, id DESC
+  `);
+  return { ...emptyStore(), fornecedores: suppliers.rows.map(deserializeRecord) };
+}
+
+export async function readAuditStore() {
+  if (!(await requireConfiguredDatabase())) return readStore();
+  const audit = await query(`
+    SELECT data
+    FROM app_process_audit
+    ORDER BY created_at DESC, id DESC
+  `);
+  return { ...emptyStore(), auditoria: audit.rows.map(deserializeRecord) };
+}
+
 export async function readStoreRevision() {
   if (!(await requireConfiguredDatabase())) return localStoreRevision;
   const result = await query("SELECT revision FROM app_state_revision WHERE id = true LIMIT 1");
