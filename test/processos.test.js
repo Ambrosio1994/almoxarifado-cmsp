@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import {
   canEditProcess,
   canAttachDocument,
+  canRemoveDocument,
+  calculateMaterialsTotal,
   calculateElapsedDays,
   canCancelProcess,
   dashboardAvailableYears,
@@ -17,6 +19,7 @@ import {
   isPdfDocument,
   isPublicConsultation,
   isProcessOverdue,
+  isValidStatusTransition,
   mutationRequiresAuthenticatedUser,
   normalizeMaterials,
   processHasRequiredDocuments,
@@ -87,6 +90,7 @@ describe("regras de processo", () => {
     });
 
     assert.deepEqual(materiais, [{
+      id: "legacy-material-0-226ac3f2",
       descricao: "Material de expediente",
       valorUnitario: 42.5,
       quantidade: 120
@@ -119,6 +123,8 @@ describe("regras de processo", () => {
   it("nao marca como atrasado quando ja foi entregue, liquidado ou pago", () => {
     assert.equal(isProcessOverdue({ diasDecorridos: 31, status: "Aguardando entrega" }), true);
     assert.equal(isProcessOverdue({ diasDecorridos: 45, status: "Entregue" }), false);
+    assert.equal(isProcessOverdue({ diasDecorridos: 45, status: "Aguardando envio para liquidacao" }), false);
+    assert.equal(isProcessOverdue({ diasDecorridos: 45, status: "Enviado para liquidacao" }), false);
     assert.equal(isProcessOverdue({ diasDecorridos: 45, status: "Liquidado" }), false);
     assert.equal(isProcessOverdue({ diasDecorridos: 45, status: "Pago" }), false);
     assert.equal(isProcessOverdue({ diasDecorridos: 45, status: "Anulado" }), false);
@@ -201,6 +207,18 @@ describe("regras de processo", () => {
     assert.equal(canCancelProcess({ ...processo, status: "Pago" }, { email: "usuario@cmsp.local", role: "almoxarifado" }), false);
     assert.equal(canCancelProcess({ ...processo, criadoPorId: "user-1" }, { id: "user-1", email: "novo@cmsp.local", role: "almoxarifado" }), true);
     assert.equal(canCancelProcess({ ...processo, criadoPorId: "user-1" }, { id: "user-2", email: "usuario@cmsp.local", role: "almoxarifado" }), false);
+    assert.equal(canCancelProcess({ ...processo, status: "Liquidado" }, { email: "usuario@cmsp.local", role: "almoxarifado" }), false);
+  });
+
+  it("centraliza o fluxo e impede saltos de etapa", () => {
+    assert.equal(isValidStatusTransition("Entregue", "Aguardando envio para liquidacao"), true);
+    assert.equal(isValidStatusTransition("Entregue", "Enviado para liquidacao"), false);
+    assert.equal(isValidStatusTransition("Empenho enviado ao fornecedor", "Aguardando entrega"), true);
+  });
+
+  it("calcula totais monetarios sem propagar valores nao finitos", () => {
+    assert.equal(calculateMaterialsTotal([{ valorUnitario: 0.1, quantidade: 3 }]), 0.3);
+    assert.equal(calculateMaterialsTotal([{ valorUnitario: Infinity, quantidade: 2 }]), 0);
   });
 
   it("identifica documentos PDF para compilacao", () => {
@@ -249,6 +267,8 @@ describe("regras de processo", () => {
     assert.equal(canAttachDocument({ status: "Aguardando entrega" }, "notaEmpenho"), true);
     assert.equal(canAttachDocument({ status: "Pago" }, "processoSped"), false);
     assert.equal(canAttachDocument({ status: "Anulado" }, "processoSped"), false);
+    assert.equal(canRemoveDocument({ status: "Enviado para liquidacao" }, "notaFiscal"), false);
+    assert.equal(canRemoveDocument({ status: "Enviado para liquidacao" }, "complementares:0"), true);
   });
 
   it("exige PDF nos documentos obrigatorios e aceita formatos adicionais somente nos complementares", () => {

@@ -47,4 +47,15 @@ describe("seguranca do armazenamento em testes", () => {
       processos: [{ id: "duplicado" }, { id: "duplicado" }]
     }), /ID duplicado/);
   });
+
+  it("rejeita uma gravacao baseada em snapshot local obsoleto", async () => {
+    const first = await readStore();
+    const stale = structuredClone(first);
+    first.configuracoes = { origem: "primeira" };
+    await writeStore(first);
+    stale.configuracoes = { origem: "obsoleta" };
+
+    await assert.rejects(() => writeStore(stale), (error) => error.statusCode === 409);
+    assert.deepEqual((await readStore()).configuracoes, { origem: "primeira" });
+  });
 });

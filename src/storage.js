@@ -39,10 +39,14 @@ export async function readStore() {
       root: directory,
       mode: 0o600
     });
-    return JSON.parse(content.toString("utf8"));
+    const store = JSON.parse(content.toString("utf8"));
+    const storedRevision = Number(store.__revision);
+    if (Number.isSafeInteger(storedRevision) && storedRevision >= 0) localStoreRevision = Math.max(localStoreRevision, storedRevision);
+    store.__revision = localStoreRevision;
+    return store;
   } catch (error) {
     if (error.code !== "ENOENT") throw error;
-    return emptyStore();
+    return { ...emptyStore(), __revision: localStoreRevision };
   }
 }
 
@@ -178,11 +182,19 @@ async function persistStore(store, securityEvents) {
     return;
   }
 
+  const expectedRevision = Number.isSafeInteger(store.__revision) ? store.__revision : localStoreRevision;
+  if (expectedRevision !== localStoreRevision) {
+    const error = new Error("Os dados foram alterados por outro usuario. Atualize a tela e tente novamente.");
+    error.statusCode = 409;
+    throw error;
+  }
+  const committedRevision = localStoreRevision + 1;
+  store.__revision = committedRevision;
   await atomicWriteStore(store);
+  localStoreRevision = committedRevision;
   for (const event of securityEvents) {
     await recordSecurityEvent(event.eventType, event);
   }
-  localStoreRevision += 1;
 }
 
 async function atomicWriteStore(store) {
@@ -653,7 +665,8 @@ function emptyStore() {
     observacoes: [],
     emailHistorico: [],
     usuarios: [],
-    configuracoes: {}
+    configuracoes: {},
+    __revision: localStoreRevision
   };
 }
 

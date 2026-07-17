@@ -53,6 +53,21 @@ describe("contrato visual e de navegacao", () => {
     assert.doesNotMatch(app, /\bprompt\s*\(/);
   });
 
+  it("oferece consulta publica, atualizacao explicita e anulacao motivada", () => {
+    assert.match(html, /id="publicConsultButton"/);
+    assert.match(html, /id="refreshProcessesButton"/);
+    assert.match(html, /id="cancelProcessDialog"/);
+    assert.match(html, /name="motivo"[^>]*maxlength="1000"[^>]*required/);
+    assert.match(app, /currentUser\?\.publico \? "\/api\/processes\/export"/);
+  });
+
+  it("preserva IDs dos materiais e mostra o historico das entregas", () => {
+    assert.match(app, /row\.dataset\.materialId = material\.id/);
+    assert.match(app, /materialId: balance\.material\.id/);
+    assert.match(app, /entrega\.recebidoPor/);
+    assert.match(app, /entrega\.observacao/);
+  });
+
   it("mantem os indicadores do Painel densos em tablets e legiveis no celular", () => {
     const tabletRules = styles.slice(styles.indexOf("@media (max-width: 980px)"), styles.indexOf("@media (prefers-reduced-motion"));
     const mobileRules = styles.slice(styles.indexOf("@media (max-width: 640px)"));

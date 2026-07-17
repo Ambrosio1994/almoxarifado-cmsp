@@ -11,6 +11,27 @@ export const STATUS = [
   "Anulado"
 ];
 
+export const PROCESS_WORKFLOW = STATUS.filter((status) => status !== "Anulado");
+
+export const PROCESS_TRANSITIONS = Object.fromEntries(PROCESS_WORKFLOW.map((status, index) => (
+  [status, PROCESS_WORKFLOW[index + 1] || ""]
+)));
+
+export const DEFAULT_BUSINESS_TIME_ZONE = "America/Sao_Paulo";
+
+const DELIVERY_REACHED_STATUSES = new Set([
+  "Entregue",
+  "Aguardando envio para liquidacao",
+  "Enviado para liquidacao",
+  "Liquidado",
+  "Pago"
+]);
+
+const AWAITING_DELIVERY_STATUSES = new Set([
+  "Empenho enviado ao fornecedor",
+  "Aguardando entrega"
+]);
+
 export const QUICK_FILTERS = [
   "Em atraso",
   "Aguardando entrega",
@@ -43,8 +64,23 @@ export function canCancelProcess(processo, user = {}) {
   if (processo.status === "Anulado") return false;
   if (processo.status === "Pago") return false;
   if (user.role === "admin") return true;
+  if (processo.status === "Liquidado") return false;
   if (processo.criadoPorId) return Boolean(user.id) && processo.criadoPorId === user.id;
   return Boolean(processo.criadoPorEmail && user.email && processo.criadoPorEmail === user.email);
+}
+
+export function hasProcessReachedDelivery(processo = {}) {
+  return DELIVERY_REACHED_STATUSES.has(String(processo.status || ""));
+}
+
+export function isProcessAwaitingDelivery(processo = {}) {
+  return AWAITING_DELIVERY_STATUSES.has(String(processo.status || ""));
+}
+
+export function isValidStatusTransition(currentStatus = "", nextStatus = "") {
+  if (currentStatus === nextStatus) return true;
+  if (["Entrega parcial", "Entregue", "Anulado"].includes(nextStatus)) return false;
+  return Boolean(currentStatus) && PROCESS_TRANSITIONS[currentStatus] === nextStatus;
 }
 
 export function isPdfDocument(fileName = "", mimeType = "") {
@@ -144,6 +180,15 @@ export function canAttachDocument(processo = {}, documentKey = "") {
   return true;
 }
 
+export function canRemoveDocument(processo = {}, documentKey = "") {
+  if (!canAttachDocument(processo, documentKey)) return false;
+  if (REQUIRED_DOCUMENT_KEYS.includes(documentKey)
+      && ["Enviado para liquidacao", "Liquidado", "Pago"].includes(processo.status)) {
+    return false;
+  }
+  return true;
+}
+
 export function processHasRequiredDocuments(processo = {}) {
   const documentos = processo.documentos || {};
   return REQUIRED_DOCUMENT_KEYS.every((key) => Boolean(documentos[key]));
@@ -167,12 +212,13 @@ export function mutationRequiresAuthenticatedUser(method = "") {
   return String(method).toUpperCase() !== "GET";
 }
 
-export function calculateElapsedDays(dateText, now = new Date()) {
+export function calculateElapsedDays(dateText, now = new Date(), timeZone = DEFAULT_BUSINESS_TIME_ZONE) {
   if (!dateText) return 0;
-  const start = new Date(`${dateText}T00:00:00`);
-  if (Number.isNaN(start.getTime())) return 0;
+  const start = dateOnlyUtcValue(dateText);
+  const current = dateOnlyUtcValue(dateKeyInTimeZone(now, timeZone));
+  if (!Number.isFinite(start) || !Number.isFinite(current)) return 0;
   const msPerDay = 24 * 60 * 60 * 1000;
-  return Math.max(0, Math.floor((startOfDay(now) - startOfDay(start)) / msPerDay));
+  return Math.max(0, Math.floor((current - start) / msPerDay));
 }
 
 export function deadlineBand(days) {
@@ -184,9 +230,9 @@ export function deadlineBand(days) {
   return "ok";
 }
 
-export function enrichProcess(processo, now = new Date()) {
+export function enrichProcess(processo, now = new Date(), timeZone = DEFAULT_BUSINESS_TIME_ZONE) {
   const dataReferenciaPrazo = processDeadlineDate(processo);
-  const diasDecorridos = calculateElapsedDays(dataReferenciaPrazo, now);
+  const diasDecorridos = calculateElapsedDays(dataReferenciaPrazo, now, timeZone);
   const materiais = normalizeMaterials(processo);
   return {
     ...processo,
@@ -219,9 +265,15 @@ export function normalizeMaterials(processo = {}) {
 }
 
 export function calculateMaterialsTotal(materiais = []) {
-  return materiais.reduce((total, material) => (
-    total + Number(material.valorUnitario || 0) * Number(material.quantidade || 0)
-  ), 0);
+  let totalCents = 0;
+  for (const material of materiais) {
+    const lineTotal = Number(material.valorUnitario || 0) * Number(material.quantidade || 0);
+    if (!Number.isFinite(lineTotal)) return 0;
+    const lineCents = Math.round((lineTotal + Number.EPSILON) * 100);
+    if (!Number.isSafeInteger(lineCents) || !Number.isSafeInteger(totalCents + lineCents)) return 0;
+    totalCents += lineCents;
+  }
+  return totalCents / 100;
 }
 
 export function summarizeMaterials(materiais = []) {
@@ -232,7 +284,9 @@ export function summarizeMaterials(materiais = []) {
 }
 
 export function isProcessOverdue(processo = {}) {
-  return processo.diasDecorridos > 30 && !["Entregue", "Liquidado", "Pago", "Anulado"].includes(processo.status);
+  return processo.diasDecorridos > 30
+    && processo.status !== "Anulado"
+    && !hasProcessReachedDelivery(processo);
 }
 
 export function createAuditEntry({ processoId, usuario, usuarioEmail, usuarioId, acao, detalhes, documento, alteracoes }) {
@@ -277,7 +331,7 @@ export function applyQuickFilter(processos, quickFilter) {
 
   return processos.filter((processo) => {
     if (quickFilter === "Em atraso") return isProcessOverdue(processo);
-    if (quickFilter === "Aguardando entrega") return processo.status === "Aguardando entrega";
+    if (quickFilter === "Aguardando entrega") return isProcessAwaitingDelivery(processo);
     if (quickFilter === "Entrega parcial") return processo.status === "Entrega parcial";
     if (quickFilter === "Pendentes de liquidacao") return ["Entregue", "Aguardando envio para liquidacao"].includes(processo.status);
     if (quickFilter === "Liquidado") return processo.status === "Liquidado";
@@ -300,7 +354,7 @@ export function dashboardMetrics(processos, year) {
 
   return {
     processosAtivos: ativos.length,
-    aguardandoEntrega: ativos.filter((processo) => processo.status === "Aguardando entrega").length,
+    aguardandoEntrega: ativos.filter((processo) => isProcessAwaitingDelivery(processo)).length,
     atrasados: ativos.filter((processo) => isProcessOverdue(processo)).length,
     enviadosLiquidacao: ativos.filter((processo) => processo.status === "Enviado para liquidacao").length,
     pendentesLiquidacao: ativos.filter((processo) => ["Entregue", "Aguardando envio para liquidacao"].includes(processo.status)).length,
@@ -397,14 +451,47 @@ function normalize(value = "") {
     .trim();
 }
 
-function startOfDay(date) {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+export function dateKeyInTimeZone(value = new Date(), timeZone = DEFAULT_BUSINESS_TIME_ZONE) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit"
+    }).formatToParts(date);
+    const entries = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+    return `${entries.year}-${entries.month}-${entries.day}`;
+  } catch {
+    return "";
+  }
 }
 
-function normalizeMaterial(material = {}) {
-  return {
+function dateOnlyUtcValue(value = "") {
+  const match = String(value || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return Number.NaN;
+  const timestamp = Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  const normalized = new Date(timestamp).toISOString().slice(0, 10);
+  return normalized === String(value) ? timestamp : Number.NaN;
+}
+
+function normalizeMaterial(material = {}, index = 0) {
+  const normalized = {
     descricao: String(material.descricao || "").trim(),
     valorUnitario: Number(material.valorUnitario || 0),
     quantidade: Number(material.quantidade || 0)
   };
+  normalized.id = material.id ? String(material.id) : legacyMaterialId(material, index);
+  return normalized;
+}
+
+function legacyMaterialId(material = {}, index = 0) {
+  const source = `${index}|${material.descricao || ""}|${material.valorUnitario || 0}|${material.quantidade || 0}`;
+  let hash = 2166136261;
+  for (const character of source) {
+    hash ^= character.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `legacy-material-${index}-${(hash >>> 0).toString(16)}`;
 }

@@ -304,7 +304,8 @@ describe("rotas http", () => {
 
   it("invalida imediatamente o cache do painel depois de uma mutacao", async () => {
     const { token } = await authenticatedAs("almoxarifado");
-    const before = await invokeRequest({ method: "GET", path: "/api/dashboard" });
+    const currentYear = new Date().getFullYear();
+    const before = await invokeRequest({ method: "GET", path: `/api/dashboard?ano=${currentYear}` });
     assert.equal(before.statusCode, 200);
     const selectedYear = before.json().ano;
 
@@ -314,7 +315,7 @@ describe("rotas http", () => {
     });
     assert.equal(created.statusCode, 201);
 
-    const after = await invokeRequest({ method: "GET", path: "/api/dashboard" });
+    const after = await invokeRequest({ method: "GET", path: `/api/dashboard?ano=${currentYear}` });
     assert.equal(after.statusCode, 200);
     assert.equal(after.json().metrics.processosAtivos, before.json().metrics.processosAtivos + 1);
   });
@@ -425,6 +426,92 @@ describe("rotas http", () => {
     }
   });
 
+  it("protege anulacao liquidada, exige motivo e impede inativar pagamento", async () => {
+    const { token } = await authenticatedAs("almoxarifado");
+    const created = await postJson("/api/processes", token, {
+      numeroProcesso: `LOCK-${crypto.randomUUID().slice(0, 8)}`
+    });
+    assert.equal(created.statusCode, 201);
+
+    const noReason = await postJson(`/api/processes/${created.json().id}/cancel`, token, { motivo: " " });
+    assert.equal(noReason.statusCode, 400);
+
+    const store = await readStore();
+    const process = store.processos.find((item) => item.id === created.json().id);
+    process.status = "Liquidado";
+    await writeStore(store);
+    const commonCancellation = await postJson(`/api/processes/${process.id}/cancel`, token, { motivo: "Tentativa" });
+    assert.equal(commonCancellation.statusCode, 403);
+
+    const { token: adminToken } = await authenticatedAs("admin");
+    const paidStore = await readStore();
+    const paid = paidStore.processos.find((item) => item.id === process.id);
+    paid.status = "Pago";
+    await writeStore(paidStore);
+    const inactivation = await postJson(`/api/processes/${paid.id}/inactivate`, adminToken, {});
+    assert.equal(inactivation.statusCode, 403);
+  });
+
+  it("aplica o fluxo intermediario e reconcilia saldo ao editar materiais entregues", async () => {
+    const { token } = await authenticatedAs("almoxarifado");
+    const store = await readStore();
+    const base = {
+      numeroProcesso: `FLOW-${crypto.randomUUID().slice(0, 8)}`,
+      status: "Entregue",
+      dataEnvioFornecedor: "2024-01-10",
+      dataEntrega: "2024-01-15",
+      materiais: [{ id: "material-1", descricao: "Papel", valorUnitario: 10, quantidade: 10 }],
+      entregas: [{
+        id: crypto.randomUUID(), data: "2024-01-15",
+        itens: [{ materialId: "material-1", materialIndex: 0, descricao: "Papel", quantidade: 10 }]
+      }],
+      documentos: {
+        processoSped: { fileName: "processo.pdf" },
+        notaEmpenho: { fileName: "empenho.pdf" },
+        notaFiscal: { fileName: "fiscal.pdf" }
+      },
+      versao: 1, inativo: false
+    };
+    const workflowProcess = { ...structuredClone(base), id: crypto.randomUUID() };
+    const balanceProcess = { ...structuredClone(base), id: crypto.randomUUID(), numeroProcesso: `${base.numeroProcesso}-BAL` };
+    store.processos.push(workflowProcess, balanceProcess);
+    await writeStore(store);
+
+    const payload = (process, overrides = {}) => ({
+      numeroProcesso: process.numeroProcesso,
+      numeroEmpenho: "",
+      fornecedor: "",
+      materiais: process.materiais,
+      dataEnvioFornecedor: process.dataEnvioFornecedor,
+      dataEntrega: process.dataEntrega,
+      status: process.status,
+      versao: process.versao,
+      ...overrides
+    });
+    const skipped = await putJson(`/api/processes/${workflowProcess.id}`, token, payload(workflowProcess, {
+      status: "Enviado para liquidacao",
+      dataEnvioLiquidacao: "2024-01-16"
+    }));
+    assert.equal(skipped.statusCode, 400);
+    assert.match(skipped.json().error, /transicao/i);
+
+    const awaiting = await putJson(`/api/processes/${workflowProcess.id}`, token, payload(workflowProcess, {
+      status: "Aguardando envio para liquidacao"
+    }));
+    assert.equal(awaiting.statusCode, 200);
+    const missingDate = await putJson(`/api/processes/${workflowProcess.id}`, token, payload(awaiting.json(), {
+      status: "Enviado para liquidacao"
+    }));
+    assert.equal(missingDate.statusCode, 400);
+    assert.match(missingDate.json().error, /data de envio para liquidacao/i);
+
+    const reconciled = await putJson(`/api/processes/${balanceProcess.id}`, token, payload(balanceProcess, {
+      materiais: [{ id: "material-1", descricao: "Papel", valorUnitario: 10, quantidade: 20 }]
+    }));
+    assert.equal(reconciled.statusCode, 200);
+    assert.equal(reconciled.json().status, "Entrega parcial");
+  });
+
   it("rejeita identificadores vazios e limites excedidos", async () => {
     const { token } = await authenticatedAs("almoxarifado");
     const cases = [
@@ -492,6 +579,22 @@ describe("rotas http", () => {
   it("rejeita status e datas invalidas sem tocar no armazenamento", () => {
     assert.match(validateProcessBody({ numeroProcesso: "P-1", status: "Status inventado" }), /Status invalido/);
     assert.match(validateProcessBody({ numeroProcesso: "P-1", dataEnvioEmpenho: "2026-02-31" }), /Data invalida/);
+  });
+
+  it("rejeita materiais malformados, totais nao finitos e cronologia impossivel", () => {
+    assert.match(validateProcessBody({ numeroProcesso: "---" }), /letras ou numeros/i);
+    assert.match(validateProcessBody({ numeroProcesso: "P-1", materiais: {} }), /lista/i);
+    assert.match(validateProcessBody({ numeroProcesso: "P-1", materiais: [null] }), /objeto valido/i);
+    assert.match(validateProcessBody({
+      numeroProcesso: "P-1",
+      materiais: [{ descricao: "Item", valorUnitario: "Infinity", quantidade: 2 }]
+    }), /numeros nao negativos/i);
+    assert.match(validateProcessBody({ numeroProcesso: "P-1", dataProcesso: "2999-01-01" }), /futuro/i);
+    assert.match(validateProcessBody({
+      numeroProcesso: "P-1",
+      dataEnvioFornecedor: "2026-02-10",
+      dataEntrega: "2026-02-09"
+    }), /anterior/i);
   });
 
   it("rejeita status e datas invalidas recebidas pela API", async () => {
@@ -858,6 +961,15 @@ function escapeRegExp(value = "") {
 function postJson(path, token, body) {
   return invokeRequest({
     method: "POST",
+    path,
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify(body)
+  });
+}
+
+function putJson(path, token, body) {
+  return invokeRequest({
+    method: "PUT",
     path,
     headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
     body: JSON.stringify(body)
