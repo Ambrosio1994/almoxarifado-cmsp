@@ -68,7 +68,8 @@ import {
   getUploadMetadata,
   inspectUploadIntegrity,
   putUploadFile,
-  streamUploadTo
+  streamUploadTo,
+  uploadStorageReadinessState
 } from "./uploads/upload-storage.js";
 import {
   hashPassword,
@@ -354,6 +355,16 @@ export async function requestHandler(req, res) {
     res.setHeader("x-request-id", requestId);
     const url = new URL(req.url, `http://${req.headers.host}`);
 
+    if (["/health", "/health/live", "/health/ready"].includes(url.pathname)) {
+      await handleHealth(res, url.pathname);
+      return;
+    }
+
+    if (!applicationStartupComplete) {
+      sendJson(res, 503, { error: "Aplicacao ainda esta inicializando o armazenamento de uploads." });
+      return;
+    }
+
     if (url.pathname.startsWith("/auth/")) {
       await handleAuth(req, res, url);
       return;
@@ -361,11 +372,6 @@ export async function requestHandler(req, res) {
 
     if (url.pathname.startsWith("/api/")) {
       await handleApi(req, res, url);
-      return;
-    }
-
-    if (["/health", "/health/live", "/health/ready"].includes(url.pathname)) {
-      await handleHealth(res, url.pathname);
       return;
     }
 
@@ -405,32 +411,64 @@ function sanitizedRequestPath(req = {}) {
 }
 
 const server = createServer(requestHandler);
+let applicationStartupComplete = !isMainModule();
 
 if (isMainModule()) {
+  await startApplication();
+}
+
+async function startApplication() {
   const uploadStorageCheckOnly = process.argv.includes("--check-upload-storage");
   const storeBackend = await detectStoreBackend();
   if (process.env.NODE_ENV === "production" && storeBackend !== "postgres") {
     throw new Error("A aplicacao exige PostgreSQL migrado em producao.");
   }
-  let uploadStorageReady = true;
-  try {
-    await ensureUploadStorageReady({ backend: UPLOAD_STORAGE_BACKEND, root: UPLOAD_ROOT });
-  } catch (error) {
-    logError("upload_storage_startup_failed", {
-      message: error?.message || "Erro desconhecido",
-      code: error?.code || error?.response?.status || null,
-      reason: error?.reason || error?.response?.data?.error?.errors?.[0]?.reason || error?.errors?.[0]?.reason || null
-    });
-    process.exitCode = 1;
-    await closePool().catch((closeError) => logError("database_close_failed", { message: closeError.message }));
-    uploadStorageReady = false;
+  if (!uploadStorageCheckOnly) {
+    await listenForStartup();
+    for (const signal of ["SIGTERM", "SIGINT"]) {
+      process.once(signal, () => gracefulShutdown(signal));
+    }
   }
-  if (uploadStorageReady && process.env.NODE_ENV === "production") {
-    const uploadIntegrity = await inspectUploadIntegrity({
+  try {
+    await ensureUploadStorageReady({
       backend: UPLOAD_STORAGE_BACKEND,
       root: UPLOAD_ROOT,
-      force: true
+      onEvent: logInfo
     });
+  } catch (error) {
+    logError("upload_storage_startup_failed", {
+      backend: UPLOAD_STORAGE_BACKEND,
+      stage: error?.stage || "unknown",
+      message: safeStartupErrorMessage(error),
+      code: error?.code || error?.response?.status || null,
+      reason: error?.reason || null
+    });
+    process.exitCode = 1;
+    await closeServerAfterStartupFailure();
+    await closePool().catch((closeError) => logError("database_close_failed", { message: closeError.message }));
+    return;
+  }
+  if (process.env.NODE_ENV === "production") {
+    let uploadIntegrity;
+    try {
+      uploadIntegrity = await inspectUploadIntegrity({
+        backend: UPLOAD_STORAGE_BACKEND,
+        root: UPLOAD_ROOT,
+        force: true
+      });
+    } catch (error) {
+      logError("upload_storage_startup_failed", {
+        backend: UPLOAD_STORAGE_BACKEND,
+        stage: "integrity_validation",
+        message: safeStartupErrorMessage(error),
+        code: error?.code || error?.response?.status || null,
+        reason: error?.reason || null
+      });
+      process.exitCode = 1;
+      await closeServerAfterStartupFailure();
+      await closePool().catch((closeError) => logError("database_close_failed", { message: closeError.message }));
+      return;
+    }
     if (!uploadIntegrity.ok) {
       logError("upload_storage_incomplete", uploadIntegrity);
     }
@@ -438,21 +476,34 @@ if (isMainModule()) {
       console.log(JSON.stringify({ event: "upload_storage_check", ...uploadIntegrity }));
       await closePool();
       process.exitCode = uploadIntegrity.ok ? 0 : 1;
+      return;
     }
   }
-  if (uploadStorageReady && !uploadStorageCheckOnly) {
+  applicationStartupComplete = true;
+  if (!uploadStorageCheckOnly) {
     console.log(`Storage backend ativo: ${storeBackend}`);
     console.log(`Upload backend ativo: ${configuredUploadStorageBackend({ backend: UPLOAD_STORAGE_BACKEND })}`);
     if (UPLOAD_STORAGE_BACKEND === "local") console.log(`Upload root ativo: ${UPLOAD_ROOT}`);
-    server.listen(PORT, () => {
-      console.log(`Almoxarifado CMSP em http://localhost:${PORT}`);
-      startEmailScheduler();
-      startMaintenance();
-    });
-    for (const signal of ["SIGTERM", "SIGINT"]) {
-      process.once(signal, () => gracefulShutdown(signal));
-    }
+    console.log(`Almoxarifado CMSP em http://localhost:${PORT}`);
+    startEmailScheduler();
+    startMaintenance();
   }
+}
+
+function listenForStartup() {
+  return new Promise((resolve, reject) => {
+    const onError = (error) => reject(error);
+    server.once("error", onError);
+    server.listen(PORT, () => {
+      server.off("error", onError);
+      resolve();
+    });
+  });
+}
+
+function closeServerAfterStartupFailure() {
+  if (!server.listening) return Promise.resolve();
+  return new Promise((resolve) => server.close(() => resolve()));
 }
 
 async function handleAuth(req, res, url) {
@@ -2322,11 +2373,15 @@ async function handleHealth(res, pathname = "/health") {
     return;
   }
   const storageBackend = databaseConfigured() ? "postgres" : "json";
+  const uploadStartup = uploadStorageReadinessState();
+  const uploadStartupReady = process.env.NODE_ENV !== "production" || uploadStartup.ready;
   const checks = {
     storage: storageBackend === "json" && process.env.NODE_ENV !== "production",
     storageBackend,
     uploads: {
       ok: process.env.NODE_ENV !== "production",
+      ready: uploadStartupReady,
+      stage: uploadStartup.stage,
       referenced: 0,
       available: 0,
       missing: 0
@@ -2343,7 +2398,7 @@ async function handleHealth(res, pathname = "/health") {
       checks.storage = false;
     }
   }
-  if (process.env.NODE_ENV === "production" && checks.storage) {
+  if (process.env.NODE_ENV === "production" && checks.storage && uploadStartupReady) {
     try {
       checks.uploads = await inspectUploadIntegrity({ backend: UPLOAD_STORAGE_BACKEND, root: UPLOAD_ROOT });
     } catch {
@@ -2351,7 +2406,11 @@ async function handleHealth(res, pathname = "/health") {
     }
   }
   const ok = pathname === "/health/ready"
-    ? checks.storage && checks.uploads.ok && (process.env.NODE_ENV !== "production" || storageBackend === "postgres")
+    ? readinessChecksPass(checks, {
+      nodeEnvironment: process.env.NODE_ENV,
+      uploadStartupReady,
+      applicationStartupComplete
+    })
     : checks.storage && checks.uploads.ok && checks.emailConfigured && !checks.scheduler.degraded;
   sendJson(res, ok ? 200 : 503, {
     ok,
@@ -2359,6 +2418,24 @@ async function handleHealth(res, pathname = "/health") {
     checks,
     checkedAt: new Date().toISOString()
   });
+}
+
+export function readinessChecksPass(checks, options = {}) {
+  const production = options.nodeEnvironment === "production";
+  return Boolean(
+    checks?.storage
+    && checks?.uploads?.ok
+    && options.uploadStartupReady !== false
+    && options.applicationStartupComplete !== false
+    && (!production || checks?.storageBackend === "postgres")
+  );
+}
+
+function safeStartupErrorMessage(error) {
+  return String(error?.message || "Erro desconhecido")
+    .replace(/1\/\/[A-Za-z0-9._-]+/g, "[refresh-token-redacted]")
+    .replace(/ya29\.[A-Za-z0-9._-]+/g, "[access-token-redacted]")
+    .slice(0, 500);
 }
 
 function logInfo(event, data = {}) {

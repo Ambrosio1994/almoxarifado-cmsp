@@ -11,6 +11,7 @@ import {
   emailSchedulerHealthStatus,
   errorResponsePayload,
   isValidPassword,
+  readinessChecksPass,
   requiresAdmin,
   resolveEmailConfiguration,
   roleCanMutate,
@@ -42,6 +43,30 @@ describe("respostas de erro do servidor", () => {
   it("identifica corretamente js e css", () => {
     assert.equal(contentTypeForPath("app.js"), "text/javascript; charset=utf-8");
     assert.equal(contentTypeForPath("styles.css"), "text/css; charset=utf-8");
+  });
+});
+
+describe("readiness da inicializacao de uploads", () => {
+  const healthyChecks = {
+    storage: true,
+    storageBackend: "postgres",
+    uploads: { ok: true }
+  };
+
+  it("mantem /health/ready indisponivel enquanto o armazenamento inicializa", () => {
+    assert.equal(readinessChecksPass(healthyChecks, {
+      nodeEnvironment: "production",
+      uploadStartupReady: false,
+      applicationStartupComplete: false
+    }), false);
+  });
+
+  it("libera /health/ready depois de banco, identidade e integridade estarem prontos", () => {
+    assert.equal(readinessChecksPass(healthyChecks, {
+      nodeEnvironment: "production",
+      uploadStartupReady: true,
+      applicationStartupComplete: true
+    }), true);
   });
 });
 

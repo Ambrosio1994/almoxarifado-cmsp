@@ -103,7 +103,16 @@ export function validateUploadStorage(environment = {}) {
     uploadErrors.push("UPLOAD_STORAGE_BACKEND deve ser local ou drive.");
     return uploadErrors;
   }
-  if (backend !== "drive") return uploadErrors;
+  const migrationFlag = String(environment.UPLOAD_STORAGE_ALLOW_IDENTITY_MIGRATION || "").trim().toLowerCase();
+  if (migrationFlag && !["true", "false"].includes(migrationFlag)) {
+    uploadErrors.push("UPLOAD_STORAGE_ALLOW_IDENTITY_MIGRATION deve ser true ou false.");
+  }
+  if (backend !== "drive") {
+    if (migrationFlag === "true") {
+      uploadErrors.push("UPLOAD_STORAGE_ALLOW_IDENTITY_MIGRATION=true exige UPLOAD_STORAGE_BACKEND=drive.");
+    }
+    return uploadErrors;
+  }
   if (!String(environment.GOOGLE_DRIVE_FOLDER_ID || "").trim()) {
     uploadErrors.push("GOOGLE_DRIVE_FOLDER_ID e obrigatoria quando UPLOAD_STORAGE_BACKEND=drive.");
   }

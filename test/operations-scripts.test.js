@@ -106,6 +106,46 @@ describe("scripts operacionais", () => {
       GOOGLE_CLIENT_SECRET: "client-secret",
       GOOGLE_REFRESH_TOKEN: "refresh-token"
     }), []);
+
+    assert.match(validateUploadStorage({
+      UPLOAD_STORAGE_BACKEND: "drive",
+      GOOGLE_DRIVE_FOLDER_ID: "folder",
+      GOOGLE_CLIENT_ID: "client-id",
+      GOOGLE_CLIENT_SECRET: "client-secret",
+      GOOGLE_REFRESH_TOKEN: "refresh-token",
+      UPLOAD_STORAGE_ALLOW_IDENTITY_MIGRATION: "sempre"
+    }).join(" "), /UPLOAD_STORAGE_ALLOW_IDENTITY_MIGRATION/);
+    assert.match(validateUploadStorage({
+      UPLOAD_STORAGE_BACKEND: "local",
+      UPLOAD_STORAGE_ALLOW_IDENTITY_MIGRATION: "true"
+    }).join(" "), /UPLOAD_STORAGE_BACKEND=drive/);
+  });
+
+  it("nao mantem autenticacao ativa por conta de servico", () => {
+    const legacyEnvironmentName = ["GOOGLE", "SERVICE", "ACCOUNT", "KEY"].join("_");
+    const legacyAuthClass = ["Google", "Auth"].join("");
+    const legacyResolver = ["resolve", "Credentials"].join("");
+    const activeSources = [
+      "src/uploads/drive-storage.js",
+      "src/uploads/drive-storage-identity.js",
+      "src/uploads/upload-storage.js",
+      "src/server.js",
+      "scripts/validate-production-env.js"
+    ].map(readText).join("\n");
+
+    assert.equal(activeSources.includes(legacyEnvironmentName), false);
+    assert.equal(activeSources.includes(legacyAuthClass), false);
+    assert.equal(activeSources.includes(legacyResolver), false);
+  });
+
+  it("inclui a implementacao atual no Docker sem copia duplicada ou exclusao", () => {
+    const dockerfile = readText("Dockerfile");
+    const dockerignore = readText(".dockerignore");
+    assert.match(dockerfile, /COPY --chown=node:node \. \./);
+    assert.match(dockerfile, /CMD \["node", "src\/server\.js"\]/);
+    assert.doesNotMatch(dockerignore, /^src\/?$/m);
+    assert.doesNotMatch(dockerignore, /^scripts\/?$/m);
+    assert.equal(readText("src/uploads/drive-storage.js").length > 0, true);
   });
 
   it("le dominio e porta do env como texto, sem source nem avaliacao de shell", async () => {
