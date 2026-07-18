@@ -3,6 +3,7 @@ import { isAbsolute, join, normalize, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { closePool } from "../src/db/postgres.js";
 import { detectStoreBackend, readStore } from "../src/storage.js";
+import { UPLOAD_STORAGE_MARKER_NAME } from "../src/uploads/storage-identity.js";
 
 const root = resolve(process.env.UPLOAD_STORAGE_ROOT || fileURLToPath(new URL("../uploads/", import.meta.url)));
 const apply = process.argv.includes("--apply");
@@ -26,7 +27,7 @@ try {
   }
   const store = await readStore();
   const referenced = referencedUploadPaths(store);
-  const files = await walk(root);
+  const files = (await walk(root)).filter((file) => normalize(file.path) !== normalize(join(root, UPLOAD_STORAGE_MARKER_NAME)));
   const existing = new Set(files.map((file) => normalize(file.path)));
   const missingReferences = [...referenced].filter((file) => !existing.has(file));
   const now = Date.now();

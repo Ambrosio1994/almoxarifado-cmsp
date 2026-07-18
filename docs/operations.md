@@ -7,7 +7,7 @@ O ambiente oficial usa Neon como PostgreSQL de producao e atende em `https://sap
 Endpoints recomendados:
 
 - `GET /health/live`: confirma que o processo HTTP responde; use para reinicio automatico.
-- `GET /health/ready`: confirma storage e exige PostgreSQL em producao; use para retirar uma instancia do trafego.
+- `GET /health/ready`: confirma PostgreSQL, identidade do volume e disponibilidade de todos os uploads referenciados; use para retirar uma instancia do trafego.
 - `GET /health`: diagnostico completo legado, incluindo e-mail e scheduler.
 
 O endpoint `GET /health` responde com `200` quando:
@@ -33,6 +33,10 @@ docker run -e UPLOAD_STORAGE_ROOT=/data/uploads -v almox_uploads:/data/uploads .
 
 No Dockerfile, o caminho padrao de runtime esta em `/data/uploads`.
 
+O Compose usa deliberadamente o nome fixo `almoxarifado-cmsp_almoxarifado_uploads`, independente do diretorio ou do nome calculado para o projeto. Na primeira inicializacao, a aplicacao grava uma identidade privada no volume e no PostgreSQL. Se o volume for apagado, recriado ou trocado, a producao recusa a inicializacao. Se apenas alguns arquivos referenciados estiverem ausentes, a aplicacao permanece acessivel para reparo, registra `upload_storage_incomplete` e o readiness retorna `503` ate todos os arquivos serem restaurados ou substituidos.
+
+`npm start` e reservado para producao e define `NODE_ENV=production`; desenvolvimento local deve usar somente `npm run dev`. Isso evita iniciar acidentalmente uma segunda instancia gravando em `./uploads`. Nunca use `docker compose down -v` em producao.
+
 A instrucao `VOLUME` da imagem nao provisiona nem torna persistente um disco na plataforma de hospedagem. No Render ou servico equivalente, monte explicitamente um disco persistente em `/data` (de modo que `UPLOAD_STORAGE_ROOT=/data/uploads` fique dentro dele) antes de receber anexos. Sem esse mount, o PostgreSQL preserva os metadados, mas um deploy ou reinicio pode apagar os arquivos. Arquivos ja ausentes precisam ser restaurados do backup conjunto ou anexados novamente.
 
 Os arquivos nao sao mais servidos anonimamente: downloads exigem sessao autenticada por cookie `HttpOnly`. O login nao entrega token no corpo; clientes automatizados devem manter o cookie recebido em `Set-Cookie`. O suporte a Bearer existente e apenas de compatibilidade legada e nao constitui um fluxo para novos clientes. Em mais de uma replica, substitua o volume local por armazenamento de objetos ou filesystem compartilhado.
@@ -53,7 +57,7 @@ NODE_ENV=production npm run uploads:cleanup -- --expect-backend=postgres --confi
 6. Valide login, consulta autenticada, criacao controlada, download autenticado e fila de e-mail.
 7. Mantenha a imagem anterior disponivel para rollback da aplicacao. Migracoes devem ser aditivas; nao reverta schema sem um procedimento testado.
 
-O fluxo acima esta automatizado, com gates seguros, em `scripts/deploy-production.sh`. O deploy pausa a aplicacao, cria o backup consistente **antes** de executar testes ou migracoes, volta a instancia atual e somente depois continua o release. Execute `check` antes da janela e `deploy` para backup, testes isolados, migracao, build, start, readiness e smoke test.
+O fluxo acima esta automatizado, com gates seguros, em `scripts/deploy-production.sh`. O deploy pausa a aplicacao, cria o backup consistente **antes** de executar testes ou migracoes, volta a instancia atual e somente depois continua o release. Depois do build, um container temporario compara as referencias do PostgreSQL com o volume real; se houver arquivo ausente ou identidade divergente, o deploy para antes de substituir a aplicacao ativa. Execute `check` antes da janela e `deploy` para backup, testes isolados, migracao, build, validacao dos uploads, start, readiness e smoke test.
 
 Os limites `AUTH_MAX_BODY_BYTES` e `ADMIN_MAX_BODY_BYTES` reduzem a memoria aceita por rotas de autenticacao e administracao sem upload. `LOGIN_SCRYPT_CONCURRENCY` e `LOGIN_SCRYPT_MAX_QUEUE` limitam o trabalho simultaneo de verificacao de senha. O Painel usa cache curto por revisao, controlado por `DASHBOARD_CACHE_TTL_MS`; alteracoes persistidas invalidam naturalmente a revisao usada pela resposta.
 

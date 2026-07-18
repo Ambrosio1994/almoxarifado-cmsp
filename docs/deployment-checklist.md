@@ -10,7 +10,7 @@ Alvo oficial: `https://sapgestao.dpdns.org`, com PostgreSQL de producao no Neon.
 - [ ] Confirmar `DB_SSL=true` e `sslmode=require` ou `sslmode=verify-full` nas duas URLs; manter `channel_binding=require` quando fornecido pelo Neon.
 - [ ] Confirmar que a role de runtime tem somente os privilegios necessarios e que a credencial de migracao fica restrita ao operador/CI.
 - [ ] Em instalacao nova, configurar `LOCAL_ADMIN_EMAIL` e `LOCAL_ADMIN_PASSWORD`. Em banco existente, confirmar por consulta e teste de login que ha administrador local ativo antes de usar `CONFIRM_EXISTING_ADMIN_PROVISIONED=true`; `ADMIN_EMAILS` sozinho nao cria acesso.
-- [ ] Validar SMTP, `EMAIL_FROM_ADDRESS` em dominio verificado, administradores, limites de body/scrypt/cache, `TRUST_PROXY=true` e volume persistente de uploads.
+- [ ] Validar SMTP, `EMAIL_FROM_ADDRESS` em dominio verificado, administradores, limites de body/scrypt/cache, `TRUST_PROXY=true` e o volume persistente `almoxarifado-cmsp_almoxarifado_uploads`.
 - [ ] Garantir que `.env.production`, dumps, `.deploy/` e certificados privados nao aparecem em `git status` nem no artefato da imagem.
 
 ## DNS, firewall e TLS
@@ -27,12 +27,12 @@ Alvo oficial: `https://sapgestao.dpdns.org`, com PostgreSQL de producao no Neon.
 - [ ] Executar `bash scripts/deploy-production.sh check`.
 - [ ] Executar `bash scripts/deploy-production.sh backup`; confirmar que o volume descoberto existe, conferir no manifesto os hashes do dump e do arquivo de uploads e copiar o conjunto criptografado para armazenamento externo.
 - [ ] Restaurar o dump e os uploads periodicamente em staging; validar `pg_restore --list`, `tar -tzf` e uma amostra de download.
-- [ ] Executar `npm run deploy:production`. O script cria backup consistente antes dos testes isolados, aplica migracoes sob lock exclusivo, preserva a imagem anterior, sobe a nova imagem e aguarda readiness.
+- [ ] Executar `npm run deploy:production`. O script cria backup consistente, aplica migracoes sob lock exclusivo, valida PostgreSQL contra o volume antes de substituir a aplicacao, preserva a imagem anterior, sobe a nova imagem e aguarda readiness.
 - [ ] Confirmar que todas as migracoes aparecem uma unica vez em `app_schema_migrations`.
 
 ## Verificacao apos release
 
-- [ ] Confirmar `200` em `/health/live` e `/health/ready`, localmente e por HTTPS.
+- [ ] Confirmar `200` em `/health/live` e `/health/ready`, localmente e por HTTPS; em `/health/ready`, exigir `checks.uploads.ok=true` e `missing=0`.
 - [ ] Executar `npm run smoke:production`.
 - [ ] Validar login, consulta autenticada, criacao/edicao controlada, download autenticado e envio de e-mail de teste.
 - [ ] Conferir logs por `requestId`, erros de banco, falhas SMTP, limites de login e espaco do volume de uploads.

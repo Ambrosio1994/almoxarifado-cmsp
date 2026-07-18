@@ -61,6 +61,10 @@ import { closePool, databaseConfigured, query } from "./db/postgres.js";
 import { cleanupRateLimits, clearRateLimit, consumeRateLimitAttempt } from "./repositories/rate-limits.js";
 import { listSecurityEvents, recordSecurityEvent } from "./repositories/security-audit.js";
 import {
+  ensureUploadStorageIdentity,
+  readUploadStorageIdentity
+} from "./uploads/storage-identity.js";
+import {
   hashPassword,
   isValidPassword,
   MAX_PASSWORD_LENGTH,
@@ -122,6 +126,7 @@ const ADMIN_MAX_BODY_BYTES = Math.min(
 const LOGIN_SCRYPT_CONCURRENCY = positiveRuntimeInteger(process.env.LOGIN_SCRYPT_CONCURRENCY, 4);
 const LOGIN_SCRYPT_MAX_QUEUE = positiveRuntimeInteger(process.env.LOGIN_SCRYPT_MAX_QUEUE, 16);
 const DASHBOARD_CACHE_TTL_MS = positiveRuntimeInteger(process.env.DASHBOARD_CACHE_TTL_MS, 5_000);
+const UPLOAD_INTEGRITY_CACHE_TTL_MS = positiveRuntimeInteger(process.env.UPLOAD_INTEGRITY_CACHE_TTL_MS, 60_000);
 const MAX_UPLOAD_BYTES = positiveRuntimeInteger(process.env.MAX_UPLOAD_BYTES, 15 * 1024 * 1024);
 const MAX_PROCESS_UPLOAD_BYTES = positiveRuntimeInteger(process.env.MAX_PROCESS_UPLOAD_BYTES, 75 * 1024 * 1024);
 const MAX_TEMPLATE_UPLOAD_BYTES = positiveRuntimeInteger(process.env.MAX_TEMPLATE_UPLOAD_BYTES, 50 * 1024 * 1024);
@@ -170,6 +175,11 @@ const emailSchedulerState = {
 let maintenanceInterval;
 let localAdminBootstrapped = false;
 let activeCompiledDownloads = 0;
+let uploadStorageIdentity = "";
+const uploadIntegrityCache = {
+  checkedAt: 0,
+  result: null
+};
 const loginScryptLimiter = createWorkLimiter(LOGIN_SCRYPT_CONCURRENCY, LOGIN_SCRYPT_MAX_QUEUE);
 const dashboardCache = {
   generation: 0,
@@ -401,20 +411,35 @@ function sanitizedRequestPath(req = {}) {
 const server = createServer(requestHandler);
 
 if (isMainModule()) {
+  const uploadStorageCheckOnly = process.argv.includes("--check-upload-storage");
   const storeBackend = await detectStoreBackend();
   if (process.env.NODE_ENV === "production" && storeBackend !== "postgres") {
     throw new Error("A aplicacao exige PostgreSQL migrado em producao.");
   }
   await hardenPrivateTree(UPLOAD_ROOT);
-  console.log(`Storage backend ativo: ${storeBackend}`);
-  console.log(`Upload root ativo: ${UPLOAD_ROOT}`);
-  server.listen(PORT, () => {
-    console.log(`Almoxarifado CMSP em http://localhost:${PORT}`);
-    startEmailScheduler();
-    startMaintenance();
-  });
-  for (const signal of ["SIGTERM", "SIGINT"]) {
-    process.once(signal, () => gracefulShutdown(signal));
+  if (process.env.NODE_ENV === "production") {
+    uploadStorageIdentity = await initializeUploadStorageIdentity();
+    const uploadIntegrity = await inspectUploadStorageIntegrity({ force: true });
+    if (!uploadIntegrity.ok) {
+      logError("upload_storage_incomplete", uploadIntegrity);
+    }
+    if (uploadStorageCheckOnly) {
+      console.log(JSON.stringify({ event: "upload_storage_check", ...uploadIntegrity }));
+      await closePool();
+      process.exitCode = uploadIntegrity.ok ? 0 : 1;
+    }
+  }
+  if (!uploadStorageCheckOnly) {
+    console.log(`Storage backend ativo: ${storeBackend}`);
+    console.log(`Upload root ativo: ${UPLOAD_ROOT}`);
+    server.listen(PORT, () => {
+      console.log(`Almoxarifado CMSP em http://localhost:${PORT}`);
+      startEmailScheduler();
+      startMaintenance();
+    });
+    for (const signal of ["SIGTERM", "SIGINT"]) {
+      process.once(signal, () => gracefulShutdown(signal));
+    }
   }
 }
 
@@ -2306,6 +2331,12 @@ async function handleHealth(res, pathname = "/health") {
   const checks = {
     storage: storageBackend === "json" && process.env.NODE_ENV !== "production",
     storageBackend,
+    uploads: {
+      ok: process.env.NODE_ENV !== "production",
+      referenced: 0,
+      available: 0,
+      missing: 0
+    },
     emailConfigured: EMAIL_CONFIGURATION.configured,
     schedulerRunning: emailSchedulerRunning,
     scheduler: emailSchedulerHealthStatus()
@@ -2318,15 +2349,83 @@ async function handleHealth(res, pathname = "/health") {
       checks.storage = false;
     }
   }
+  if (process.env.NODE_ENV === "production" && checks.storage) {
+    try {
+      checks.uploads = await inspectUploadStorageIntegrity();
+    } catch {
+      checks.uploads = { ok: false, referenced: 0, available: 0, missing: null };
+    }
+  }
   const ok = pathname === "/health/ready"
-    ? checks.storage && (process.env.NODE_ENV !== "production" || storageBackend === "postgres")
-    : checks.storage && checks.emailConfigured && !checks.scheduler.degraded;
+    ? checks.storage && checks.uploads.ok && (process.env.NODE_ENV !== "production" || storageBackend === "postgres")
+    : checks.storage && checks.uploads.ok && checks.emailConfigured && !checks.scheduler.degraded;
   sendJson(res, ok ? 200 : 503, {
     ok,
-    degraded: !checks.storage || !checks.emailConfigured || checks.scheduler.degraded,
+    degraded: !checks.storage || !checks.uploads.ok || !checks.emailConfigured || checks.scheduler.degraded,
     checks,
     checkedAt: new Date().toISOString()
   });
+}
+
+async function initializeUploadStorageIdentity() {
+  return ensureUploadStorageIdentity({
+    root: UPLOAD_ROOT,
+    loadDatabaseIdentity: async () => {
+      const result = await query("SELECT value FROM app_settings WHERE key = 'uploadStorageIdentity' LIMIT 1");
+      return result.rows[0]?.value?.id || "";
+    },
+    claimDatabaseIdentity: async (identity) => {
+      await query(`
+        INSERT INTO app_settings (key, value, updated_at)
+        VALUES ('uploadStorageIdentity', $1::jsonb, now())
+        ON CONFLICT (key) DO NOTHING
+      `, [JSON.stringify({ id: identity })]);
+      const result = await query("SELECT value FROM app_settings WHERE key = 'uploadStorageIdentity' LIMIT 1");
+      return result.rows[0]?.value?.id || "";
+    }
+  });
+}
+
+async function inspectUploadStorageIntegrity(options = {}) {
+  const now = Date.now();
+  if (!options.force && uploadIntegrityCache.result && now - uploadIntegrityCache.checkedAt < UPLOAD_INTEGRITY_CACHE_TTL_MS) {
+    return uploadIntegrityCache.result;
+  }
+
+  const [processStore, settingsStore] = await Promise.all([readProcessesStore(), readSettingsStore()]);
+  const references = buildUploadReferenceMap({
+    processos: processStore.processos,
+    configuracoes: settingsStore.configuracoes
+  });
+  let available = 0;
+  let missing = 0;
+  for (const reference of references.values()) {
+    const fullPath = uploadReferenceFilePath(reference.path);
+    if (!fullPath) {
+      missing += 1;
+      continue;
+    }
+    try {
+      await privateFileMetadata(fullPath, { root: UPLOAD_ROOT, mode: 0o600 });
+      available += 1;
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      missing += 1;
+    }
+  }
+
+  const markerIdentity = await readUploadStorageIdentity(UPLOAD_ROOT);
+  const identityMatches = Boolean(uploadStorageIdentity) && markerIdentity === uploadStorageIdentity;
+  const result = Object.freeze({
+    ok: identityMatches && missing === 0,
+    identity: identityMatches,
+    referenced: references.size,
+    available,
+    missing
+  });
+  uploadIntegrityCache.checkedAt = now;
+  uploadIntegrityCache.result = result;
+  return result;
 }
 
 function logInfo(event, data = {}) {
