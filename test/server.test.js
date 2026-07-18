@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import {
@@ -709,6 +709,34 @@ describe("rotas http", () => {
     });
     assert.equal(longName.statusCode, 400);
     assert.match(longName.json().error, /nome do arquivo/i);
+  });
+
+  it("recusa o PDF e remove o arquivo quando o validador esta indisponivel", async () => {
+    const { token } = await authenticatedAs("almoxarifado");
+    const created = await postJson("/api/processes", token, {
+      numeroProcesso: `PDFV-${crypto.randomUUID().slice(0, 8)}`
+    });
+    assert.equal(created.statusCode, 201);
+    const processId = created.json().id;
+    const previousPath = process.env.PATH;
+    let response;
+
+    try {
+      process.env.PATH = "/diretorio-inexistente-sem-pdfinfo";
+      response = await postJson(`/api/processes/${processId}/documents`, token, {
+        documentKey: "processoSped",
+        fileName: "processo-sped.pdf",
+        mimeType: "application/pdf",
+        contentBase64: validPdfBuffer().toString("base64")
+      });
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+    }
+
+    assert.equal(response.statusCode, 503);
+    assert.match(response.json().error, /validacao de PDF esta indisponivel/i);
+    assert.deepEqual(await readdir(join(process.env.UPLOAD_STORAGE_ROOT, processId)), []);
   });
 
   it("mantem PDF anexado protegido para a previa autenticada via Blob", async () => {

@@ -940,9 +940,10 @@ async function handleApi(req, res, url) {
     const dir = join(UPLOAD_ROOT, "email-templates", safeTemplateKey);
     const fullPath = join(dir, safeFileName);
     await createPrivateFile(fullPath, content, { root: UPLOAD_ROOT, mode: 0o600, sync: true });
-    if (!(await isPersistedPdfRenderable(fullPath, content))) {
+    const pdfValidationError = await persistedPdfValidationError(fullPath, content);
+    if (pdfValidationError) {
       await rm(fullPath, { force: true }).catch(() => null);
-      sendJson(res, 400, { error: "O PDF esta corrompido ou nao possui uma estrutura renderizavel." });
+      sendJson(res, pdfValidationError.statusCode, { error: pdfValidationError.message });
       return;
     }
 
@@ -1548,9 +1549,10 @@ async function handleApi(req, res, url) {
       return;
     }
     await createPrivateFile(fullPath, content, { root: UPLOAD_ROOT, mode: 0o600, sync: true });
-    if (!(await isPersistedPdfRenderable(fullPath, content))) {
+    const pdfValidationError = await persistedPdfValidationError(fullPath, content);
+    if (pdfValidationError) {
       await rm(fullPath, { force: true }).catch(() => null);
-      sendJson(res, 400, { error: "O PDF esta corrompido ou nao possui uma estrutura renderizavel." });
+      sendJson(res, pdfValidationError.statusCode, { error: pdfValidationError.message });
       return;
     }
 
@@ -4009,11 +4011,21 @@ function runCommand(command, args, timeoutMs = 10_000) {
   });
 }
 
-async function isPersistedPdfRenderable(filePath, content) {
+async function persistedPdfValidationError(filePath, content) {
   const buffer = Buffer.isBuffer(content) ? content : Buffer.from(content || "");
-  if (!buffer.subarray(0, 4).equals(Buffer.from("%PDF"))) return true;
+  if (!buffer.subarray(0, 4).equals(Buffer.from("%PDF"))) return null;
   const result = await runCommand("pdfinfo", [filePath], PDF_COMMAND_TIMEOUT_MS);
-  return result === 0 || result === -1;
+  if (result === 0) return null;
+  if (result < 0) {
+    return {
+      statusCode: 503,
+      message: "O servico de validacao de PDF esta indisponivel. Tente novamente mais tarde."
+    };
+  }
+  return {
+    statusCode: 400,
+    message: "O PDF esta corrompido ou nao possui uma estrutura renderizavel."
+  };
 }
 
 function mergePdfDocuments(pdfBuffers) {
