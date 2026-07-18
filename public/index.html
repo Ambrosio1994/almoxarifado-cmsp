@@ -144,7 +144,7 @@
             <button type="button" class="detail-tab" id="detailTabDocuments" data-detail-tab="documents" role="tab" aria-controls="detailPanel" aria-selected="false">Documentos</button>
             <button type="button" class="detail-tab" id="detailTabTimeline" data-detail-tab="timeline" role="tab" aria-controls="detailPanel" aria-selected="false">Linha do tempo</button>
             <button type="button" class="detail-tab" id="detailTabDeliveries" data-detail-tab="deliveries" role="tab" aria-controls="detailPanel" aria-selected="false">Entregas</button>
-            <button type="button" class="detail-tab" id="detailTabObservations" data-detail-tab="observations" role="tab" aria-controls="detailPanel" aria-selected="false">Observacoes</button>
+            <button type="button" class="detail-tab" id="detailTabObservations" data-detail-tab="observations" role="tab" aria-controls="detailPanel" aria-selected="false">Observações</button>
             <button type="button" class="detail-tab" id="detailTabEmails" data-detail-tab="emails" role="tab" aria-controls="detailPanel" aria-selected="false">E-mails</button>
           </nav>
 
@@ -187,27 +187,29 @@
 
     <dialog id="observationsDialog" aria-labelledby="observationsDialogTitle">
       <form method="dialog" class="dialog-header">
-        <strong id="observationsDialogTitle">Observacoes</strong>
+        <strong id="observationsDialogTitle">Adicionar observação</strong>
         <button>Fechar</button>
       </form>
-      <div id="observationsList"></div>
       <form id="observationForm" class="observation-form">
-        <textarea name="conteudo" rows="4" minlength="1" maxlength="350" required placeholder="Nova observacao (ate 350 caracteres)"></textarea>
+        <label>Nova observação
+          <textarea name="conteudo" rows="4" minlength="1" maxlength="350" required placeholder="Escreva uma observação (até 350 caracteres)"></textarea>
+        </label>
         <button>Registrar</button>
         <p class="form-message" id="observationMessage" role="status" aria-live="polite"></p>
       </form>
+      <div id="observationsList"></div>
     </dialog>
 
     <dialog id="editObservationDialog" class="small-dialog" aria-labelledby="editObservationDialogTitle">
       <form method="dialog" class="dialog-header">
-        <strong id="editObservationDialogTitle">Alterar observacao</strong>
+        <strong id="editObservationDialogTitle">Alterar observação</strong>
         <button type="submit" class="secondary">Fechar</button>
       </form>
       <form id="editObservationForm" class="process-form">
         <input type="hidden" name="processId">
         <input type="hidden" name="observationId">
-        <label>Observacao <textarea name="conteudo" rows="5" minlength="1" maxlength="350" required></textarea></label>
-        <div class="actions"><button type="submit">Salvar alteracao</button></div>
+        <label>Observação <textarea name="conteudo" rows="5" minlength="1" maxlength="350" required></textarea></label>
+        <div class="actions"><button type="submit">Salvar alteração</button></div>
         <p class="form-message" id="editObservationMessage" role="status" aria-live="polite"></p>
       </form>
     </dialog>
@@ -226,7 +228,7 @@
           <legend>Materiais recebidos</legend>
           <div class="delivery-materials" id="deliveryMaterials"></div>
         </fieldset>
-        <label>Observacao
+        <label>Observação
           <textarea name="observacao" rows="3" maxlength="1000" placeholder="Opcional"></textarea>
         </label>
         <div class="actions">
@@ -328,7 +330,7 @@
         <label>E-mails <textarea name="emails" rows="3" placeholder="Um e-mail por linha"></textarea></label>
         <label>Telefones <textarea name="telefones" rows="3" placeholder="Um telefone por linha"></textarea></label>
         <label>Enderecos <textarea name="enderecos" rows="3" placeholder="Um endereco por linha"></textarea></label>
-        <label>Observacoes <textarea name="observacoes" rows="3" placeholder="Informacoes adicionais"></textarea></label>
+        <label>Observações <textarea name="observacoes" rows="3" placeholder="Informações adicionais"></textarea></label>
         <div class="actions">
           <button type="submit">Salvar informacoes</button>
           <button type="button" class="secondary" id="cancelSupplierInfo">Cancelar</button>

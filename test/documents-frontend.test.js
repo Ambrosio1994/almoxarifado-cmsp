@@ -217,6 +217,21 @@ describe("Documentos no DOM", () => {
       assert.match(timelineImage.parentElement?.textContent || dom.window.document.body.textContent, /não conseguiu renderizar/);
       assert.ok(revokedUrls.length >= 1, "URLs Blob do dialogo fechado devem ser revogadas");
 
+      dom.window.document.querySelector('[data-detail-tab="observations"]').click();
+      await waitFor(() => dom.window.document.querySelector("#detailPanel").textContent.includes("3 observações"));
+      const observationsCard = dom.window.document.querySelector("#detailPanel");
+      assert.match(observationsCard.textContent, /Observações do processo · 3 observações/);
+      assert.match(observationsCard.textContent, /Todas as observações estão listadas abaixo/);
+      const addObservation = observationsCard.querySelector("[data-open-notes]");
+      assert.equal(addObservation.textContent.trim(), "Adicionar");
+      assert.doesNotMatch(observationsCard.textContent, /Abrir observa(?:ção|ções)/i);
+      addObservation.click();
+      await waitFor(() => dom.window.document.querySelector("#observationsDialog").open);
+      assert.equal(dom.window.document.querySelector("#observationsDialogTitle").textContent, "Adicionar observação");
+      assert.equal(dom.window.document.activeElement, dom.window.document.querySelector('#observationForm textarea[name="conteudo"]'));
+      assert.match(dom.window.document.querySelector('#observationForm textarea[name="conteudo"]').placeholder, /observação.*até 350 caracteres/i);
+      dom.window.document.querySelector("#observationsDialog").close();
+
       dom.window.document.querySelector('[data-detail-tab="documents"]').click();
       globalThis.FileReader = class ControlledFileReader {
         constructor() {
@@ -355,13 +370,29 @@ function auditFixture(process) {
 }
 
 function observationFixture(process) {
-  return [{
-    id: "observation-1",
-    processoId: process.id,
-    conteudo: "Material conferido",
-    usuario: "Teste",
-    criadoEm: "2026-07-17T11:30:00.000Z"
-  }];
+  return [
+    {
+      id: "observation-1",
+      processoId: process.id,
+      conteudo: "Material conferido",
+      usuario: "Teste",
+      criadoEm: "2026-07-17T11:30:00.000Z"
+    },
+    {
+      id: "observation-2",
+      processoId: process.id,
+      conteudo: "Conferência registrada",
+      usuario: "Teste",
+      criadoEm: "2026-07-17T11:20:00.000Z"
+    },
+    {
+      id: "observation-3",
+      processoId: process.id,
+      conteudo: "Material armazenado",
+      usuario: "Teste",
+      criadoEm: "2026-07-17T11:10:00.000Z"
+    }
+  ];
 }
 
 function dashboardPayload() {
