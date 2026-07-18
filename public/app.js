@@ -23,6 +23,7 @@ const state = {
   emailHistoryLoaded: false,
   securityAudit: [],
   detailObservations: [],
+  detailObservationsLoaded: false,
   detailAudit: [],
   deliveryDraft: null,
   processStepDraft: null,
@@ -117,6 +118,7 @@ const materialsList = document.querySelector("#materialsList");
 const formMessage = document.querySelector("#formMessage");
 const table = document.querySelector("#processTable");
 const dialog = document.querySelector("#observationsDialog");
+const observationsDialogTitle = document.querySelector("#observationsDialogTitle");
 const observationsList = document.querySelector("#observationsList");
 const observationForm = document.querySelector("#observationForm");
 const observationMessage = document.querySelector("#observationMessage");
@@ -448,6 +450,7 @@ function resetApplicationData() {
   state.securityAudit = [];
   state.emailHistory = [];
   state.detailObservations = [];
+  state.detailObservationsLoaded = false;
   state.detailAudit = [];
   state.deliveryDraft = null;
   state.processStepDraft = null;
@@ -870,6 +873,7 @@ processForm.addEventListener("submit", async (event) => {
         loadDetailObservations(savedProcess.id),
         loadDetailAudit(savedProcess.id)
       ]);
+      state.detailObservationsLoaded = true;
       renderProcessDetail();
     }
   } catch (error) {
@@ -1110,9 +1114,10 @@ detailPanel.addEventListener("click", async (event) => {
       openProcessDialog(state.selectedProcess);
     }
 
-    const notesId = event.target.dataset.openNotes;
+    const notesId = event.target.closest("[data-open-notes]")?.dataset.openNotes;
     if (notesId) {
-      await openObservationsDialog(notesId);
+      await openObservationsDialog(notesId, { focusComposer: true });
+      return;
     }
 
     const attachButton = event.target.closest("[data-attach-document]");
@@ -1234,25 +1239,28 @@ observationForm.addEventListener("submit", async (event) => {
     });
     observationForm.reset();
     await refreshObservationViews();
-    observationMessage.textContent = "Observacao registrada.";
+    observationMessage.textContent = "Observação registrada.";
   } catch (error) {
-    observationMessage.textContent = error.message || "Nao foi possivel registrar a observacao.";
+    observationMessage.textContent = error.message || "Não foi possível registrar a observação.";
   } finally {
     setFormBusy(observationForm, false);
   }
 });
 
-async function openObservationsDialog(processId) {
+async function openObservationsDialog(processId, { focusComposer = false } = {}) {
   state.observationProcessId = processId;
   observationMessage.textContent = "";
-  observationsList.innerHTML = '<p class="empty-state" role="status">Carregando observacoes...</p>';
+  observationsList.innerHTML = '<p class="empty-state" role="status">Carregando observações...</p>';
   const processo = processById(processId);
-  observationForm.classList.toggle("hidden", !canEditGeneralInUi(processo));
+  const canCompose = canEditGeneralInUi(processo);
+  observationForm.classList.toggle("hidden", !canCompose);
+  observationsDialogTitle.textContent = focusComposer && canCompose ? "Adicionar observação" : "Observações";
   dialog.showModal();
+  if (focusComposer && canCompose) observationForm.elements.conteudo.focus();
   try {
     await loadObservations();
   } catch (error) {
-    renderInlineError(observationsList, error.message || "Nao foi possivel carregar as observacoes.");
+    renderInlineError(observationsList, error.message || "Não foi possível carregar as observações.");
   }
 }
 
@@ -1268,7 +1276,7 @@ async function loadObservations() {
         <button type="button" class="secondary" data-delete-observation="${escapeAttribute(item.id)}">Excluir</button>
       </div>` : ""}
     </article>
-  `).join("") : "<p>Nenhuma observacao registrada.</p>";
+  `).join("") : "<p>Nenhuma observação registrada.</p>";
   return items;
 }
 
@@ -1287,7 +1295,7 @@ editObservationForm?.addEventListener("submit", async (event) => {
   const data = Object.fromEntries(new FormData(form));
   const conteudo = String(data.conteudo || "").trim();
   if (!conteudo || conteudo.length > 350) {
-    editObservationMessage.textContent = "A observacao deve ter entre 1 e 350 caracteres.";
+    editObservationMessage.textContent = "A observação deve ter entre 1 e 350 caracteres.";
     return;
   }
   setFormBusy(form, true, "Salvando...");
@@ -1298,9 +1306,9 @@ editObservationForm?.addEventListener("submit", async (event) => {
     });
     editObservationDialog.close();
     await refreshObservationViews();
-    observationMessage.textContent = "Observacao alterada.";
+    observationMessage.textContent = "Observação alterada.";
   } catch (error) {
-    editObservationMessage.textContent = error.message || "Nao foi possivel alterar a observacao.";
+    editObservationMessage.textContent = error.message || "Não foi possível alterar a observação.";
   } finally {
     setFormBusy(form, false);
   }
@@ -1398,6 +1406,7 @@ async function openProcessDetail(processo, returnSection = "processes") {
   state.detailReturnSection = returnSection;
   state.detailTab = "general";
   state.detailObservations = [];
+  state.detailObservationsLoaded = false;
   state.detailAudit = [];
   state.detailObservationsError = "";
   processListView.classList.add("hidden");
@@ -1421,11 +1430,12 @@ async function openProcessDetail(processo, returnSection = "processes") {
     ]);
     if (sequence !== detailSequence || state.selectedProcess?.id !== processo.id) return;
     state.detailObservations = observations;
+    state.detailObservationsLoaded = true;
     state.detailAudit = auditEntries;
     renderProcessDetail();
   } catch (error) {
     if (error.name !== "AbortError" && sequence === detailSequence && state.selectedProcess?.id === processo.id) {
-      state.detailObservationsError = error.message || "Nao foi possivel carregar as observacoes.";
+      state.detailObservationsError = error.message || "Não foi possível carregar as observações.";
       renderProcessDetail();
     }
   } finally {
@@ -1605,7 +1615,7 @@ function renderDeliveriesModule(processo) {
               return `${material?.descricao || "Material"}: ${formatQuantity(item.quantidade)}`;
             }).join("; ") || "Sem itens informados")}</span>
             <span>Recebido por: ${escapeHtml(entrega.recebidoPor || "Nao informado")}</span>
-            ${entrega.observacao ? `<span>Observacao: ${escapeHtml(entrega.observacao)}</span>` : ""}
+            ${entrega.observacao ? `<span>Observação: ${escapeHtml(entrega.observacao)}</span>` : ""}
           </div>
         </article>
       `).join("")}
@@ -1614,8 +1624,15 @@ function renderDeliveriesModule(processo) {
 }
 
 function renderObservationsModule(processo) {
+  const totalLabel = state.detailObservationsError
+    ? "total indisponível"
+    : !state.detailObservationsLoaded
+    ? "carregando total…"
+    : `${state.detailObservations.length} ${state.detailObservations.length === 1 ? "observação" : "observações"}`;
   const observations = state.detailObservationsError
     ? `<p class="form-message error" role="alert">${escapeHtml(state.detailObservationsError)}</p>`
+    : !state.detailObservationsLoaded
+    ? '<p class="empty-state" role="status">Carregando observações...</p>'
     : state.detailObservations.length
     ? state.detailObservations.map((observacao) => `
       <article class="note">
@@ -1627,16 +1644,16 @@ function renderObservationsModule(processo) {
         </div>` : ""}
       </article>
     `).join("")
-    : "<p>Nenhuma observacao registrada.</p>";
+    : "<p>Nenhuma observação registrada.</p>";
 
   return `
     <div class="module-list">
       <article class="module-row">
         <div>
-          <strong>Observacoes do processo</strong>
-          <span>Abra a janela de observacoes para consultar e registrar anotacoes cronologicas.</span>
+          <strong>Observações do processo · ${totalLabel}</strong>
+          <span>Todas as observações estão listadas abaixo, da mais recente para a mais antiga.</span>
         </div>
-        <button type="button" class="secondary" data-open-notes="${escapeAttribute(processo.id)}">Abrir observacoes</button>
+        ${canEditGeneralInUi(processo) ? `<button type="button" class="secondary" data-open-notes="${escapeAttribute(processo.id)}">Adicionar</button>` : ""}
       </article>
       <div class="notes-inline">${observations}</div>
     </div>
@@ -1904,24 +1921,24 @@ async function editObservation(observationId) {
     editObservationDialog.showModal();
     editObservationForm.elements.conteudo.focus();
   } catch (error) {
-    observationMessage.textContent = error.message || "Nao foi possivel abrir a observacao.";
+    observationMessage.textContent = error.message || "Não foi possível abrir a observação.";
   }
 }
 
 async function deleteObservation(observationId) {
-  if (!confirm("Excluir esta observacao?")) return;
+  if (!confirm("Excluir esta observação?")) return;
   try {
     const current = state.detailObservations.find((item) => item.id === observationId)
       || await findDialogObservation(observationId);
     const processId = current?.processoId || state.observationProcessId || state.selectedProcess?.id;
-    if (!processId) throw new Error("Processo da observacao nao encontrado.");
+    if (!processId) throw new Error("Processo da observação não encontrado.");
     await api(`/api/processes/${processId}/observations/${observationId}`, {
       method: "DELETE"
     });
     await refreshObservationViews();
-    observationMessage.textContent = "Observacao excluida.";
+    observationMessage.textContent = "Observação excluída.";
   } catch (error) {
-    observationMessage.textContent = error.message || "Nao foi possivel excluir a observacao.";
+    observationMessage.textContent = error.message || "Não foi possível excluir a observação.";
   }
 }
 
@@ -2179,6 +2196,7 @@ async function refreshObservationViews() {
       loadDetailObservations(state.selectedProcess.id),
       loadDetailAudit(state.selectedProcess.id)
     ]);
+    state.detailObservationsLoaded = true;
     if (["timeline", "observations"].includes(state.detailTab)) renderDetailPanel();
   }
 }
@@ -2750,7 +2768,7 @@ function supplierDetail(fornecedor) {
         ${supplierSummaryLine("E-mails", fornecedor.emails)}
         ${supplierSummaryLine("Telefones", fornecedor.telefones)}
         ${supplierSummaryLine("Enderecos", fornecedor.enderecos)}
-        ${fornecedor.observacoes ? `<span>Observacoes: ${escapeHtml(fornecedor.observacoes)}</span>` : ""}
+        ${fornecedor.observacoes ? `<span>Observações: ${escapeHtml(fornecedor.observacoes)}</span>` : ""}
       </div>
       <div class="supplier-actions">
         <button type="button" class="secondary" data-supplier-history="${escapeAttribute(normalizeText(fornecedor.razaoSocial))}">Historico de processos</button>
