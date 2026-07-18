@@ -121,6 +121,9 @@ describe("scripts operacionais", () => {
   it("mantem sintaxe valida nos scripts alterados", () => {
     const shell = runBash(["-n", "scripts/deploy-production.sh"]);
     assert.equal(shell.status, 0, shell.stderr);
+    const cleanup = readText("scripts/cleanup-orphan-uploads.js");
+    assert.match(cleanup, /typeof value === "string" \? value : value\?\.path/);
+    assert.match(cleanup, /missing-reference:/);
   });
 });
 

@@ -26,6 +26,7 @@ import {
   isPdfDocument,
   isMutationRequest,
   isValidStatusTransition,
+  LIQUIDATION_DOCUMENT_KEYS,
   processDeadlineDate,
   processHasRequiredDocuments,
   QUICK_FILTERS,
@@ -133,6 +134,20 @@ const MAX_UPLOAD_FILENAME_LENGTH = 255;
 const MAX_UPLOAD_MIME_LENGTH = 100;
 const MAX_COMPLEMENT_TITLE_LENGTH = 150;
 const MAX_COMPLEMENT_DESCRIPTION_LENGTH = 1_000;
+const ALLOWED_STORED_DOCUMENT_MIMES = new Set([
+  "application/pdf",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.ms-excel",
+  "text/csv",
+  "application/csv",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/msword",
+  "application/vnd.oasis.opendocument.text",
+  "application/vnd.oasis.opendocument.spreadsheet",
+  "text/plain",
+  "image/png",
+  "image/jpeg"
+]);
 const MAX_COMPILED_DOWNLOAD_BYTES = positiveRuntimeInteger(process.env.MAX_COMPILED_DOWNLOAD_BYTES, MAX_PROCESS_UPLOAD_BYTES);
 const MAX_CONCURRENT_COMPILED_DOWNLOADS = positiveRuntimeInteger(
   process.env.MAX_COMPILED_DOWNLOADS || process.env.MAX_CONCURRENT_COMPILED_DOWNLOADS,
@@ -161,6 +176,12 @@ const dashboardCache = {
   revision: null,
   expiresAt: 0,
   value: null,
+  pending: null
+};
+const uploadReferenceCache = {
+  generation: 0,
+  revision: null,
+  references: null,
   pending: null
 };
 
@@ -230,6 +251,7 @@ export function createWorkLimiter(maxConcurrency = 1, maxQueue = 1) {
 async function writeStore(store, securityEvents = []) {
   await persistStore(store, { securityEvents });
   invalidateDashboardCache();
+  invalidateUploadReferenceCache();
 }
 
 function transactionalSecurityEvent(eventType, event = {}) {
@@ -242,6 +264,13 @@ export function invalidateDashboardCache() {
   dashboardCache.expiresAt = 0;
   dashboardCache.value = null;
   dashboardCache.pending = null;
+}
+
+function invalidateUploadReferenceCache() {
+  uploadReferenceCache.generation += 1;
+  uploadReferenceCache.revision = null;
+  uploadReferenceCache.references = null;
+  uploadReferenceCache.pending = null;
 }
 
 async function readDashboardSnapshot() {
@@ -882,10 +911,15 @@ async function handleApi(req, res, url) {
 
     const safeTemplateKey = safeName(templateKey);
     const attachmentId = crypto.randomUUID();
-    const safeFileName = `${attachmentId}-${safeName(fileName)}`;
+    const safeFileName = `${attachmentId}-${safeDocumentFileName(fileName)}`;
     const dir = join(UPLOAD_ROOT, "email-templates", safeTemplateKey);
     const fullPath = join(dir, safeFileName);
-    await createPrivateFile(fullPath, content, { root: UPLOAD_ROOT, mode: 0o600 });
+    await createPrivateFile(fullPath, content, { root: UPLOAD_ROOT, mode: 0o600, sync: true });
+    if (!(await isPersistedPdfRenderable(fullPath, content))) {
+      await rm(fullPath, { force: true }).catch(() => null);
+      sendJson(res, 400, { error: "O PDF esta corrompido ou nao possui uma estrutura renderizavel." });
+      return;
+    }
 
     const attachment = {
       id: attachmentId,
@@ -1047,7 +1081,6 @@ async function handleApi(req, res, url) {
       sendJson(res, 400, { error: statusError });
       return;
     }
-
     store.processos.unshift(processo);
     store.auditoria.unshift(createAuditEntry({
       processoId: processo.id,
@@ -1119,6 +1152,11 @@ async function handleApi(req, res, url) {
     const statusError = validateProcessForStatus(updated);
     if (statusError) {
       sendJson(res, 400, { error: statusError });
+      return;
+    }
+    if (["Enviado para liquidacao", "Liquidado", "Pago"].includes(updated.status)
+        && !(await processHasAvailableLiquidationDocument(updated))) {
+      sendJson(res, 400, { error: "O Processo SPED ou a Nota de Empenho registrado nao esta disponivel no armazenamento. Anexe o arquivo novamente antes da liquidacao." });
       return;
     }
     if (deliveryExceedsOrdered(updated.entregas || [], [], updated.materiais || [])) {
@@ -1460,12 +1498,18 @@ async function handleApi(req, res, url) {
       return;
     }
 
+    const replacedDocument = documentKey === "complementares" ? null : current.documentos?.[documentKey];
+    const replacedDocumentPath = normalizeDocumentEntry(replacedDocument).path;
+    if (replacedDocument && !canRemoveDocument(current, documentKey) && await storedAttachmentExists(replacedDocument)) {
+      sendJson(res, 400, { error: "Este documento nao pode ser substituido nesta etapa do processo." });
+      return;
+    }
+
     const safeProcessId = safeName(documentMatch[1]);
-    const safeFileName = `${crypto.randomUUID()}-${safeName(documentKey)}-${safeName(fileName)}`;
+    const safeFileName = `${crypto.randomUUID()}-${safeName(documentKey)}-${safeDocumentFileName(fileName)}`;
     const dir = join(UPLOAD_ROOT, safeProcessId);
     const fullPath = join(dir, safeFileName);
     const currentDocuments = documentEntries(current.documentos);
-    const replacedDocument = documentKey === "complementares" ? null : current.documentos?.[documentKey];
     const resultingCount = currentDocuments.length + (replacedDocument ? 0 : 1);
     const resultingBytes = await totalStoredAttachmentBytes(currentDocuments, MAX_PROCESS_UPLOAD_BYTES)
       - await storedAttachmentByteSize(replacedDocument)
@@ -1478,7 +1522,12 @@ async function handleApi(req, res, url) {
       sendJson(res, 413, { error: "O limite total de documentos deste processo foi atingido." });
       return;
     }
-    await createPrivateFile(fullPath, content, { root: UPLOAD_ROOT, mode: 0o600 });
+    await createPrivateFile(fullPath, content, { root: UPLOAD_ROOT, mode: 0o600, sync: true });
+    if (!(await isPersistedPdfRenderable(fullPath, content))) {
+      await rm(fullPath, { force: true }).catch(() => null);
+      sendJson(res, 400, { error: "O PDF esta corrompido ou nao possui uma estrutura renderizavel." });
+      return;
+    }
 
     const documentInfo = {
       fileName,
@@ -1528,9 +1577,9 @@ async function handleApi(req, res, url) {
       await rm(fullPath, { force: true }).catch(() => null);
       throw error;
     }
-    if (replacedDocument?.path && replacedDocument.path !== documentInfo.path) {
-      await removeUploadedFile(replacedDocument.path).catch((error) => {
-        logError("replaced_upload_cleanup_failed", { path: replacedDocument.path, message: error.message });
+    if (replacedDocumentPath && replacedDocumentPath !== documentInfo.path) {
+      await removeUploadedFile(replacedDocumentPath).catch((error) => {
+        logError("replaced_upload_cleanup_failed", { path: replacedDocumentPath, message: error.message });
       });
     }
     sendJson(res, 200, enrichProcess(store.processos[index]));
@@ -1593,8 +1642,9 @@ async function handleApi(req, res, url) {
       detalhes: `Documento ${documentKey} removido.`
     }));
     await writeStore(store);
-    await removeUploadedFile(removedDocument?.path).catch((error) => {
-      logError("removed_upload_cleanup_failed", { path: removedDocument?.path, message: error.message });
+    const removedDocumentPath = normalizeDocumentEntry(removedDocument).path;
+    await removeUploadedFile(removedDocumentPath).catch((error) => {
+      logError("removed_upload_cleanup_failed", { path: removedDocumentPath, message: error.message });
     });
     sendJson(res, 200, enrichProcess(store.processos[index]));
     return;
@@ -1905,45 +1955,127 @@ async function serveStatic(req, res, pathname) {
 }
 
 async function serveUpload(req, res, pathname) {
+  if (!["GET", "HEAD"].includes(String(req.method || "GET").toUpperCase())) {
+    res.setHeader("allow", "GET, HEAD");
+    sendJson(res, 405, { error: "Metodo nao permitido para documentos." });
+    return;
+  }
   const user = await sessionUser(req);
   if (!user) {
     sendJson(res, 401, { error: "Faca login para acessar documentos." });
     return;
   }
-  const store = await readStore();
-  const reference = findUploadReference(store, pathname);
+  const reference = await resolveUploadReference(pathname);
   if (!reference) {
-    sendText(res, 404, "Arquivo nao encontrado");
+    sendJson(res, 404, { error: "Documento nao encontrado ou removido." });
+    return;
+  }
+  if (reference.ambiguous) {
+    sendJson(res, 409, { error: "Ha mais de uma referencia para este caminho de documento. Corrija os metadados antes de acessa-lo." });
     return;
   }
   if (reference.scope === "template" && resolveRole(user) !== "admin") {
-    sendText(res, 403, "Acesso negado");
+    sendJson(res, 403, { error: "Acesso negado." });
     return;
   }
-  const safePath = pathname.replace(/^\/uploads\/+/, "");
-  const fullPath = normalize(join(UPLOAD_ROOT, safePath));
+  const fullPath = uploadReferenceFilePath(reference.path);
 
-  if (!isPathWithin(UPLOAD_ROOT, fullPath)) {
-    sendText(res, 403, "Acesso negado");
+  if (!fullPath) {
+    sendJson(res, 403, { error: "Caminho de documento invalido." });
     return;
   }
 
   await serveFile(res, fullPath, {
     "cache-control": "private, no-store",
-    "content-disposition": `attachment; filename="${safeName(reference.fileName || "documento")}"`
-  }, { root: UPLOAD_ROOT, mode: 0o600 });
+    "content-type": documentContentType(reference),
+    "content-disposition": documentContentDisposition(documentDownloadFileName(reference))
+  }, {
+    request: req,
+    root: UPLOAD_ROOT,
+    mode: 0o600,
+    notFoundStatus: 410,
+    notFoundMessage: "O arquivo anexado nao esta disponivel no armazenamento. E necessario anexa-lo novamente."
+  });
 }
 
-function findUploadReference(store, pathname) {
+async function resolveUploadReference(pathname) {
+  const requestedPath = comparableUploadPath(pathname);
+  if (!requestedPath) return null;
+  const revision = await readStoreRevision();
+  if (uploadReferenceCache.references && uploadReferenceCache.revision === revision) {
+    return uploadReferenceCache.references.get(requestedPath) || null;
+  }
+  if (uploadReferenceCache.pending?.revision === revision) {
+    return (await uploadReferenceCache.pending.promise).get(requestedPath) || null;
+  }
+
+  const generation = uploadReferenceCache.generation;
+  const promise = Promise.all([readProcessesStore(), readSettingsStore()]).then(([processStore, settingsStore]) => {
+    const references = buildUploadReferenceMap({
+      processos: processStore.processos,
+      configuracoes: settingsStore.configuracoes
+    });
+    if (uploadReferenceCache.generation === generation) {
+      uploadReferenceCache.revision = revision;
+      uploadReferenceCache.references = references;
+    }
+    return references;
+  });
+  const pending = { revision, promise };
+  uploadReferenceCache.pending = pending;
+  try {
+    return (await promise).get(requestedPath) || null;
+  } finally {
+    if (uploadReferenceCache.pending === pending) uploadReferenceCache.pending = null;
+  }
+}
+
+function buildUploadReferenceMap(store) {
+  const references = new Map();
   for (const processo of store.processos || []) {
-    const attachment = documentEntries(processo.documentos).find((item) => item.path === pathname);
-    if (attachment) return { ...attachment, scope: "process" };
+    for (const attachment of documentEntries(processo.documentos)) {
+      addUploadReference(references, attachment, "process");
+    }
   }
   for (const template of Object.values(store.configuracoes?.emailTemplates || {})) {
-    const attachment = (template.anexos || []).find((item) => item.path === pathname);
-    if (attachment) return { ...attachment, scope: "template" };
+    for (const attachment of template.anexos || []) {
+      addUploadReference(references, attachment, "template");
+    }
   }
-  return null;
+  return references;
+}
+
+function addUploadReference(references, rawAttachment, scope) {
+  const attachment = normalizeDocumentEntry(rawAttachment);
+  const comparablePath = comparableUploadPath(attachment.path);
+  if (!comparablePath) return;
+  const candidate = { ...attachment, scope };
+  const existing = references.get(comparablePath);
+  if (!existing) {
+    references.set(comparablePath, candidate);
+    return;
+  }
+  if (existing.ambiguous || existing.path !== candidate.path) {
+    references.set(comparablePath, {
+      path: candidate.path,
+      scope: existing.scope === "template" || scope === "template" ? "template" : "process",
+      ambiguous: true
+    });
+    return;
+  }
+  if (existing.scope === "template" || scope === "template") {
+    references.set(comparablePath, { ...(scope === "template" ? candidate : existing), scope: "template" });
+  }
+}
+
+function comparableUploadPath(value = "") {
+  const path = String(value || "");
+  if (!path.startsWith("/uploads/") || path.includes("\0")) return "";
+  try {
+    return decodeURIComponent(path).normalize("NFC");
+  } catch {
+    return "";
+  }
 }
 
 async function serveFavicon(req, res) {
@@ -1957,7 +2089,12 @@ async function removeUploadedFile(uploadPath = "") {
   const relativePath = String(uploadPath).replace(/^\/uploads\/+/, "");
   const fullPath = normalize(join(UPLOAD_ROOT, relativePath));
   if (!isPathWithin(UPLOAD_ROOT, fullPath)) return;
-  await privateFileMetadata(fullPath, { root: UPLOAD_ROOT, mode: 0o600 });
+  try {
+    await privateFileMetadata(fullPath, { root: UPLOAD_ROOT, mode: 0o600 });
+  } catch (error) {
+    if (error.code === "ENOENT") return;
+    throw error;
+  }
   await rm(fullPath, { force: true });
 }
 
@@ -1987,7 +2124,7 @@ export async function serveFile(res, filePath, extraHeaders = {}, options = {}) 
       "content-length": metadata.size
     });
     responseStarted = true;
-    if (metadata.size === 0) {
+    if (String(options.request?.method || "GET").toUpperCase() === "HEAD" || metadata.size === 0) {
       res.end();
       return;
     }
@@ -2005,7 +2142,11 @@ export async function serveFile(res, filePath, extraHeaders = {}, options = {}) 
     res.end(Buffer.concat(chunks));
   } catch (error) {
     if (error.code === "ENOENT") {
-      sendText(res, 404, "Arquivo nao encontrado");
+      if (options.notFoundMessage) {
+        sendJson(res, options.notFoundStatus || 404, { error: options.notFoundMessage });
+      } else {
+        sendText(res, 404, "Arquivo nao encontrado");
+      }
       return;
     }
     if (error instanceof UnsafeFilePathError || error.code === "ELOOP") {
@@ -2041,6 +2182,16 @@ export function contentTypeForPath(pathname = "") {
     ".jpeg": "image/jpeg",
     ".webp": "image/webp"
   }[extname(pathname).toLowerCase()] || "application/octet-stream";
+}
+
+function documentContentType(reference = {}) {
+  const storedMime = String(reference.mimeType || "").split(";", 1)[0].trim().toLowerCase();
+  if (ALLOWED_STORED_DOCUMENT_MIMES.has(storedMime)) {
+    return ["text/csv", "application/csv", "text/plain"].includes(storedMime) ? `${storedMime}; charset=utf-8` : storedMime;
+  }
+  const byName = contentTypeForPath(reference.fileName || "");
+  if (byName !== "application/octet-stream") return byName;
+  return contentTypeForPath(reference.path || "");
 }
 
 async function readJson(req, maxBytes = MAX_JSON_BODY_BYTES) {
@@ -2989,8 +3140,34 @@ function sanitizeTemplateAttachments(input = []) {
 
 function documentEntries(documents = {}) {
   return Object.values(documents || {}).flatMap((value) => (
-    Array.isArray(value) ? value : (value && typeof value === "object" ? [value] : [])
+    (Array.isArray(value) ? value : [value])
+      .map(normalizeDocumentEntry)
+      .filter((attachment) => attachment.path)
   ));
+}
+
+function normalizeDocumentEntry(value) {
+  if (!value) return {};
+  if (typeof value === "string") {
+    return value.startsWith("/uploads/")
+      ? { path: value, fileName: uploadPathFileName(value) }
+      : { path: "", fileName: value };
+  }
+  if (typeof value !== "object" || Array.isArray(value)) return {};
+  return {
+    ...value,
+    path: String(value.path || "").trim(),
+    fileName: String(value.fileName || value.nome || uploadPathFileName(value.path) || "Documento anexado").trim()
+  };
+}
+
+function uploadPathFileName(value = "") {
+  const lastSegment = String(value || "").split("/").pop() || "";
+  try {
+    return decodeURIComponent(lastSegment);
+  } catch {
+    return lastSegment;
+  }
 }
 
 function attachmentByteSize(attachment) {
@@ -3013,8 +3190,9 @@ export async function totalStoredAttachmentBytes(attachments = [], maximumBytes 
 
 async function storedAttachmentByteSize(attachment) {
   if (!attachment) return 0;
-  const declaredSize = attachmentByteSize(attachment);
-  const fullPath = uploadReferenceFilePath(attachment.path);
+  const normalizedAttachment = normalizeDocumentEntry(attachment);
+  const declaredSize = attachmentByteSize(normalizedAttachment);
+  const fullPath = uploadReferenceFilePath(normalizedAttachment.path);
   if (!fullPath) return declaredSize;
   try {
     return (await privateFileMetadata(fullPath, { root: UPLOAD_ROOT, mode: 0o600 })).size;
@@ -3024,6 +3202,25 @@ async function storedAttachmentByteSize(attachment) {
     if (error.code === "ENOENT") return declaredSize;
     throw error;
   }
+}
+
+async function storedAttachmentExists(attachment) {
+  const fullPath = uploadReferenceFilePath(normalizeDocumentEntry(attachment).path);
+  if (!fullPath) return false;
+  try {
+    await privateFileMetadata(fullPath, { root: UPLOAD_ROOT, mode: 0o600 });
+    return true;
+  } catch (error) {
+    if (error.code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+async function processHasAvailableLiquidationDocument(processo = {}) {
+  for (const key of LIQUIDATION_DOCUMENT_KEYS) {
+    if (processo.documentos?.[key] && await storedAttachmentExists(processo.documentos[key])) return true;
+  }
+  return false;
 }
 
 async function readPrivateUpload(fullPath, maximumBytes) {
@@ -3549,6 +3746,45 @@ function safeName(value = "") {
     .slice(0, 120) || "arquivo";
 }
 
+function safeDocumentFileName(value = "documento") {
+  const normalized = String(value || "documento")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+  const originalExtension = extname(normalized).toLowerCase();
+  const extension = originalExtension
+    .replace(/[^a-zA-Z0-9.]+/g, "")
+    .slice(0, 20);
+  const originalStem = extension ? normalized.slice(0, -originalExtension.length) : normalized;
+  const stem = originalStem
+    .replace(/[^a-zA-Z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "documento";
+  return `${stem.slice(0, Math.max(1, 180 - extension.length))}${extension}`;
+}
+
+function documentContentDisposition(value = "documento") {
+  const original = String(value || "documento")
+    .replace(/[\0\r\n]/g, "-")
+    .trim()
+    .slice(0, MAX_UPLOAD_FILENAME_LENGTH) || "documento";
+  const encoded = encodeURIComponent(original).replace(/['()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
+  return `attachment; filename="${safeDocumentFileName(original)}"; filename*=UTF-8''${encoded}`;
+}
+
+function documentDownloadFileName(reference = {}) {
+  const fileName = String(reference.fileName || "documento").trim() || "documento";
+  if (contentTypeForPath(fileName) !== "application/octet-stream") return fileName;
+  let decodedPath = String(reference.path || "");
+  try {
+    decodedPath = decodeURIComponent(decodedPath);
+  } catch {
+    // Keep the stored path as a safe extension fallback.
+  }
+  const extension = extname(decodedPath).toLowerCase();
+  return extension && contentTypeForPath(`documento${extension}`) !== "application/octet-stream"
+    ? `${fileName}${extension}`
+    : fileName;
+}
+
 async function processDownloadEntries(processo, payload) {
   const entries = [{
     name: "processo.json",
@@ -3563,45 +3799,43 @@ async function processDownloadEntries(processo, payload) {
 
 async function processDocumentEntries(processo) {
   const entries = [];
+  const unavailable = [];
 
   for (const [key, value] of Object.entries(processo.documentos || {})) {
-    if (Array.isArray(value)) {
-      for (const [index, item] of value.entries()) {
-        const relative = item?.path?.replace(/^\/uploads\/+/, "");
-        if (!relative) continue;
-        const fullPath = normalize(join(UPLOAD_ROOT, relative));
-        if (!isPathWithin(UPLOAD_ROOT, fullPath)) continue;
-        try {
-          const data = await readPrivateUpload(fullPath, MAX_UPLOAD_BYTES);
-          enforceAggregateDownloadLimit(entries, data);
-          entries.push({
-            name: `documentos/${safeName(key)}-${index + 1}-${safeName(item.fileName || "documento.pdf")}`,
-            data
-          });
-        } catch (error) {
-          if (error.statusCode) throw error;
-          // Missing files remain listed in processo.json.
-        }
+    const items = Array.isArray(value) ? value : [value];
+    for (const [index, rawItem] of items.entries()) {
+      if (!rawItem) continue;
+      const item = normalizeDocumentEntry(rawItem);
+      const referencedPath = typeof rawItem === "string" ? rawItem : rawItem?.path;
+      if (!String(referencedPath || "").startsWith("/uploads/")) continue;
+      const fileName = documentDownloadFileName(item) || `${safeName(key)}-${index + 1}`;
+      const fullPath = uploadReferenceFilePath(item.path);
+      if (!fullPath) {
+        unavailable.push(fileName);
+        continue;
       }
-      continue;
-    }
-    if (!value || typeof value === "string" || !value.path) continue;
-    const relative = value.path.replace(/^\/uploads\/+/, "");
-    const fullPath = normalize(join(UPLOAD_ROOT, relative));
-    if (!isPathWithin(UPLOAD_ROOT, fullPath)) continue;
-    try {
-      const data = await readPrivateUpload(fullPath, MAX_UPLOAD_BYTES);
-      enforceAggregateDownloadLimit(entries, data);
-      entries.push({
-        name: `documentos/${safeName(key)}-${safeName(value.fileName || "documento.pdf")}`,
-        data
-      });
-    } catch (error) {
-      if (error.statusCode) throw error;
-      // Missing files remain listed in processo.json.
+      try {
+        const data = await readPrivateUpload(fullPath, MAX_UPLOAD_BYTES);
+        enforceAggregateDownloadLimit(entries, data);
+        entries.push({
+          name: `documentos/${safeName(key)}${items.length > 1 ? `-${index + 1}` : ""}-${safeDocumentFileName(fileName)}`,
+          data
+        });
+      } catch (error) {
+        if (error.statusCode) throw error;
+        if (error.code !== "ENOENT") throw error;
+        unavailable.push(fileName);
+      }
     }
   }
 
+  if (unavailable.length) {
+    const listed = unavailable.slice(0, 5).map((name) => safeDocumentFileName(name)).join(", ");
+    const remaining = unavailable.length > 5 ? ` e mais ${unavailable.length - 5}` : "";
+    const error = new Error(`Nao foi possivel gerar o arquivo completo porque ha documentos indisponiveis: ${listed}${remaining}. Anexe-os novamente.`);
+    error.statusCode = 409;
+    throw error;
+  }
   return entries;
 }
 
@@ -3611,10 +3845,15 @@ async function createCompiledPdf(documentEntries, payload) {
   const united = await unitePdfDocuments(pdfEntries.map((entry) => entry.data));
   if (united) return united;
   const merged = mergePdfDocuments(pdfEntries.map((entry) => entry.data));
-  if (merged) return merged;
-  return createSummaryPdf(payload, pdfEntries.length
+  if (merged) {
+    enforceAggregateDownloadLimit([], merged);
+    return merged;
+  }
+  const summary = createSummaryPdf(payload, pdfEntries.length
     ? "Nao foi possivel compilar os PDFs anexados neste navegador."
     : "Nao ha documentos PDF anexados para compilacao.");
+  enforceAggregateDownloadLimit([], summary);
+  return summary;
 }
 
 function isPdfBuffer(buffer) {
@@ -3637,7 +3876,8 @@ async function unitePdfDocuments(pdfBuffers) {
     const output = await readFile(outputPath);
     enforceAggregateDownloadLimit([], output);
     return isPdfBuffer(output) ? output : null;
-  } catch {
+  } catch (error) {
+    if (error.statusCode) throw error;
     return null;
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -3668,6 +3908,13 @@ function runCommand(command, args, timeoutMs = 10_000) {
     child.on("error", () => finish(-1));
     child.on("close", (code) => finish(code ?? -1));
   });
+}
+
+async function isPersistedPdfRenderable(filePath, content) {
+  const buffer = Buffer.isBuffer(content) ? content : Buffer.from(content || "");
+  if (!buffer.subarray(0, 4).equals(Buffer.from("%PDF"))) return true;
+  const result = await runCommand("pdfinfo", [filePath], PDF_COMMAND_TIMEOUT_MS);
+  return result === 0 || result === -1;
 }
 
 function mergePdfDocuments(pdfBuffers) {

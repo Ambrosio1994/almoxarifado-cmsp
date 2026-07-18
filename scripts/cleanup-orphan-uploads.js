@@ -27,6 +27,8 @@ try {
   const store = await readStore();
   const referenced = referencedUploadPaths(store);
   const files = await walk(root);
+  const existing = new Set(files.map((file) => normalize(file.path)));
+  const missingReferences = [...referenced].filter((file) => !existing.has(file));
   const now = Date.now();
   const unreferenced = files.filter((file) => !referenced.has(normalize(file.path)));
   const orphans = unreferenced.filter((file) => now - file.mtimeMs >= graceMs);
@@ -36,12 +38,16 @@ try {
     if (apply) await rm(file.path, { force: true });
     console.log(`${apply ? "removido" : "orphan"}: ${relative(root, file.path)}`);
   }
+  for (const file of missingReferences) {
+    console.log(`missing-reference: ${relative(root, file)}`);
+  }
   console.log(JSON.stringify({
     root,
     backend,
     referenced: referenced.size,
     scanned: files.length,
     orphans: orphans.length,
+    missingReferences: missingReferences.length,
     protectedByGrace: protectedByGrace.length,
     graceMs,
     applied: apply
@@ -53,7 +59,7 @@ try {
 function referencedUploadPaths(store) {
   const paths = new Set();
   const add = (value) => {
-    const publicPath = String(value?.path || "");
+    const publicPath = String(typeof value === "string" ? value : value?.path || "");
     if (!publicPath.startsWith("/uploads/")) return;
     const file = resolve(root, publicPath.replace(/^\/uploads\/+/, ""));
     const relativePath = relative(root, file);

@@ -96,11 +96,25 @@ describe("contrato visual e de navegacao", () => {
     assert.match(app, /documentTimelinePreviewContent/);
     assert.match(app, /data-document-preview=/);
     assert.match(app, /hydrateTimelineDocumentPreviews/);
-    assert.match(app, /frame\.src = `\$\{blobUrl\}#page=1&view=FitH`/);
+    assert.match(app, /media\.src = `\$\{blobUrl\}#page=1&view=FitH`/);
     assert.match(app, /data-open-document=/);
-    assert.match(app, /function openDocument\(path\)/);
-    assert.match(app, /URL\.createObjectURL\(blob\)/);
+    assert.match(app, /function openDocument\(path, metadata = \{\}\)/);
+    assert.match(app, /URL\.createObjectURL\(resource\.blob\)/);
+    assert.match(app, /new AbortController\(\)/);
+    assert.match(app, /Math\.min\(3, previews\.length\)/);
+    assert.match(app, /window\.IntersectionObserver/);
+    assert.match(app, /currentDocumentFromAuditEntry/);
     assert.doesNotMatch(app, /documentInlineUrl/);
+  });
+
+  it("preserva erros, nomes e indices originais dos documentos", () => {
+    assert.match(app, /async function documentResponseError\(response\)/);
+    assert.match(app, /documentFileNameFromDisposition/);
+    assert.match(app, /triggerBlobDownload\(blobUrl, resource\.fileName\)/);
+    assert.match(app, /sourceIndex/);
+    assert.match(app, /complementares:\$\{doc\.sourceIndex \?\? index\}/);
+    assert.match(html, /name="titulo" maxlength="150" required/);
+    assert.match(html, /name="descricao"[^>]*maxlength="1000"/);
   });
 
   it("preserva IDs dos materiais e mostra o historico das entregas", () => {

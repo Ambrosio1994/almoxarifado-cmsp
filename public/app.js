@@ -42,6 +42,25 @@ const state = {
 };
 
 const MAX_DOCUMENT_FILE_BYTES = 15 * 1024 * 1024;
+const DOCUMENT_FETCH_TIMEOUT_MS = 30_000;
+const DOCUMENT_MEDIA_RENDER_TIMEOUT_MS = 10_000;
+const DOCUMENT_TEXT_PREVIEW_BYTES = 200_000;
+const ALLOWED_DOCUMENT_RESPONSE_MIME_TYPES = new Set([
+  "application/pdf",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.ms-excel",
+  "text/csv",
+  "application/csv",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/msword",
+  "application/vnd.oasis.opendocument.text",
+  "application/vnd.oasis.opendocument.spreadsheet",
+  "application/zip",
+  "text/plain",
+  "image/png",
+  "image/jpeg",
+  "application/octet-stream"
+]);
 
 let currentUser = null;
 let legacyAuthToken = localStorage.getItem("almoxAuthToken") || "";
@@ -53,9 +72,18 @@ let detailSequence = 0;
 let handlingUnauthorized = false;
 let sessionGeneration = 0;
 let timelinePreviewSequence = 0;
+let timelinePreviewController = null;
+let timelinePreviewObserver = null;
+let timelinePreviewQueue = Promise.resolve();
+const timelinePreviewTimers = new Set();
 let documentPreviewSequence = 0;
-let documentPreviewPath = "";
+let documentPreviewController = null;
+let documentPreviewMediaTimer = null;
+let standardDocumentController = null;
+let complementaryDocumentController = null;
 let documentPreviewUrl = "";
+let documentPreviewBlob = null;
+let documentPreviewFileName = "";
 const timelinePreviewUrls = new Set();
 const authScreen = document.querySelector("#authScreen");
 const appShell = document.querySelector("#appShell");
@@ -126,6 +154,7 @@ const downloadChoices = document.querySelectorAll("[data-download-format]");
 const documentPreviewDialog = document.querySelector("#documentPreviewDialog");
 const documentPreviewDialogTitle = document.querySelector("#documentPreviewDialogTitle");
 const documentPreviewContent = document.querySelector("#documentPreviewContent");
+const documentPreviewStatus = document.querySelector("#documentPreviewStatus");
 const documentPreviewMessage = document.querySelector("#documentPreviewMessage");
 const documentPreviewDownload = document.querySelector("#documentPreviewDownload");
 const supplierInfoDialog = document.querySelector("#supplierInfoDialog");
@@ -367,6 +396,7 @@ function clearClientSession() {
   currentUser = null;
   refreshController?.abort();
   detailController?.abort();
+  cancelStandardDocumentUpload();
   refreshSequence += 1;
   dashboardSequence += 1;
   detailSequence += 1;
@@ -765,7 +795,8 @@ function triggerBlobDownload(url, fileName = "") {
   document.body.append(link);
   link.click();
   link.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  const revokeTimer = setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  revokeTimer?.unref?.();
 }
 
 function processExportFileName(format = "excel") {
@@ -871,6 +902,13 @@ cancelDocumentMetadata?.addEventListener("click", () => {
   state.pendingDocumentFile = null;
   documentMetadataDialog.close();
 });
+documentMetadataDialog?.addEventListener("close", () => {
+  complementaryDocumentController?.abort();
+  complementaryDocumentController = null;
+  state.pendingDocumentFile = null;
+  documentMetadataForm?.reset();
+  if (documentSelectedFile) documentSelectedFile.textContent = "";
+});
 materialsList.addEventListener("click", (event) => {
   if (!event.target.dataset.removeMaterial) return;
   event.target.closest(".material-row").remove();
@@ -946,11 +984,15 @@ downloadChoices.forEach((button) => {
 });
 
 documentPreviewDownload?.addEventListener("click", async () => {
-  if (!documentPreviewPath) return;
+  if (!documentPreviewBlob || !documentPreviewFileName) return;
   try {
-    await downloadDocument(documentPreviewPath);
+    const blobUrl = URL.createObjectURL(documentPreviewBlob);
+    triggerBlobDownload(blobUrl, documentPreviewFileName);
   } catch (error) {
-    if (documentPreviewMessage) documentPreviewMessage.textContent = error.message || "Nao foi possivel baixar o documento.";
+    if (documentPreviewMessage) {
+      documentPreviewMessage.textContent = error.message || "Nao foi possivel baixar o documento.";
+      documentPreviewMessage.classList.add("error");
+    }
   }
 });
 documentPreviewDialog?.addEventListener("close", resetDocumentPreviewDialog);
@@ -1073,9 +1115,11 @@ detailPanel.addEventListener("click", async (event) => {
       await openObservationsDialog(notesId);
     }
 
-    const attachKey = event.target.dataset.attachDocument;
+    const attachButton = event.target.closest("[data-attach-document]");
+    const attachKey = attachButton?.dataset.attachDocument;
     if (attachKey) {
-      await attachDocument(attachKey);
+      await attachDocument(attachKey, attachButton);
+      return;
     }
 
     const testEmailProcessId = event.target.dataset.sendTestEmail;
@@ -1083,19 +1127,33 @@ detailPanel.addEventListener("click", async (event) => {
       await sendTestEmail(testEmailProcessId);
     }
 
-    const openPath = event.target.dataset.openDocument;
+    const retryPreview = event.target.closest("[data-retry-document-preview]");
+    if (retryPreview) {
+      await retryTimelineDocumentPreview(retryPreview);
+      return;
+    }
+
+    const openButton = event.target.closest("[data-open-document]");
+    const openPath = openButton?.dataset.openDocument;
     if (openPath) {
-      await openDocument(openPath);
+      await openDocument(openPath, {
+        fileName: openButton.dataset.documentName,
+        mimeType: openButton.dataset.documentMime
+      });
+      return;
     }
 
-    const downloadPath = event.target.dataset.downloadDocument;
+    const downloadButton = event.target.closest("[data-download-document]");
+    const downloadPath = downloadButton?.dataset.downloadDocument;
     if (downloadPath) {
-      await downloadDocument(downloadPath);
+      await downloadDocument(downloadPath, downloadButton.dataset.documentName);
+      return;
     }
 
-    const removeDocumentKey = event.target.dataset.removeDocument;
+    const removeDocumentKey = event.target.closest("[data-remove-document]")?.dataset.removeDocument;
     if (removeDocumentKey) {
       await removeDocument(removeDocumentKey);
+      return;
     }
 
     const editObservationId = event.target.dataset.editObservation;
@@ -1331,6 +1389,7 @@ function openProcessDialog(processo = null) {
 
 async function openProcessDetail(processo, returnSection = "processes") {
   if (!processo) return;
+  cancelStandardDocumentUpload();
   detailController?.abort();
   const controller = new AbortController();
   detailController = controller;
@@ -1375,6 +1434,7 @@ async function openProcessDetail(processo, returnSection = "processes") {
 }
 
 function closeProcessDetail() {
+  cancelStandardDocumentUpload();
   detailController?.abort();
   detailController = null;
   detailSequence += 1;
@@ -1388,8 +1448,11 @@ async function downloadProcess(processId, format) {
   const response = await fetch(`/api/processes/${processId}/download?format=${normalized}`, {
     credentials: "same-origin"
   });
-  if (response.status === 401) handleUnauthorized();
-  if (!response.ok) throw new Error("Nao foi possivel baixar o processo.");
+  if (response.status === 401) {
+    handleUnauthorized();
+    throw new Error("Sua sessao expirou.");
+  }
+  if (!response.ok) throw new Error(await documentResponseError(response));
   const blobUrl = URL.createObjectURL(await response.blob());
   triggerBlobDownload(blobUrl, normalized === "pdf" ? "processo.pdf" : "processo.zip");
 }
@@ -1472,13 +1535,13 @@ function renderDocumentsModule(processo) {
           <div>
             <strong>${escapeHtml(label)}</strong>
             ${doc.path
-              ? `<button type="button" class="document-name" data-open-document="${escapeAttribute(doc.path)}">${escapeHtml(doc.fileName)}</button>`
+              ? `<button type="button" class="document-name" data-open-document="${escapeAttribute(doc.path)}" data-document-name="${escapeAttribute(doc.fileName)}" data-document-mime="${escapeAttribute(doc.mimeType || "")}">${escapeHtml(doc.fileName)}</button>`
               : `<span>${`Nao ha ${label} anexado`}</span>`}
           </div>
           <div class="document-actions">
-            ${doc.path ? "" : `<button type="button" class="secondary" data-attach-document="${key}" ${canAttachDocumentInUi(processo, key) ? "" : "disabled"}>Anexar</button>`}
+            <button type="button" class="secondary" ${canAttachDocumentInUi(processo, key) ? `data-attach-document="${key}"` : "disabled"}>${doc.path ? "Substituir" : "Anexar"}</button>
             <button type="button" class="secondary danger-action" ${doc.path && canRemoveDocumentInUi(processo, key) ? `data-remove-document="${key}"` : "disabled"}>Remover</button>
-            <button type="button" class="secondary" ${doc.path ? `data-download-document="${escapeAttribute(doc.path)}"` : "disabled"}>Baixar</button>
+            <button type="button" class="secondary" ${doc.path ? `data-download-document="${escapeAttribute(doc.path)}" data-document-name="${escapeAttribute(doc.fileName)}"` : "disabled"}>Baixar</button>
           </div>
         </article>
       `;}).join("")}
@@ -1486,13 +1549,13 @@ function renderDocumentsModule(processo) {
         ? complementaryDocuments.map((doc, index) => `
           <article class="module-row document-extra-item">
             <div>
-              <button type="button" class="document-name document-title" data-open-document="${escapeAttribute(doc.path)}">${escapeHtml(doc.titulo || doc.nome || doc.fileName)}</button>
+              <button type="button" class="document-name document-title" data-open-document="${escapeAttribute(doc.path)}" data-document-name="${escapeAttribute(doc.fileName)}" data-document-mime="${escapeAttribute(doc.mimeType || "")}">${escapeHtml(doc.titulo || doc.nome || doc.fileName)}</button>
               ${doc.descricao ? `<span>${escapeHtml(doc.descricao)}</span>` : ""}
               <span>${escapeHtml(doc.fileName)}</span>
             </div>
             <div class="document-actions">
-              <button type="button" class="secondary danger-action" ${canRemoveDocumentInUi(processo, "complementares") ? `data-remove-document="complementares:${index}"` : "disabled"}>Remover</button>
-              <button type="button" class="secondary" data-download-document="${escapeAttribute(doc.path)}">Baixar</button>
+              <button type="button" class="secondary danger-action" ${canRemoveDocumentInUi(processo, "complementares") ? `data-remove-document="complementares:${doc.sourceIndex ?? index}"` : "disabled"}>Remover</button>
+              <button type="button" class="secondary" data-download-document="${escapeAttribute(doc.path)}" data-document-name="${escapeAttribute(doc.fileName)}">Baixar</button>
             </div>
           </article>
         `).join("")
@@ -1645,19 +1708,26 @@ async function refreshAudit() {
   state.auditoria = await api("/api/audit");
 }
 
-async function attachDocument(documentKey) {
+async function attachDocument(documentKey, triggerButton = null) {
   if (!state.selectedProcess) return;
+  const processId = state.selectedProcess.id;
   const file = await pickDocumentFile(documentKey);
-  if (!file) return;
+  if (!file || state.selectedProcess?.id !== processId) return;
   if (!validateSelectedDocument(file, documentKey)) return;
   if (documentKey === "complementares") {
     openComplementaryDocumentForm(file);
     return;
   }
+  const controller = new AbortController();
+  standardDocumentController?.abort();
+  standardDocumentController = controller;
+  setButtonBusy(triggerButton, true, "Enviando...");
   try {
-    const contentBase64 = await fileToBase64(file);
-    const updatedProcess = await api(`/api/processes/${state.selectedProcess.id}/documents`, {
+    const contentBase64 = await fileToBase64(file, controller.signal);
+    if (controller.signal.aborted || state.selectedProcess?.id !== processId) throw createAbortError();
+    const updatedProcess = await api(`/api/processes/${processId}/documents`, {
       method: "POST",
+      signal: controller.signal,
       body: JSON.stringify({
         documentKey,
         fileName: file.name,
@@ -1665,17 +1735,26 @@ async function attachDocument(documentKey) {
         contentBase64
       })
     });
+    if (controller.signal.aborted || state.selectedProcess?.id !== processId) return;
     state.selectedProcess = updatedProcess;
     renderProcessDetail();
     await refreshAfterMutation("O documento foi anexado");
   } catch (error) {
-    alert(error.message || "Nao foi possivel anexar o documento.");
+    if (error.name !== "AbortError") alert(error.message || "Nao foi possivel anexar o documento.");
+  } finally {
+    if (standardDocumentController === controller) standardDocumentController = null;
+    setButtonBusy(triggerButton, false);
   }
+}
+
+function cancelStandardDocumentUpload() {
+  standardDocumentController?.abort();
+  standardDocumentController = null;
 }
 
 function openComplementaryDocumentForm(file) {
   state.pendingDocumentFile = file;
-  const suggestedName = String(file.name || "").replace(/\.pdf$/i, "");
+  const suggestedName = String(file.name || "").replace(/\.[^.]+$/i, "");
   documentMetadataForm.reset();
   documentMetadataForm.elements.titulo.value = suggestedName;
   documentSelectedFile.textContent = `Arquivo selecionado: ${file.name}`;
@@ -1685,15 +1764,21 @@ function openComplementaryDocumentForm(file) {
 
 async function saveComplementaryDocument() {
   if (!state.selectedProcess || !state.pendingDocumentFile) return;
+  const processId = state.selectedProcess.id;
   const file = state.pendingDocumentFile;
   const data = Object.fromEntries(new FormData(documentMetadataForm));
   const titulo = String(data.titulo || "").trim();
   if (!titulo) return;
+  const controller = new AbortController();
+  complementaryDocumentController?.abort();
+  complementaryDocumentController = controller;
   setFormBusy(documentMetadataForm, true, "Salvando...");
   try {
-    const contentBase64 = await fileToBase64(file);
-    const updatedProcess = await api(`/api/processes/${state.selectedProcess.id}/documents`, {
+    const contentBase64 = await fileToBase64(file, controller.signal);
+    if (controller.signal.aborted || state.selectedProcess?.id !== processId) return;
+    const updatedProcess = await api(`/api/processes/${processId}/documents`, {
       method: "POST",
+      signal: controller.signal,
       body: JSON.stringify({
         documentKey: "complementares",
         fileName: file.name,
@@ -1703,24 +1788,28 @@ async function saveComplementaryDocument() {
         descricao: String(data.descricao || "").trim()
       })
     });
+    if (controller.signal.aborted || state.selectedProcess?.id !== processId) return;
     state.pendingDocumentFile = null;
     documentMetadataDialog.close();
     state.selectedProcess = updatedProcess;
     renderProcessDetail();
     await refreshAfterMutation("O documento foi anexado");
   } catch (error) {
-    alert(error.message || "Nao foi possivel anexar o documento.");
+    if (error.name !== "AbortError") alert(error.message || "Nao foi possivel anexar o documento.");
   } finally {
+    if (complementaryDocumentController === controller) complementaryDocumentController = null;
     setFormBusy(documentMetadataForm, false);
   }
 }
 
 async function removeDocument(documentKey) {
   if (!state.selectedProcess) return;
+  const processId = state.selectedProcess.id;
   if (!confirm("Remover este documento anexado?")) return;
-  const updatedProcess = await api(`/api/processes/${state.selectedProcess.id}/documents/${documentKey}`, {
+  const updatedProcess = await api(`/api/processes/${processId}/documents/${documentKey}`, {
     method: "DELETE"
   });
+  if (state.selectedProcess?.id !== processId) return;
   state.selectedProcess = updatedProcess;
   renderProcessDetail();
   await refreshAfterMutation("O documento foi removido");
@@ -1760,15 +1849,45 @@ function validateSelectedDocument(file, documentKey = "complementares") {
   return true;
 }
 
-function fileToBase64(file) {
+function fileToBase64(file, signal) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.addEventListener("load", () => {
-      resolve(String(reader.result).split(",")[1] || "");
-    });
-    reader.addEventListener("error", () => reject(reader.error));
-    reader.readAsDataURL(file);
+    let settled = false;
+    const cleanup = () => signal?.removeEventListener("abort", handleSignalAbort);
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      callback(value);
+    };
+    const handleSignalAbort = () => {
+      try {
+        reader.abort();
+      } catch {
+        // The reader may already have completed between the signal and this callback.
+      }
+      finish(reject, createAbortError());
+    };
+    reader.addEventListener("load", () => finish(resolve, String(reader.result).split(",")[1] || ""), { once: true });
+    reader.addEventListener("error", () => finish(reject, reader.error || new Error("Nao foi possivel ler o arquivo.")), { once: true });
+    reader.addEventListener("abort", () => finish(reject, createAbortError()), { once: true });
+    if (signal?.aborted) {
+      finish(reject, createAbortError());
+      return;
+    }
+    signal?.addEventListener("abort", handleSignalAbort, { once: true });
+    try {
+      reader.readAsDataURL(file);
+    } catch (error) {
+      finish(reject, error);
+    }
   });
+}
+
+function createAbortError(message = "Operacao cancelada.") {
+  const error = new Error(message);
+  error.name = "AbortError";
+  return error;
 }
 
 async function editObservation(observationId) {
@@ -2072,14 +2191,36 @@ async function findDialogObservation(observationId) {
 
 function documentInfo(value) {
   if (!value) return {};
-  if (typeof value === "string") return { fileName: value, path: "" };
-  return value;
+  if (typeof value === "string") {
+    return value.startsWith("/uploads/")
+      ? { fileName: documentFileNameFromPath(value), path: value }
+      : { fileName: value, path: "" };
+  }
+  if (typeof value !== "object" || Array.isArray(value)) return {};
+  const path = String(value.path || "").trim();
+  return {
+    ...value,
+    path,
+    fileName: String(value.fileName || value.nome || documentFileNameFromPath(path) || "Documento anexado").trim()
+  };
 }
 
 function documentList(value) {
   if (!value) return [];
   const items = Array.isArray(value) ? value : [value];
-  return items.map(documentInfo).filter((doc) => doc.path);
+  return items
+    .map((item, sourceIndex) => ({ ...documentInfo(item), sourceIndex }))
+    .filter((doc) => doc.path);
+}
+
+function documentFileNameFromPath(path = "") {
+  try {
+    const url = new URL(path, window.location.origin);
+    const segment = url.pathname.split("/").pop() || "";
+    return decodeURIComponent(segment) || "Documento anexado";
+  } catch {
+    return "Documento anexado";
+  }
 }
 
 function escapeHtml(value = "") {
@@ -2122,6 +2263,7 @@ async function openSection(section) {
 }
 
 function activateSectionShell(section) {
+  cancelStandardDocumentUpload();
   state.activeSection = section;
   navItems.forEach((item) => {
     const active = item.dataset.section === section;
@@ -2945,7 +3087,7 @@ function bindSettingsHandlers() {
     button.addEventListener("click", () => void removeTemplateDocument(button.dataset.templateKey, button.dataset.removeTemplateAttachment));
   });
   settingsView.querySelectorAll("[data-download-document]").forEach((button) => {
-    button.addEventListener("click", () => void downloadDocument(button.dataset.downloadDocument).catch((error) => {
+    button.addEventListener("click", () => void downloadDocument(button.dataset.downloadDocument, button.dataset.documentName).catch((error) => {
       void renderSettingsView(error.message || "Nao foi possivel baixar o documento.", "error");
     }));
   });
@@ -3155,7 +3297,7 @@ function templateAttachmentList(templateKey, anexos = []) {
             <span>${attachment.uploadedAt ? formatDateTime(attachment.uploadedAt) : ""}</span>
           </div>
           <div class="document-actions">
-            <button type="button" class="secondary" data-download-document="${escapeAttribute(attachment.path)}">Baixar</button>
+            <button type="button" class="secondary" data-download-document="${escapeAttribute(attachment.path)}" data-document-name="${escapeAttribute(attachment.fileName)}">Baixar</button>
             <button type="button" class="secondary danger-action" data-template-key="${escapeAttribute(templateKey)}" data-remove-template-attachment="${escapeAttribute(attachment.id)}">Remover</button>
           </div>
         </article>
@@ -3198,95 +3340,281 @@ async function removeTemplateDocument(templateKey, attachmentId) {
   }
 }
 
-async function downloadDocument(path) {
-  const blobUrl = URL.createObjectURL(await fetchDocumentBlob(path));
-  triggerBlobDownload(blobUrl);
+async function downloadDocument(path, preferredFileName = "") {
+  const resource = await fetchDocumentResource(path, { preferredFileName });
+  const blobUrl = URL.createObjectURL(resource.blob);
+  triggerBlobDownload(blobUrl, resource.fileName);
 }
 
-async function fetchDocumentBlob(path) {
+async function fetchDocumentResource(path, options = {}) {
   const documentPath = normalizeDocumentPath(path);
   if (!documentPath) throw new Error("Caminho de documento invalido.");
-  const response = await fetch(documentPath, { credentials: "same-origin" });
-  if (response.status === 401) {
-    handleUnauthorized();
-    throw new Error("Sua sessao expirou.");
+  if (options.signal?.aborted) throw createAbortError();
+  const requestController = new AbortController();
+  let timedOut = false;
+  const abortFromParent = () => requestController.abort();
+  options.signal?.addEventListener("abort", abortFromParent, { once: true });
+  const timeoutId = window.setTimeout(() => {
+    timedOut = true;
+    requestController.abort();
+  }, options.timeoutMs || DOCUMENT_FETCH_TIMEOUT_MS);
+  try {
+    const response = await fetch(documentPath, {
+      credentials: "same-origin",
+      signal: requestController.signal
+    });
+    if (response.status === 401) {
+      const error = new Error("Sua sessao expirou.");
+      error.status = 401;
+      handleUnauthorized();
+      throw error;
+    }
+    if (!response.ok) {
+      const error = new Error(await documentResponseError(response));
+      error.status = response.status;
+      throw error;
+    }
+    const blob = await response.blob();
+    const responseFileName = documentFileNameFromDisposition(response.headers.get("content-disposition"));
+    const fileName = safeClientFileName(responseFileName || options.preferredFileName || documentFileNameFromPath(documentPath));
+    const mimeType = normalizeMimeType(blob.type || response.headers.get("content-type"));
+    validateFetchedDocument(blob, mimeType);
+    return { blob, fileName, mimeType };
+  } catch (error) {
+    if (timedOut) {
+      const timeoutError = new Error("O servidor demorou demais para carregar o documento. Tente novamente.");
+      timeoutError.status = 408;
+      throw timeoutError;
+    }
+    if (options.signal?.aborted) throw createAbortError();
+    if (error.name === "AbortError" || error.status || error.code === "INVALID_DOCUMENT_RESPONSE") throw error;
+    throw new Error("Nao foi possivel conectar ao servidor para carregar o documento.");
+  } finally {
+    window.clearTimeout(timeoutId);
+    options.signal?.removeEventListener("abort", abortFromParent);
   }
-  if (!response.ok) {
+}
+
+function validateFetchedDocument(blob, mimeType = "") {
+  if (!blob?.size) {
+    const error = new Error("O arquivo anexado esta vazio.");
+    error.code = "INVALID_DOCUMENT_RESPONSE";
+    throw error;
+  }
+  if (mimeType && !ALLOWED_DOCUMENT_RESPONSE_MIME_TYPES.has(mimeType)) {
+    const error = new Error("O servidor retornou um formato invalido para este documento.");
+    error.code = "INVALID_DOCUMENT_RESPONSE";
+    throw error;
+  }
+}
+
+async function documentResponseError(response) {
+  const contentType = normalizeMimeType(response.headers.get("content-type"));
+  if (contentType === "application/json") {
     const body = await response.json().catch(() => ({}));
-    throw new Error(body.error || "Nao foi possivel carregar o documento.");
+    if (body?.error) return String(body.error);
+  } else {
+    const text = String(await response.text().catch(() => "")).trim();
+    if (text && text.length <= 500 && !/^</.test(text)) return text;
   }
-  return response.blob();
+  if (response.status === 403) return "Voce nao possui permissao para acessar este documento.";
+  if (response.status === 404) return "Documento nao encontrado ou removido.";
+  if (response.status === 410) return "O arquivo anexado nao esta mais disponivel. Anexe-o novamente.";
+  return "Nao foi possivel carregar o documento.";
+}
+
+function documentFileNameFromDisposition(value = "") {
+  const encoded = String(value).match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+  if (encoded) {
+    try {
+      return decodeURIComponent(encoded);
+    } catch {
+      // Fall back to the regular filename parameter.
+    }
+  }
+  return String(value).match(/filename="?([^";]+)"?/i)?.[1]?.trim() || "";
+}
+
+function safeClientFileName(value = "documento") {
+  return String(value || "documento")
+    .replace(/[\\/\0\r\n]+/g, "-")
+    .trim()
+    .slice(0, 255) || "documento";
+}
+
+function normalizeMimeType(value = "") {
+  return String(value || "").split(";", 1)[0].trim().toLowerCase();
+}
+
+function mimeAllowsExtensionFallback(mimeType = "") {
+  return !mimeType || mimeType === "application/octet-stream";
 }
 
 function normalizeDocumentPath(path) {
   try {
     const url = new URL(path, window.location.origin);
     if (url.origin !== window.location.origin || !url.pathname.startsWith("/uploads/")) return "";
-    return `${url.pathname}${url.search}`;
+    return url.pathname;
   } catch {
     return "";
   }
 }
 
-async function openDocument(path) {
+async function openDocument(path, metadata = {}) {
   const documentPath = normalizeDocumentPath(path);
   if (!documentPath) throw new Error("Caminho de documento invalido.");
+  const documentMetadata = documentInfo({ ...metadata, path: documentPath });
   if (!documentPreviewDialog || !documentPreviewContent) {
-    await downloadDocument(documentPath);
+    await downloadDocument(documentPath, documentMetadata.fileName);
     return;
   }
 
   resetDocumentPreviewDialog();
-  documentPreviewPath = documentPath;
-  documentPreviewDialogTitle.textContent = "Visualizar documento";
+  const controller = new AbortController();
+  documentPreviewController = controller;
+  documentPreviewFileName = documentMetadata.fileName;
+  documentPreviewDialogTitle.textContent = documentMetadata.fileName || "Visualizar documento";
   documentPreviewContent.setAttribute("aria-busy", "true");
-  documentPreviewContent.textContent = "Carregando documento...";
+  documentPreviewContent.replaceChildren();
+  if (documentPreviewStatus) documentPreviewStatus.textContent = "Carregando documento...";
+  documentPreviewDownload.disabled = true;
+  documentPreviewMessage?.classList.remove("error");
   if (!documentPreviewDialog.open) documentPreviewDialog.showModal();
   const sequence = ++documentPreviewSequence;
 
+  let resource;
   try {
-    const blob = await fetchDocumentBlob(documentPath);
-    if (sequence !== documentPreviewSequence || !documentPreviewDialog.open) return;
-    documentPreviewUrl = URL.createObjectURL(blob);
-    documentPreviewContent.replaceChildren(createDocumentPreviewElement(documentPreviewUrl, blob, documentPath, "Documento"));
+    resource = await fetchDocumentResource(documentPath, {
+      signal: controller.signal,
+      preferredFileName: documentMetadata.fileName
+    });
   } catch (error) {
-    if (sequence === documentPreviewSequence && documentPreviewMessage) {
-      documentPreviewMessage.textContent = error.message || "Nao foi possivel abrir o documento.";
+    if (error.name !== "AbortError" && sequence === documentPreviewSequence) {
+      renderDocumentPreviewError(error.message || "Nao foi possivel abrir o documento.");
     }
-  } finally {
-    if (sequence === documentPreviewSequence) documentPreviewContent?.setAttribute("aria-busy", "false");
+    return;
   }
+
+  if (sequence !== documentPreviewSequence || !documentPreviewDialog.open) return;
+  documentPreviewBlob = resource.blob;
+  documentPreviewFileName = resource.fileName;
+  documentPreviewDialogTitle.textContent = resource.fileName;
+  documentPreviewDownload.disabled = false;
+  if (documentPreviewStatus) documentPreviewStatus.textContent = "Preparando visualizacao...";
+  try {
+    documentPreviewUrl = URL.createObjectURL(resource.blob);
+    const preview = await createDocumentPreviewElement(documentPreviewUrl, resource, documentPath, resource.fileName);
+    if (sequence !== documentPreviewSequence || !documentPreviewDialog.open) return;
+    documentPreviewContent.replaceChildren(preview);
+    if (["IFRAME", "IMG"].includes(preview.tagName)) {
+      if (documentPreviewStatus) documentPreviewStatus.textContent = "Renderizando visualizacao...";
+      monitorDocumentPreviewMedia(preview, sequence);
+    } else {
+      URL.revokeObjectURL(documentPreviewUrl);
+      documentPreviewUrl = "";
+      documentPreviewContent.setAttribute("aria-busy", "false");
+      if (documentPreviewStatus) documentPreviewStatus.textContent = "";
+    }
+  } catch (error) {
+    if (documentPreviewUrl) {
+      URL.revokeObjectURL(documentPreviewUrl);
+      documentPreviewUrl = "";
+    }
+    if (error.name !== "AbortError" && sequence === documentPreviewSequence) {
+      renderDocumentPreviewError("O documento foi carregado, mas nao foi possivel gerar a visualizacao. Use Baixar.", { downloadAvailable: true });
+    }
+  }
+}
+
+function renderDocumentPreviewError(message, { downloadAvailable = false } = {}) {
+  const errorContent = document.createElement("p");
+  errorContent.className = "document-preview-error";
+  errorContent.setAttribute("role", "alert");
+  errorContent.textContent = message;
+  documentPreviewContent?.replaceChildren(errorContent);
+  documentPreviewContent?.setAttribute("aria-busy", "false");
+  if (documentPreviewStatus) documentPreviewStatus.textContent = "";
+  if (documentPreviewDownload) documentPreviewDownload.disabled = !downloadAvailable;
+  if (documentPreviewMessage) documentPreviewMessage.textContent = "";
 }
 
 function resetDocumentPreviewDialog() {
   documentPreviewSequence += 1;
+  documentPreviewController?.abort();
+  documentPreviewController = null;
+  clearDocumentPreviewMediaTimer();
   if (documentPreviewUrl) URL.revokeObjectURL(documentPreviewUrl);
   documentPreviewUrl = "";
-  documentPreviewPath = "";
+  documentPreviewBlob = null;
+  documentPreviewFileName = "";
   documentPreviewContent?.replaceChildren();
   documentPreviewContent?.setAttribute("aria-busy", "false");
-  if (documentPreviewMessage) documentPreviewMessage.textContent = "";
+  if (documentPreviewStatus) documentPreviewStatus.textContent = "";
+  if (documentPreviewDownload) documentPreviewDownload.disabled = true;
+  if (documentPreviewMessage) {
+    documentPreviewMessage.textContent = "";
+    documentPreviewMessage.classList.remove("error");
+  }
 }
 
-function createDocumentPreviewElement(blobUrl, blob, path, title) {
-  const mimeType = String(blob.type || "").toLowerCase();
-  const fileName = String(path || "").toLowerCase();
-  if (mimeType === "application/pdf" || fileName.endsWith(".pdf")) {
+async function createDocumentPreviewElement(blobUrl, resource, path, title) {
+  const mimeType = normalizeMimeType(resource.mimeType || resource.blob?.type);
+  const fileName = String(resource.fileName || path || "").toLowerCase().split(/[?#]/, 1)[0];
+  const extensionFallback = mimeAllowsExtensionFallback(mimeType);
+  if (mimeType === "application/pdf" || (extensionFallback && fileName.endsWith(".pdf"))) {
     const frame = document.createElement("iframe");
     frame.title = `Previa da primeira pagina de ${title}`;
     frame.src = `${blobUrl}#page=1&view=FitH`;
     return frame;
   }
-  if (["image/png", "image/jpeg"].includes(mimeType) || /\.(png|jpe?g)$/.test(fileName)) {
+  if (["image/png", "image/jpeg"].includes(mimeType) || (extensionFallback && /\.(png|jpe?g)$/.test(fileName))) {
     const image = document.createElement("img");
     image.src = blobUrl;
     image.alt = title;
     return image;
   }
+  if (["text/plain", "text/csv", "application/csv"].includes(mimeType) || (extensionFallback && /\.(txt|csv)$/.test(fileName))) {
+    const truncated = resource.blob.size > DOCUMENT_TEXT_PREVIEW_BYTES;
+    const text = await resource.blob.slice(0, DOCUMENT_TEXT_PREVIEW_BYTES, resource.blob.type).text();
+    const preview = document.createElement("pre");
+    preview.className = "document-text-preview";
+    preview.textContent = `${text}${truncated ? "\n\n[Previa limitada ao inicio do documento.]" : ""}`;
+    return preview;
+  }
   const message = document.createElement("p");
   message.className = "selected-file";
   message.textContent = "Este formato nao possui visualizacao integrada. Use Baixar para abrir no aplicativo adequado.";
   return message;
+}
+
+function monitorDocumentPreviewMedia(preview, sequence) {
+  if (!preview || !["IFRAME", "IMG"].includes(preview.tagName)) {
+    documentPreviewContent?.setAttribute("aria-busy", "false");
+    return;
+  }
+  let settled = false;
+  clearDocumentPreviewMediaTimer();
+  const finish = (failed = false) => {
+    if (settled) return;
+    settled = true;
+    clearDocumentPreviewMediaTimer();
+    if (sequence !== documentPreviewSequence) return;
+    documentPreviewContent?.setAttribute("aria-busy", "false");
+    if (documentPreviewStatus) documentPreviewStatus.textContent = "";
+    if (failed && documentPreviewMessage) {
+      documentPreviewMessage.textContent = "O arquivo foi carregado, mas o navegador nao conseguiu gerar a previa. Use Baixar.";
+      documentPreviewMessage.classList.add("error");
+    }
+  };
+  preview.addEventListener("load", () => finish(false), { once: true });
+  preview.addEventListener("error", () => finish(true), { once: true });
+  documentPreviewMediaTimer = window.setTimeout(() => finish(true), DOCUMENT_MEDIA_RENDER_TIMEOUT_MS);
+  if (preview.tagName === "IMG" && preview.complete) finish(preview.naturalWidth === 0);
+}
+
+function clearDocumentPreviewMediaTimer() {
+  if (documentPreviewMediaTimer !== null) window.clearTimeout(documentPreviewMediaTimer);
+  documentPreviewMediaTimer = null;
 }
 
 async function saveNotificationSettings(event) {
@@ -3540,7 +3868,7 @@ function timelineEvents(processo) {
       date: entry.criadoEm,
       meta: entry.usuario || "Usuario",
       details: entry.detalhes || "",
-      documento: entry.documento || documentFromAuditEntry(processo, entry),
+      documento: currentDocumentFromAuditEntry(processo, entry),
       kind: entry.acao === "Remocao de documento" ? "danger" : "",
       showTime: true
     }));
@@ -3589,20 +3917,21 @@ function timelineEventClass(event) {
 function documentTimelinePreview(documento = {}) {
   const path = String(documento.path || "");
   const title = documento.nome || documento.fileName || "Documento anexado";
+  const fileName = documento.fileName || documento.nome || documentFileNameFromPath(path);
   const documentPath = normalizeDocumentPath(path);
   if (!documentPath) return "";
   return `
     <div class="timeline-document-preview">
       ${documentTimelinePreviewContent(documento, documentPath, title)}
       <span>${escapeHtml(title)}</span>
-      <button type="button" class="secondary small-action" data-open-document="${escapeAttribute(path)}">Abrir documento</button>
+      <button type="button" class="secondary small-action" data-open-document="${escapeAttribute(path)}" data-document-name="${escapeAttribute(fileName)}" data-document-mime="${escapeAttribute(documento.mimeType || "")}">Abrir documento</button>
     </div>
   `;
 }
 
 function documentTimelinePreviewContent(documento = {}, path = "", title = "") {
   const mimeType = String(documento.mimeType || "").toLowerCase();
-  const fileName = String(documento.fileName || documento.nome || "").toLowerCase();
+  const fileName = String(documento.fileName || documento.nome || path || "").toLowerCase().split(/[?#]/, 1)[0];
   const accessibleTitle = `Previa da primeira pagina de ${title}`;
   if (mimeType === "application/pdf" || fileName.endsWith(".pdf")) {
     return `<div class="timeline-document-preview-media"><iframe title="${escapeAttribute(accessibleTitle)}" data-document-preview="${escapeAttribute(path)}" loading="lazy" aria-busy="true"></iframe><span data-document-preview-loading>Carregando previa...</span></div>`;
@@ -3616,35 +3945,202 @@ function documentTimelinePreviewContent(documento = {}, path = "", title = "") {
 async function hydrateTimelineDocumentPreviews() {
   const sequence = timelinePreviewSequence;
   const previews = [...detailPanel.querySelectorAll("[data-document-preview]")];
-  await Promise.all(previews.map(async (preview) => {
-    try {
-      const blob = await fetchDocumentBlob(preview.dataset.documentPreview);
-      if (sequence !== timelinePreviewSequence || !preview.isConnected || state.detailTab !== "timeline") return;
-      const blobUrl = URL.createObjectURL(blob);
-      if (sequence !== timelinePreviewSequence || !preview.isConnected || state.detailTab !== "timeline") {
-        URL.revokeObjectURL(blobUrl);
-        return;
-      }
-      timelinePreviewUrls.add(blobUrl);
-      preview.src = preview.tagName === "IFRAME" ? `${blobUrl}#page=1&view=FitH` : blobUrl;
-      preview.setAttribute("aria-busy", "false");
-      preview.parentElement?.querySelector("[data-document-preview-loading]")?.remove();
-    } catch {
-      if (sequence !== timelinePreviewSequence || !preview.isConnected) return;
-      const container = preview.parentElement;
-      preview.remove();
-      const message = document.createElement("span");
-      message.className = "timeline-document-preview-unavailable";
-      message.textContent = "Nao foi possivel carregar a previa.";
-      container?.append(message);
+  if (!previews.length) return;
+  const controller = new AbortController();
+  timelinePreviewController = controller;
+  const enqueue = (items) => {
+    timelinePreviewQueue = timelinePreviewQueue
+      .then(() => hydrateTimelinePreviewBatch(items, sequence, controller.signal))
+      .catch((error) => {
+        if (error.name !== "AbortError") console.error(error);
+      });
+  };
+
+  if (typeof window.IntersectionObserver === "function") {
+    timelinePreviewObserver = new window.IntersectionObserver((entries) => {
+      const visible = entries.filter((entry) => entry.isIntersecting).map((entry) => entry.target);
+      for (const preview of visible) timelinePreviewObserver?.unobserve(preview);
+      if (visible.length) enqueue(visible);
+    }, { rootMargin: "320px 0px" });
+    for (const preview of previews) timelinePreviewObserver.observe(preview);
+    return;
+  }
+
+  enqueue(previews);
+}
+
+async function hydrateTimelinePreviewBatch(previews, sequence, signal) {
+  let nextIndex = 0;
+  const worker = async () => {
+    while (nextIndex < previews.length) {
+      const preview = previews[nextIndex];
+      nextIndex += 1;
+      await hydrateTimelineDocumentPreview(preview, sequence, signal);
     }
-  }));
+  };
+  await Promise.all(Array.from({ length: Math.min(3, previews.length) }, () => worker()));
+}
+
+async function hydrateTimelineDocumentPreview(preview, sequence, signal) {
+  const path = preview.dataset.documentPreview;
+  const container = preview.parentElement;
+  try {
+    const resource = await fetchDocumentResource(path, { signal });
+    if (sequence !== timelinePreviewSequence || !preview.isConnected || state.detailTab !== "timeline") return;
+    const blobUrl = URL.createObjectURL(resource.blob);
+    if (sequence !== timelinePreviewSequence || !preview.isConnected || state.detailTab !== "timeline") {
+      URL.revokeObjectURL(blobUrl);
+      return;
+    }
+    timelinePreviewUrls.add(blobUrl);
+    const media = createTimelinePreviewMedia(resource, blobUrl, preview);
+    if (!media) {
+      URL.revokeObjectURL(blobUrl);
+      timelinePreviewUrls.delete(blobUrl);
+      showTimelinePreviewError(container, path, "Previa nao disponivel para este formato.", false);
+      return;
+    }
+    preview.replaceWith(media);
+    monitorTimelinePreviewMedia(media, container, path, sequence, blobUrl);
+  } catch (error) {
+    if (error.name === "AbortError" || sequence !== timelinePreviewSequence || !preview.isConnected) return;
+    showTimelinePreviewError(container, path, error.message || "Nao foi possivel carregar a previa.");
+  }
+}
+
+function createTimelinePreviewMedia(resource, blobUrl, originalPreview) {
+  const mimeType = normalizeMimeType(resource.mimeType || resource.blob?.type);
+  const fileName = String(resource.fileName || "").toLowerCase();
+  const extensionFallback = mimeAllowsExtensionFallback(mimeType);
+  const previewTitle = originalPreview.getAttribute("title")
+    || originalPreview.getAttribute("alt")
+    || originalPreview.dataset.documentPreviewTitle
+    || `Previa de ${resource.fileName}`;
+  let media;
+  if (mimeType === "application/pdf" || (extensionFallback && fileName.endsWith(".pdf"))) {
+    media = document.createElement("iframe");
+    media.src = `${blobUrl}#page=1&view=FitH`;
+    media.title = previewTitle;
+  } else if (["image/png", "image/jpeg"].includes(mimeType) || (extensionFallback && /\.(png|jpe?g)$/.test(fileName))) {
+    media = document.createElement("img");
+    media.src = blobUrl;
+    media.alt = previewTitle;
+  } else {
+    return null;
+  }
+  media.setAttribute("aria-busy", "true");
+  return media;
+}
+
+function monitorTimelinePreviewMedia(media, container, path, sequence, blobUrl) {
+  let settled = false;
+  let timerId = null;
+  const clearTimer = () => {
+    if (timerId === null) return;
+    window.clearTimeout(timerId);
+    timelinePreviewTimers.delete(timerId);
+    timerId = null;
+  };
+  const finish = (failed = false) => {
+    if (settled) return;
+    settled = true;
+    clearTimer();
+    if (sequence !== timelinePreviewSequence || !media.isConnected) return;
+    media.setAttribute("aria-busy", "false");
+    container?.querySelector("[data-document-preview-loading]")?.remove();
+    if (failed) {
+      releaseTimelinePreviewUrl(blobUrl);
+      showTimelinePreviewError(container, path, "O navegador nao conseguiu renderizar esta previa.");
+    }
+  };
+  media.addEventListener("load", () => finish(false), { once: true });
+  media.addEventListener("error", () => finish(true), { once: true });
+  timerId = window.setTimeout(() => finish(true), DOCUMENT_MEDIA_RENDER_TIMEOUT_MS);
+  timelinePreviewTimers.add(timerId);
+  if (media.tagName === "IMG" && media.complete) finish(media.naturalWidth === 0);
+}
+
+function showTimelinePreviewError(container, path, message, retry = true) {
+  if (!container) return;
+  const previousPreview = container.querySelector("iframe, img, [data-document-preview]");
+  const previewTitle = previousPreview?.getAttribute("title")
+    || previousPreview?.getAttribute("alt")
+    || previousPreview?.dataset.documentPreviewTitle
+    || container.dataset.documentPreviewTitle
+    || "Previa do documento";
+  container.dataset.documentPreviewPath = normalizeDocumentPath(path);
+  container.dataset.documentPreviewTitle = previewTitle;
+  container.replaceChildren();
+  const text = document.createElement("span");
+  text.className = "timeline-document-preview-unavailable";
+  text.textContent = message;
+  container.append(text);
+  if (retry) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "secondary small-action";
+    button.dataset.retryDocumentPreview = path;
+    button.textContent = "Tentar previa novamente";
+    container.append(button);
+  }
+}
+
+async function retryTimelineDocumentPreview(button) {
+  if (state.detailTab !== "timeline") return;
+  const container = button.closest(".timeline-document-preview-media");
+  const path = normalizeDocumentPath(button.dataset.retryDocumentPreview || container?.dataset.documentPreviewPath);
+  if (!container || !path) return;
+  let controller = timelinePreviewController;
+  if (!controller || controller.signal.aborted) {
+    controller = new AbortController();
+    timelinePreviewController = controller;
+  }
+  const placeholder = document.createElement("span");
+  placeholder.hidden = true;
+  placeholder.dataset.documentPreview = path;
+  placeholder.dataset.documentPreviewTitle = container.dataset.documentPreviewTitle || "Previa do documento";
+  placeholder.setAttribute("aria-busy", "true");
+  const loading = document.createElement("span");
+  loading.dataset.documentPreviewLoading = "true";
+  loading.textContent = "Carregando previa...";
+  container.replaceChildren(placeholder, loading);
+  await hydrateTimelineDocumentPreview(placeholder, timelinePreviewSequence, controller.signal);
+}
+
+function releaseTimelinePreviewUrl(blobUrl) {
+  if (!blobUrl || !timelinePreviewUrls.delete(blobUrl)) return;
+  URL.revokeObjectURL(blobUrl);
 }
 
 function clearTimelineDocumentPreviews() {
   timelinePreviewSequence += 1;
+  timelinePreviewObserver?.disconnect();
+  timelinePreviewObserver = null;
+  timelinePreviewController?.abort();
+  timelinePreviewController = null;
+  timelinePreviewQueue = Promise.resolve();
+  for (const timerId of timelinePreviewTimers) window.clearTimeout(timerId);
+  timelinePreviewTimers.clear();
   for (const blobUrl of timelinePreviewUrls) URL.revokeObjectURL(blobUrl);
   timelinePreviewUrls.clear();
+}
+
+function currentDocumentFromAuditEntry(processo = {}, entry = {}) {
+  if (entry.acao !== "Anexo de documento") return null;
+  const recorded = documentInfo(entry.documento);
+  if (recorded.path) {
+    const recordedPath = normalizeDocumentPath(recorded.path);
+    if (!recordedPath) return null;
+    return currentProcessDocuments(processo)
+      .find((documento) => normalizeDocumentPath(documento.path) === recordedPath) || null;
+  }
+  return documentFromAuditEntry(processo, entry);
+}
+
+function currentProcessDocuments(processo = {}) {
+  return Object.values(processo.documentos || {}).flatMap((value) => (
+    (Array.isArray(value) ? value : [value]).map(documentInfo).filter((documento) => documento.path)
+  ));
 }
 
 function documentFromAuditEntry(processo = {}, entry = {}) {

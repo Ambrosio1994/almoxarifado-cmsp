@@ -33,9 +33,11 @@ docker run -e UPLOAD_STORAGE_ROOT=/data/uploads -v almox_uploads:/data/uploads .
 
 No Dockerfile, o caminho padrao de runtime esta em `/data/uploads`.
 
+A instrucao `VOLUME` da imagem nao provisiona nem torna persistente um disco na plataforma de hospedagem. No Render ou servico equivalente, monte explicitamente um disco persistente em `/data` (de modo que `UPLOAD_STORAGE_ROOT=/data/uploads` fique dentro dele) antes de receber anexos. Sem esse mount, o PostgreSQL preserva os metadados, mas um deploy ou reinicio pode apagar os arquivos. Arquivos ja ausentes precisam ser restaurados do backup conjunto ou anexados novamente.
+
 Os arquivos nao sao mais servidos anonimamente: downloads exigem sessao autenticada por cookie `HttpOnly`. O login nao entrega token no corpo; clientes automatizados devem manter o cookie recebido em `Set-Cookie`. O suporte a Bearer existente e apenas de compatibilidade legada e nao constitui um fluxo para novos clientes. Em mais de uma replica, substitua o volume local por armazenamento de objetos ou filesystem compartilhado.
 
-Revise arquivos orfaos sem remover nada com `npm run uploads:cleanup:dry-run`. A ferramenta falha se o backend ativo diferir de `--expect-backend`, e protege arquivos recentes por 24 horas por padrao (`ORPHAN_UPLOAD_GRACE_MS`). Depois de conferir a lista, remova somente com confirmacao explicita. Em producao, use um backup verificado:
+Revise arquivos orfaos sem remover nada com `npm run uploads:cleanup:dry-run`. Alem de `orphan`, a ferramenta informa `missing-reference` quando o banco aponta para um arquivo que nao existe no volume; esse segundo caso nunca e removido automaticamente e exige restauracao ou novo anexo. A ferramenta falha se o backend ativo diferir de `--expect-backend`, e protege arquivos recentes por 24 horas por padrao (`ORPHAN_UPLOAD_GRACE_MS`). Depois de conferir a lista, remova somente com confirmacao explicita. Em producao, use um backup verificado:
 
 ```bash
 NODE_ENV=production npm run uploads:cleanup -- --expect-backend=postgres --confirm-backup

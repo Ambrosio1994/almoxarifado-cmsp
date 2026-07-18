@@ -235,11 +235,15 @@ describe("regras de processo", () => {
   });
 
   it("valida documentos pelo conteudo e rejeita executavel disfarçado", () => {
+    const pdf = Buffer.from("%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n%%EOF");
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82]);
     assert.equal(detectDocumentMime(Buffer.from("%PDF-1.4\n")), "application/pdf");
-    assert.equal(validateDocumentUpload("nota.pdf", "application/pdf", Buffer.from("%PDF-1.4\n")), true);
+    assert.equal(validateDocumentUpload("nota.pdf", "application/pdf", pdf), true);
+    assert.equal(validateDocumentUpload("truncado.pdf", "application/pdf", Buffer.from("%PDF-1.4\n")), false);
     assert.equal(validateDocumentUpload("nota.pdf", "application/pdf", Buffer.from([0x4d, 0x5a, 0x90, 0x00])), false);
-    assert.equal(validateDocumentUpload("../../etc/passwd.pdf", "application/pdf", Buffer.from("%PDF-1.4\n")), false);
-    assert.equal(validateDocumentUpload("imagem.png", "image/png", Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])), true);
+    assert.equal(validateDocumentUpload("../../etc/passwd.pdf", "application/pdf", pdf), false);
+    assert.equal(validateDocumentUpload("imagem.png", "image/png", png), true);
+    assert.equal(validateDocumentUpload("imagem-truncada.png", "image/png", png.subarray(0, 8)), false);
   });
 
   it("exige Processo SPED ou Nota de Empenho para enviar para liquidacao", () => {
@@ -281,8 +285,8 @@ describe("regras de processo", () => {
   });
 
   it("exige PDF nos documentos obrigatorios e aceita formatos adicionais somente nos complementares", () => {
-    const pdf = Buffer.from("%PDF-1.4\n");
-    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const pdf = Buffer.from("%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n%%EOF");
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82]);
     assert.equal(validateProcessDocumentUpload("notaEmpenho", "nota.pdf", "application/pdf", pdf), true);
     assert.equal(validateProcessDocumentUpload("notaEmpenho", "nota.png", "image/png", png), false);
     assert.equal(validateProcessDocumentUpload("complementares", "foto.png", "image/png", png), true);

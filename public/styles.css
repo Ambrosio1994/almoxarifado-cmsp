@@ -1216,6 +1216,10 @@ tbody td:nth-child(2) {
   padding: 14px 16px;
 }
 
+.module-row > div {
+  min-width: 0;
+}
+
 .module-row strong {
   display: block;
   font-size: 14px;
@@ -1226,6 +1230,7 @@ tbody td:nth-child(2) {
   color: var(--muted);
   display: block;
   font-size: 13px;
+  overflow-wrap: anywhere;
 }
 
 .supplier-filters {
@@ -1328,6 +1333,8 @@ tbody td:nth-child(2) {
   font-size: 13px;
   font-weight: 500;
   min-height: auto;
+  max-width: 100%;
+  overflow-wrap: anywhere;
   padding: 0;
   text-align: left;
 }
@@ -1910,6 +1917,10 @@ button.group-bar:focus-visible {
   gap: 6px;
 }
 
+.timeline-document-preview-media button {
+  white-space: normal;
+}
+
 .timeline-document-preview-media [data-document-preview-loading] {
   color: var(--muted);
   font-size: 11px;
@@ -2204,8 +2215,20 @@ dialog.document-preview-dialog {
   align-items: center;
   display: grid;
   justify-items: center;
+  max-height: min(72vh, 760px);
   min-height: 240px;
+  overflow: auto;
   padding: 16px;
+}
+
+.document-preview-status {
+  color: var(--muted);
+  margin: 0;
+  padding: 12px 16px 0;
+}
+
+.document-preview-status:empty {
+  display: none;
 }
 
 .document-preview-content iframe,
@@ -2221,6 +2244,28 @@ dialog.document-preview-dialog {
   border-top: 1px solid var(--line);
   margin: 0;
   padding: 12px 16px;
+}
+
+.document-preview-error {
+  color: var(--red);
+  margin: 0;
+  max-width: 640px;
+  text-align: center;
+}
+
+.document-text-preview {
+  align-self: stretch;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
+  justify-self: stretch;
+  margin: 0;
+  max-height: min(68vh, 720px);
+  overflow: auto;
+  padding: 14px;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 #documentPreviewMessage {
@@ -2239,6 +2284,16 @@ dialog::backdrop {
   justify-content: space-between;
   margin: 0;
   padding: 14px 16px;
+}
+
+.dialog-header > strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  padding-right: 12px;
+}
+
+.dialog-header > button {
+  flex: 0 0 auto;
 }
 
 .process-form {
