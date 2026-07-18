@@ -16,6 +16,8 @@ Se o Node.js estiver instalado normalmente no computador, tambem pode usar:
 npm run dev
 ```
 
+`npm start` e exclusivo da execucao de producao. Use `npm run dev` no host para nao misturar o armazenamento local com o volume Docker de anexos.
+
 Depois acesse:
 
 ```text

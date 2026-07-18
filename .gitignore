@@ -10,7 +10,7 @@ data/*
 !data/.gitkeep
 !data/store.example.json
 
-uploads/
+/uploads/
 backups/
 .deploy/
 *.log

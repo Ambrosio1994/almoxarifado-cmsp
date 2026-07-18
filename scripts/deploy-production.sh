@@ -37,6 +37,7 @@ APP_PORT="${APP_PORT:-${file_app_port:-3000}}"
 COMPOSE=(docker compose --env-file "$ENV_FILE" -f compose.production.yml)
 STATE_DIR="$ROOT_DIR/.deploy"
 APP_RESTART_REQUIRED=false
+UPLOAD_VOLUME_NAME="almoxarifado-cmsp_almoxarifado_uploads"
 
 usage() {
   echo "Uso: $0 {check|backup|deploy|smoke|rollback|target}"
@@ -74,6 +75,25 @@ compose_check() {
   require_command docker
   docker compose version >/dev/null
   "${COMPOSE[@]}" config --quiet
+}
+
+verify_upload_mount() {
+  local container_id mount_info mount_type mount_name
+  container_id="$("${COMPOSE[@]}" ps -q app 2>/dev/null || true)"
+  [[ -n "$container_id" ]] || { echo "Container da aplicacao nao encontrado para validar uploads." >&2; return 1; }
+  mount_info="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/data/uploads"}}{{.Type}}|{{.Name}}{{end}}{{end}}' "$container_id")"
+  IFS='|' read -r mount_type mount_name <<<"$mount_info"
+  if [[ "$mount_type" != "volume" || "$mount_name" != "$UPLOAD_VOLUME_NAME" ]]; then
+    echo "O container nao esta usando o volume persistente esperado em /data/uploads." >&2
+    return 1
+  fi
+  docker volume inspect "$UPLOAD_VOLUME_NAME" >/dev/null
+  echo "Volume persistente de uploads validado: $UPLOAD_VOLUME_NAME."
+}
+
+check_upload_integrity() {
+  echo "Validando referencias no PostgreSQL contra o volume persistente antes da troca da aplicacao."
+  "${COMPOSE[@]}" run --rm --no-deps app node src/server.js --check-upload-storage
 }
 
 wait_ready() {
@@ -202,7 +222,9 @@ deploy() {
 
   "${COMPOSE[@]}" build --pull app
   NODE_ENV=production npm run db:migrate
+  check_upload_integrity
   "${COMPOSE[@]}" up -d --no-deps app
+  verify_upload_mount
   wait_ready || { echo "Execute '$0 rollback' para voltar a imagem anterior." >&2; return 1; }
   smoke
   echo "Deploy concluido. Migracoes sao forward-only; rollback automatico cobre somente a imagem."
@@ -217,6 +239,7 @@ rollback() {
   docker image inspect "$previous" >/dev/null
   docker image tag "$previous" "$current"
   "${COMPOSE[@]}" up -d --no-deps --force-recreate app
+  verify_upload_mount
   wait_ready
   smoke
   echo "Rollback da aplicacao concluido; o schema Neon nao foi revertido."

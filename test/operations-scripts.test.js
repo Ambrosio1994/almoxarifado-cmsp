@@ -124,6 +124,13 @@ describe("scripts operacionais", () => {
     const cleanup = readText("scripts/cleanup-orphan-uploads.js");
     assert.match(cleanup, /typeof value === "string" \? value : value\?\.path/);
     assert.match(cleanup, /missing-reference:/);
+    assert.match(cleanup, /UPLOAD_STORAGE_MARKER_NAME/);
+    const compose = readText("compose.production.yml");
+    assert.match(compose, /name: almoxarifado-cmsp_almoxarifado_uploads/);
+    const deploy = readText("scripts/deploy-production.sh");
+    assert.match(deploy, /verify_upload_mount/);
+    assert.match(deploy, /run --rm --no-deps app node src\/server\.js --check-upload-storage/);
+    assert.ok(deploy.indexOf("check_upload_integrity") < deploy.indexOf('"${COMPOSE[@]}" up -d --no-deps app'));
   });
 });
 

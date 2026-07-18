@@ -174,6 +174,8 @@ describe("rotas http", () => {
     assert.equal(response.statusCode, 200);
     assert.equal(payload.degraded, true);
     assert.equal(payload.checks.storage, true);
+    assert.equal(payload.checks.uploads.ok, true);
+    assert.equal(payload.checks.uploads.missing, 0);
     assert.equal(payload.checks.scheduler.running, false);
     assert.equal(payload.checks.scheduler.status, "stopped");
     assert.equal(Object.hasOwn(payload.checks.scheduler, "error"), false);

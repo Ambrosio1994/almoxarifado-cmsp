@@ -38,3 +38,4 @@ services:
 
 volumes:
   almoxarifado_uploads:
+    name: almoxarifado-cmsp_almoxarifado_uploads
