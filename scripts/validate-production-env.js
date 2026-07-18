@@ -107,17 +107,10 @@ export function validateUploadStorage(environment = {}) {
   if (!String(environment.GOOGLE_DRIVE_FOLDER_ID || "").trim()) {
     uploadErrors.push("GOOGLE_DRIVE_FOLDER_ID e obrigatoria quando UPLOAD_STORAGE_BACKEND=drive.");
   }
-  if (!String(environment.GOOGLE_SERVICE_ACCOUNT_KEY || "").trim()) {
-    uploadErrors.push("GOOGLE_SERVICE_ACCOUNT_KEY e obrigatoria quando UPLOAD_STORAGE_BACKEND=drive.");
-    return uploadErrors;
-  }
-  try {
-    const credentials = JSON.parse(environment.GOOGLE_SERVICE_ACCOUNT_KEY);
-    if (credentials.type !== "service_account" || !credentials.client_email || !credentials.private_key) {
-      uploadErrors.push("GOOGLE_SERVICE_ACCOUNT_KEY deve conter uma chave JSON completa de service account.");
+  for (const name of ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REFRESH_TOKEN"]) {
+    if (!String(environment[name] || "").trim()) {
+      uploadErrors.push(`${name} e obrigatoria quando UPLOAD_STORAGE_BACKEND=drive.`);
     }
-  } catch {
-    uploadErrors.push("GOOGLE_SERVICE_ACCOUNT_KEY deve conter JSON valido.");
   }
   return uploadErrors;
 }

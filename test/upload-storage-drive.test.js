@@ -1,7 +1,7 @@
 import { Readable, Writable } from "node:stream";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { findFileInFolder } from "../src/uploads/drive-storage.js";
+import { findFileInFolder, getDriveClient } from "../src/uploads/drive-storage.js";
 import { DRIVE_UPLOAD_STORAGE_DATABASE_KEY } from "../src/uploads/drive-storage-identity.js";
 import {
   deleteUploadFile,
@@ -14,6 +14,40 @@ import {
 } from "../src/uploads/upload-storage.js";
 
 describe("upload-storage (backend drive)", () => {
+  it("cria o cliente OAuth2 e exige todas as credenciais sem chamar o Google", () => {
+    assert.throws(() => getDriveClient({}), /GOOGLE_CLIENT_ID/);
+    assert.throws(() => getDriveClient({ clientId: "client-id" }), /GOOGLE_CLIENT_SECRET/);
+    assert.throws(() => getDriveClient({
+      clientId: "client-id",
+      clientSecret: "client-secret"
+    }), /GOOGLE_REFRESH_TOKEN/);
+
+    const drive = getDriveClient({
+      clientId: "client-id",
+      clientSecret: "client-secret",
+      refreshToken: "refresh-token"
+    });
+    assert.equal(drive.context._options.auth.credentials.refresh_token, "refresh-token");
+  });
+
+  it("simplifica erros da API do Drive sem perder codigo e motivo", async () => {
+    const original = new Error("mensagem da biblioteca");
+    original.code = 403;
+    original.response = {
+      status: 403,
+      data: { error: { message: "Quota excedida", errors: [{ reason: "storageQuotaExceeded" }] } }
+    };
+    const client = { files: { list: async () => { throw original; } } };
+
+    await assert.rejects(
+      findFileInFolder("arquivo.txt", { client, folderId: "folder" }),
+      (error) => error.message === "Falha ao listar arquivos no Google Drive: Quota excedida"
+        && error.code === 403
+        && error.reason === "storageQuotaExceeded"
+        && error.cause === original
+    );
+  });
+
   it("grava com fileId no path, le metadados e conteudo e exclui de forma idempotente", async () => {
     const fake = createFakeDrive();
     const content = Buffer.from("conteudo de teste no Drive", "utf8");
