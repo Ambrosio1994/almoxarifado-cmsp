@@ -81,21 +81,30 @@ describe("scripts operacionais", () => {
     assert.deepEqual(bootstrap, []);
   });
 
-  it("exige pasta e chave JSON completas ao ativar o backend Drive", () => {
-    assert.match(validateUploadStorage({ UPLOAD_STORAGE_BACKEND: "drive" }).join(" "), /GOOGLE_DRIVE_FOLDER_ID/);
-    assert.match(validateUploadStorage({
-      UPLOAD_STORAGE_BACKEND: "drive",
-      GOOGLE_DRIVE_FOLDER_ID: "folder",
-      GOOGLE_SERVICE_ACCOUNT_KEY: "nao-json"
-    }).join(" "), /JSON valido/);
+  it("exige pasta e credenciais OAuth completas ao ativar o backend Drive", () => {
+    for (const variable of [
+      "GOOGLE_DRIVE_FOLDER_ID",
+      "GOOGLE_CLIENT_ID",
+      "GOOGLE_CLIENT_SECRET",
+      "GOOGLE_REFRESH_TOKEN"
+    ]) {
+      const environment = {
+        UPLOAD_STORAGE_BACKEND: "drive",
+        GOOGLE_DRIVE_FOLDER_ID: "folder",
+        GOOGLE_CLIENT_ID: "client-id",
+        GOOGLE_CLIENT_SECRET: "client-secret",
+        GOOGLE_REFRESH_TOKEN: "refresh-token"
+      };
+      delete environment[variable];
+      assert.match(validateUploadStorage(environment).join(" "), new RegExp(variable));
+    }
+
     assert.deepEqual(validateUploadStorage({
       UPLOAD_STORAGE_BACKEND: "drive",
       GOOGLE_DRIVE_FOLDER_ID: "folder",
-      GOOGLE_SERVICE_ACCOUNT_KEY: JSON.stringify({
-        type: "service_account",
-        client_email: "storage@example.iam.gserviceaccount.com",
-        private_key: "private-key"
-      })
+      GOOGLE_CLIENT_ID: "client-id",
+      GOOGLE_CLIENT_SECRET: "client-secret",
+      GOOGLE_REFRESH_TOKEN: "refresh-token"
     }), []);
   });
 

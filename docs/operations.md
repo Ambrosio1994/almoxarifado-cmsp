@@ -27,7 +27,7 @@ Use esse campo no monitor externo para detectar regressao de storage.
 
 O backend e selecionado por `UPLOAD_STORAGE_BACKEND`: `local` (padrao, inclusive nos testes) ou `drive`. Novos arquivos no Drive usam caminhos `/uploads/drive/<fileId>/<nome-codificado>`; leituras e exclusoes escolhem o backend pelo proprio caminho, portanto registros locais legados e registros do Drive podem coexistir no banco. O Drive usa uma identidade independente, `uploadStorageIdentityDrive`, para impedir que uma troca acidental de `GOOGLE_DRIVE_FOLDER_ID` faca a aplicacao subir apontando para uma pasta vazia.
 
-No Render, configure `UPLOAD_STORAGE_BACKEND=drive`, `GOOGLE_DRIVE_FOLDER_ID` e o JSON completo da service account em `GOOGLE_SERVICE_ACCOUNT_KEY`. Confirme upload, leitura e exclusao com `npm run drive:check` antes do deploy. Essas credenciais devem existir somente no cofre do provedor.
+No Render, configure `UPLOAD_STORAGE_BACKEND=drive`, `GOOGLE_DRIVE_FOLDER_ID`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` e `GOOGLE_REFRESH_TOKEN`. Confirme upload, leitura e exclusao com `npm run drive:check` antes do deploy. Essas credenciais devem existir somente no cofre do provedor.
 
 Quando o backend for local em producao, os uploads devem apontar para um volume montado fora da imagem, por exemplo:
 
