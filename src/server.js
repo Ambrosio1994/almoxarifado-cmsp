@@ -412,8 +412,20 @@ if (isMainModule()) {
   if (process.env.NODE_ENV === "production" && storeBackend !== "postgres") {
     throw new Error("A aplicacao exige PostgreSQL migrado em producao.");
   }
-  await ensureUploadStorageReady({ backend: UPLOAD_STORAGE_BACKEND, root: UPLOAD_ROOT });
-  if (process.env.NODE_ENV === "production") {
+  let uploadStorageReady = true;
+  try {
+    await ensureUploadStorageReady({ backend: UPLOAD_STORAGE_BACKEND, root: UPLOAD_ROOT });
+  } catch (error) {
+    logError("upload_storage_startup_failed", {
+      message: error?.message || "Erro desconhecido",
+      code: error?.code || error?.response?.status || null,
+      reason: error?.reason || error?.response?.data?.error?.errors?.[0]?.reason || error?.errors?.[0]?.reason || null
+    });
+    process.exitCode = 1;
+    await closePool().catch((closeError) => logError("database_close_failed", { message: closeError.message }));
+    uploadStorageReady = false;
+  }
+  if (uploadStorageReady && process.env.NODE_ENV === "production") {
     const uploadIntegrity = await inspectUploadIntegrity({
       backend: UPLOAD_STORAGE_BACKEND,
       root: UPLOAD_ROOT,
@@ -428,7 +440,7 @@ if (isMainModule()) {
       process.exitCode = uploadIntegrity.ok ? 0 : 1;
     }
   }
-  if (!uploadStorageCheckOnly) {
+  if (uploadStorageReady && !uploadStorageCheckOnly) {
     console.log(`Storage backend ativo: ${storeBackend}`);
     console.log(`Upload backend ativo: ${configuredUploadStorageBackend({ backend: UPLOAD_STORAGE_BACKEND })}`);
     if (UPLOAD_STORAGE_BACKEND === "local") console.log(`Upload root ativo: ${UPLOAD_ROOT}`);
