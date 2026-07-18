@@ -3856,7 +3856,7 @@ function timelineEvents(processo) {
   const explicitEvents = [
     processo.status === "Entrega parcial" && processo.dataEntrega && { label: "Entrega parcial", date: processo.dataEntrega },
     hasReachedDeliveryInUi(processo) && processo.dataEntrega && { label: "Entregue", date: processo.dataEntrega },
-    processo.dataEnvioLiquidacao && { label: "Enviado para liquidacao", date: processo.dataEnvioLiquidacao },
+    processo.dataEnvioLiquidacao && { label: "Enviado para liquidação", date: processo.dataEnvioLiquidacao },
     ["Liquidado", "Pago"].includes(processo.status) && { label: "Liquidado", date: processo.dataLiquidacao || processo.dataEnvioLiquidacao || processo.atualizadoEm },
     processo.status === "Pago" && { label: "Pago", date: processo.dataPagamento || processo.atualizadoEm },
     processo.status === "Anulado" && { label: "Anulado", date: processo.anuladoEm || processo.atualizadoEm }
@@ -3866,8 +3866,8 @@ function timelineEvents(processo) {
     .map((entry) => ({
       label: auditLabel(entry),
       date: entry.criadoEm,
-      meta: entry.usuario || "Usuario",
-      details: entry.detalhes || "",
+      meta: entry.usuario || "Usuário",
+      details: timelineAuditDetails(entry),
       documento: currentDocumentFromAuditEntry(processo, entry),
       kind: entry.acao === "Remocao de documento" ? "danger" : "",
       showTime: true
@@ -3875,7 +3875,7 @@ function timelineEvents(processo) {
 
   const observationEvents = state.detailObservations
     .map((observacao) => ({
-      label: `Observacao: ${observacao.conteudo}`,
+      label: `Observação: ${observacao.conteudo}`,
       date: observacao.atualizadoEm || observacao.criadoEm,
       kind: "observation"
     }));
@@ -3932,14 +3932,14 @@ function documentTimelinePreview(documento = {}) {
 function documentTimelinePreviewContent(documento = {}, path = "", title = "") {
   const mimeType = String(documento.mimeType || "").toLowerCase();
   const fileName = String(documento.fileName || documento.nome || path || "").toLowerCase().split(/[?#]/, 1)[0];
-  const accessibleTitle = `Previa da primeira pagina de ${title}`;
+  const accessibleTitle = `Prévia da primeira página de ${title}`;
   if (mimeType === "application/pdf" || fileName.endsWith(".pdf")) {
-    return `<div class="timeline-document-preview-media"><iframe title="${escapeAttribute(accessibleTitle)}" data-document-preview="${escapeAttribute(path)}" loading="lazy" aria-busy="true"></iframe><span data-document-preview-loading>Carregando previa...</span></div>`;
+    return `<div class="timeline-document-preview-media"><iframe title="${escapeAttribute(accessibleTitle)}" data-document-preview="${escapeAttribute(path)}" loading="lazy" aria-busy="true"></iframe><span data-document-preview-loading>Carregando prévia...</span></div>`;
   }
   if (["image/png", "image/jpeg"].includes(mimeType) || /\.(png|jpe?g)$/.test(fileName)) {
-    return `<div class="timeline-document-preview-media"><img data-document-preview="${escapeAttribute(path)}" alt="${escapeAttribute(accessibleTitle)}" loading="lazy" aria-busy="true"><span data-document-preview-loading>Carregando previa...</span></div>`;
+    return `<div class="timeline-document-preview-media"><img data-document-preview="${escapeAttribute(path)}" alt="${escapeAttribute(accessibleTitle)}" loading="lazy" aria-busy="true"><span data-document-preview-loading>Carregando prévia...</span></div>`;
   }
-  return '<span class="timeline-document-preview-unavailable">Previa disponivel para PDF ou imagem.</span>';
+  return '<span class="timeline-document-preview-unavailable">Prévia disponível para PDF ou imagem.</span>';
 }
 
 async function hydrateTimelineDocumentPreviews() {
@@ -3997,14 +3997,14 @@ async function hydrateTimelineDocumentPreview(preview, sequence, signal) {
     if (!media) {
       URL.revokeObjectURL(blobUrl);
       timelinePreviewUrls.delete(blobUrl);
-      showTimelinePreviewError(container, path, "Previa nao disponivel para este formato.", false);
+      showTimelinePreviewError(container, path, "Prévia não disponível para este formato.", false);
       return;
     }
     preview.replaceWith(media);
     monitorTimelinePreviewMedia(media, container, path, sequence, blobUrl);
   } catch (error) {
     if (error.name === "AbortError" || sequence !== timelinePreviewSequence || !preview.isConnected) return;
-    showTimelinePreviewError(container, path, error.message || "Nao foi possivel carregar a previa.");
+    showTimelinePreviewError(container, path, error.message || "Não foi possível carregar a prévia.");
   }
 }
 
@@ -4015,7 +4015,7 @@ function createTimelinePreviewMedia(resource, blobUrl, originalPreview) {
   const previewTitle = originalPreview.getAttribute("title")
     || originalPreview.getAttribute("alt")
     || originalPreview.dataset.documentPreviewTitle
-    || `Previa de ${resource.fileName}`;
+    || `Prévia de ${resource.fileName}`;
   let media;
   if (mimeType === "application/pdf" || (extensionFallback && fileName.endsWith(".pdf"))) {
     media = document.createElement("iframe");
@@ -4050,7 +4050,7 @@ function monitorTimelinePreviewMedia(media, container, path, sequence, blobUrl) 
     container?.querySelector("[data-document-preview-loading]")?.remove();
     if (failed) {
       releaseTimelinePreviewUrl(blobUrl);
-      showTimelinePreviewError(container, path, "O navegador nao conseguiu renderizar esta previa.");
+      showTimelinePreviewError(container, path, "O navegador não conseguiu renderizar esta prévia.");
     }
   };
   media.addEventListener("load", () => finish(false), { once: true });
@@ -4067,7 +4067,7 @@ function showTimelinePreviewError(container, path, message, retry = true) {
     || previousPreview?.getAttribute("alt")
     || previousPreview?.dataset.documentPreviewTitle
     || container.dataset.documentPreviewTitle
-    || "Previa do documento";
+    || "Prévia do documento";
   container.dataset.documentPreviewPath = normalizeDocumentPath(path);
   container.dataset.documentPreviewTitle = previewTitle;
   container.replaceChildren();
@@ -4080,7 +4080,7 @@ function showTimelinePreviewError(container, path, message, retry = true) {
     button.type = "button";
     button.className = "secondary small-action";
     button.dataset.retryDocumentPreview = path;
-    button.textContent = "Tentar previa novamente";
+    button.textContent = "Tentar prévia novamente";
     container.append(button);
   }
 }
@@ -4098,11 +4098,11 @@ async function retryTimelineDocumentPreview(button) {
   const placeholder = document.createElement("span");
   placeholder.hidden = true;
   placeholder.dataset.documentPreview = path;
-  placeholder.dataset.documentPreviewTitle = container.dataset.documentPreviewTitle || "Previa do documento";
+  placeholder.dataset.documentPreviewTitle = container.dataset.documentPreviewTitle || "Prévia do documento";
   placeholder.setAttribute("aria-busy", "true");
   const loading = document.createElement("span");
   loading.dataset.documentPreviewLoading = "true";
-  loading.textContent = "Carregando previa...";
+  loading.textContent = "Carregando prévia...";
   container.replaceChildren(placeholder, loading);
   await hydrateTimelineDocumentPreview(placeholder, timelinePreviewSequence, controller.signal);
 }
@@ -4183,24 +4183,68 @@ function auditLabel(entry) {
   if (entry.acao === "Anulacao de empenho") return "Empenho anulado";
   if (entry.acao === "Carga inicial") return "Registro importado";
   if (entry.acao === "Anexo de documento" || entry.acao === "Remocao de documento") {
-    return humanizeCamelCase(entry.detalhes || entry.acao);
+    const documentKey = auditDocumentKey(entry);
+    const documentLabel = timelineDocumentLabel(documentKey);
+    if (documentLabel) {
+      const feminine = ["notaEmpenho", "notaFiscal"].includes(documentKey);
+      const suffix = entry.acao === "Anexo de documento"
+        ? (feminine ? "anexada" : "anexado")
+        : (feminine ? "removida" : "removido");
+      return `${documentLabel} ${suffix}`;
+    }
   }
   const statusMatch = String(entry.detalhes || "").match(/Status atual: (.+)\.$/);
-  if (statusMatch) return statusMatch[1];
+  if (statusMatch) return humanizeCamelCase(statusMatch[1]);
   return humanizeCamelCase(entry.acao || "Alteracao");
 }
 
+function auditDocumentKey(entry = {}) {
+  if (entry.documento?.chave) return String(entry.documento.chave).split(":")[0];
+  return String(entry.detalhes || "").match(/^Documento\s+([^\s]+)\s+(?:anexado|removido)\.$/i)?.[1]?.split(":")[0] || "";
+}
+
+function timelineDocumentLabel(documentKey = "") {
+  return ({
+    processoSped: "Processo SPED",
+    notaEmpenho: "Nota de empenho",
+    notaFiscal: "Nota fiscal",
+    complementares: "Documento complementar"
+  })[documentKey] || "";
+}
+
+function timelineAuditDetails(entry = {}) {
+  if (["Anexo de documento", "Remocao de documento"].includes(entry.acao)) return "";
+  return accentTimelineText(entry.detalhes || "");
+}
+
 function humanizeCamelCase(value = "") {
-  return String(value)
+  const text = String(value)
     .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
     .replace(/\bSPED\b/gi, "sped")
     .toLowerCase();
+  const accented = accentTimelineText(text);
+  return accented ? accented[0].toUpperCase() + accented.slice(1) : "";
+}
+
+function accentTimelineText(value = "") {
+  return String(value)
+    .replace(/\bobservacao\b/gi, (word) => word[0] === word[0].toUpperCase() ? "Observação" : "observação")
+    .replace(/\binclusao\b/gi, (word) => word[0] === word[0].toUpperCase() ? "Inclusão" : "inclusão")
+    .replace(/\balteracao\b/gi, (word) => word[0] === word[0].toUpperCase() ? "Alteração" : "alteração")
+    .replace(/\bexclusao\b/gi, (word) => word[0] === word[0].toUpperCase() ? "Exclusão" : "exclusão")
+    .replace(/\bremocao\b/gi, (word) => word[0] === word[0].toUpperCase() ? "Remoção" : "remoção")
+    .replace(/\bcriacao\b/gi, (word) => word[0] === word[0].toUpperCase() ? "Criação" : "criação")
+    .replace(/\banulacao\b/gi, (word) => word[0] === word[0].toUpperCase() ? "Anulação" : "anulação")
+    .replace(/\binativacao\b/gi, (word) => word[0] === word[0].toUpperCase() ? "Inativação" : "inativação")
+    .replace(/\bliquidacao\b/gi, (word) => word[0] === word[0].toUpperCase() ? "Liquidação" : "liquidação")
+    .replace(/\bnumero\b/gi, (word) => word[0] === word[0].toUpperCase() ? "Número" : "número")
+    .replace(/\bsped\b/gi, "SPED");
 }
 
 function visibleAuditEntries(processo) {
   return state.detailAudit
     .filter((entry) => entry.processoId === processo.id)
-    .filter((entry) => entry.acao !== "Carga inicial")
+    .filter((entry) => !["Carga inicial", "Inclusao de observacao"].includes(entry.acao))
     .sort((a, b) => new Date(a.criadoEm) - new Date(b.criadoEm));
 }
 
