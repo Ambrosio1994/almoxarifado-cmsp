@@ -117,6 +117,7 @@ export function validateDocumentUpload(fileName = "", mimeType = "", content = B
   const detectedMime = detectDocumentMime(content);
   if (!detectedMime) return false;
   if (detectedMime === "application/x-msdownload") return false;
+  if (!hasDocumentEndMarker(content, detectedMime)) return false;
 
   const normalizedName = String(fileName || "").toLowerCase();
   const normalizedMime = String(mimeType || "").toLowerCase();
@@ -139,6 +140,25 @@ export function validateDocumentUpload(fileName = "", mimeType = "", content = B
   const [, allowedDetectedMimes] = entry;
   if (!allowedDetectedMimes.includes(detectedMime)) return false;
   return !normalizedMime || allowedDetectedMimes.includes(normalizedMime) || normalizedMime === "application/octet-stream";
+}
+
+function hasDocumentEndMarker(content = Buffer.alloc(0), detectedMime = detectDocumentMime(content)) {
+  const buffer = Buffer.isBuffer(content) ? content : Buffer.from(content || "");
+  if (detectedMime === "application/pdf") {
+    if (!/^%PDF-\d\.\d/.test(buffer.subarray(0, 16).toString("latin1"))) return false;
+    return buffer.subarray(Math.max(0, buffer.length - 4096)).toString("latin1").includes("%%EOF");
+  }
+  if (detectedMime === "image/png") {
+    const pngEnd = Buffer.from([0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82]);
+    return buffer.length >= 20 && buffer.subarray(-pngEnd.length).equals(pngEnd);
+  }
+  if (detectedMime === "image/jpeg") {
+    return buffer.length >= 4 && buffer[buffer.length - 2] === 0xff && buffer[buffer.length - 1] === 0xd9;
+  }
+  if (detectedMime === "application/zip") {
+    return buffer.subarray(Math.max(0, buffer.length - 65_557)).indexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06])) >= 0;
+  }
+  return true;
 }
 
 export function validateProcessDocumentUpload(documentKey = "", fileName = "", mimeType = "", content = Buffer.alloc(0)) {

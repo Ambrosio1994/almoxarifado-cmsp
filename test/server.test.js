@@ -1,6 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { mkdir, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { Readable } from "node:stream";
 import {
   requestHandler,
@@ -678,6 +680,24 @@ describe("rotas http", () => {
     assert.equal(invalidBase64.statusCode, 400);
     assert.match(invalidBase64.json().error, /Base64/i);
 
+    const truncatedPdf = await postJson(`/api/processes/${processId}/documents`, token, {
+      documentKey: "processoSped",
+      fileName: "truncado.pdf",
+      mimeType: "application/pdf",
+      contentBase64: Buffer.from("%PDF-1.4\n").toString("base64")
+    });
+    assert.equal(truncatedPdf.statusCode, 400);
+    assert.match(truncatedPdf.json().error, /Documento invalido/i);
+
+    const malformedPdf = await postJson(`/api/processes/${processId}/documents`, token, {
+      documentKey: "processoSped",
+      fileName: "estrutura-invalida.pdf",
+      mimeType: "application/pdf",
+      contentBase64: Buffer.from("%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n%%EOF").toString("base64")
+    });
+    assert.equal(malformedPdf.statusCode, 400);
+    assert.match(malformedPdf.json().error, /corrompido|estrutura renderizavel/i);
+
     const longName = await postJson(`/api/processes/${processId}/documents`, token, {
       documentKey: "complementares",
       titulo: "Complemento",
@@ -700,7 +720,7 @@ describe("rotas http", () => {
       documentKey: "processoSped",
       fileName: "processo-sped.pdf",
       mimeType: "application/pdf",
-      contentBase64: Buffer.from("%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n%%EOF").toString("base64")
+      contentBase64: validPdfBuffer().toString("base64")
     });
     assert.equal(attached.statusCode, 200);
     const path = attached.json().documentos.processoSped.path;
@@ -715,6 +735,255 @@ describe("rotas http", () => {
     assert.equal(preview.headers["x-frame-options"], "DENY");
     assert.equal(preview.headers["content-type"], "application/pdf");
     assert.match(preview.headers["content-security-policy"], /frame-src blob:/);
+  });
+
+  it("serve caminhos legados codificados e responde HEAD sem transferir o arquivo", async () => {
+    const { token } = await authenticatedAs("almoxarifado");
+    const processId = crypto.randomUUID();
+    const fileName = "nota fiscal á.pdf";
+    const publicPath = `/uploads/${processId}/${fileName}`;
+    const extensionFallbackPath = `/uploads/${processId}/relatorio.pdf`;
+    const content = validPdfBuffer();
+    await mkdir(join(process.env.UPLOAD_STORAGE_ROOT, processId), { recursive: true });
+    await writeFile(join(process.env.UPLOAD_STORAGE_ROOT, processId, fileName), content, { mode: 0o600 });
+    await writeFile(join(process.env.UPLOAD_STORAGE_ROOT, processId, "relatorio.pdf"), content, { mode: 0o600 });
+    const store = await readStore();
+    store.processos.push({
+      id: processId,
+      numeroProcesso: `LEGACY-${processId.slice(0, 8)}`,
+      status: "Enviado para liquidacao",
+      materiais: [],
+      documentos: {
+        notaEmpenho: { fileName, path: publicPath, mimeType: "application/pdf" },
+        processoSped: { fileName: "Relatorio", path: extensionFallbackPath, mimeType: "application/pdf" }
+      }
+    });
+    await writeStore(store);
+    const encodedPath = encodeURI(publicPath);
+
+    const downloaded = await invokeRequest({
+      method: "GET",
+      path: encodedPath,
+      headers: { authorization: `Bearer ${token}` }
+    });
+    assert.equal(downloaded.statusCode, 200);
+    assert.deepEqual(downloaded.body, content);
+    assert.equal(downloaded.headers["content-type"], "application/pdf");
+    assert.match(downloaded.headers["content-disposition"], /filename\*=UTF-8''nota%20fiscal%20%C3%A1\.pdf/);
+
+    const head = await invokeRequest({
+      method: "HEAD",
+      path: encodedPath,
+      headers: { authorization: `Bearer ${token}` }
+    });
+    assert.equal(head.statusCode, 200);
+    assert.equal(head.body.length, 0);
+    assert.equal(Number(head.headers["content-length"]), content.length);
+
+    const extensionFallback = await invokeRequest({
+      method: "GET",
+      path: extensionFallbackPath,
+      headers: { authorization: `Bearer ${token}` }
+    });
+    assert.equal(extensionFallback.statusCode, 200);
+    assert.equal(extensionFallback.headers["content-type"], "application/pdf");
+    assert.equal(
+      decodeURIComponent(extensionFallback.headers["content-disposition"].split("filename*=UTF-8''")[1]),
+      "Relatorio.pdf"
+    );
+
+    const replacement = await postJson(`/api/processes/${processId}/documents`, token, {
+      documentKey: "notaEmpenho",
+      fileName: "substituto.pdf",
+      mimeType: "application/pdf",
+      contentBase64: content.toString("base64")
+    });
+    assert.equal(replacement.statusCode, 400);
+    assert.match(replacement.json().error, /nao pode ser substituido/i);
+  });
+
+  it("diferencia arquivo perdido e impede download completo silenciosamente incompleto", async () => {
+    const { token } = await authenticatedAs("almoxarifado");
+    const processId = crypto.randomUUID();
+    const missingPath = `/uploads/${processId}/documento-perdido.pdf`;
+    const store = await readStore();
+    store.processos.push({
+      id: processId,
+      numeroProcesso: `MISSING-${processId.slice(0, 8)}`,
+      status: "Enviado para liquidacao",
+      materiais: [],
+      documentos: {
+        processoSped: { fileName: "documento-perdido.pdf", path: missingPath, mimeType: "application/pdf" }
+      }
+    });
+    await writeStore(store);
+
+    const missing = await invokeRequest({
+      method: "GET",
+      path: missingPath,
+      headers: { authorization: `Bearer ${token}` }
+    });
+    assert.equal(missing.statusCode, 410);
+    assert.match(missing.json().error, /nao esta disponivel no armazenamento/i);
+
+    const complete = await invokeRequest({
+      method: "GET",
+      path: `/api/processes/${processId}/download?format=zip`,
+      headers: { authorization: `Bearer ${token}` }
+    });
+    assert.equal(complete.statusCode, 409);
+    assert.match(complete.json().error, /documentos indisponiveis/i);
+
+    const repaired = await postJson(`/api/processes/${processId}/documents`, token, {
+      documentKey: "processoSped",
+      fileName: "documento-restaurado.pdf",
+      mimeType: "application/pdf",
+      contentBase64: validPdfBuffer().toString("base64")
+    });
+    assert.equal(repaired.statusCode, 200);
+    assert.notEqual(repaired.json().documentos.processoSped.path, missingPath);
+
+    const repairedStore = await readStore();
+    const repairedProcess = repairedStore.processos.find((item) => item.id === processId);
+    repairedProcess.documentos.complementares = [{ fileName: "registro-antigo-sem-caminho.pdf" }];
+    await writeStore(repairedStore);
+    const completeAfterRepair = await invokeRequest({
+      method: "GET",
+      path: `/api/processes/${processId}/download?format=zip`,
+      headers: { authorization: `Bearer ${token}` }
+    });
+    assert.equal(completeAfterRepair.statusCode, 200);
+  });
+
+  it("mantem a restricao administrativa quando processo e template referenciam o mesmo caminho", async () => {
+    const { token } = await authenticatedAs("almoxarifado");
+    const { token: adminToken } = await authenticatedAs("admin");
+    const processId = crypto.randomUUID();
+    const publicPath = `/uploads/${processId}/compartilhado.pdf`;
+    const ambiguousEncodedPath = `/uploads/${processId}/nome%20duplicado.pdf`;
+    const ambiguousLiteralPath = `/uploads/${processId}/nome duplicado.pdf`;
+    const content = validPdfBuffer();
+    await mkdir(join(process.env.UPLOAD_STORAGE_ROOT, processId), { recursive: true });
+    await writeFile(join(process.env.UPLOAD_STORAGE_ROOT, processId, "compartilhado.pdf"), content, { mode: 0o600 });
+    const store = await readStore();
+    store.processos.push({
+      id: processId,
+      numeroProcesso: `SCOPE-${processId.slice(0, 8)}`,
+      status: "Enviado para SALC",
+      materiais: [],
+      documentos: {
+        processoSped: { fileName: "processo.pdf", path: publicPath, mimeType: "application/pdf" },
+        complementares: [
+          { fileName: "codificado.pdf", path: ambiguousEncodedPath, mimeType: "application/pdf" },
+          { fileName: "literal.pdf", path: ambiguousLiteralPath, mimeType: "application/pdf" }
+        ]
+      }
+    });
+    store.configuracoes ||= {};
+    store.configuracoes.emailTemplates ||= {};
+    store.configuracoes.emailTemplates.testeColisao = {
+      assunto: "Teste",
+      corpo: "Teste",
+      anexos: [{ id: crypto.randomUUID(), fileName: "template.pdf", path: publicPath, mimeType: "application/pdf" }]
+    };
+    await writeStore(store);
+
+    const restricted = await invokeRequest({
+      method: "GET",
+      path: publicPath,
+      headers: { authorization: `Bearer ${token}` }
+    });
+    assert.equal(restricted.statusCode, 403);
+    const allowed = await invokeRequest({
+      method: "GET",
+      path: publicPath,
+      headers: { authorization: `Bearer ${adminToken}` }
+    });
+    assert.equal(allowed.statusCode, 200);
+    assert.deepEqual(allowed.body, content);
+
+    const ambiguous = await invokeRequest({
+      method: "GET",
+      path: ambiguousEncodedPath,
+      headers: { authorization: `Bearer ${adminToken}` }
+    });
+    assert.equal(ambiguous.statusCode, 409);
+    assert.match(ambiguous.json().error, /mais de uma referencia/i);
+  });
+
+  it("aceita liquidacao com Nota de Empenho disponivel e bloqueia referencia sem arquivo", async () => {
+    const { token } = await authenticatedAs("almoxarifado");
+    const processId = crypto.randomUUID();
+    const store = await readStore();
+    store.processos.push({
+      id: processId,
+      numeroProcesso: `LIQUID-${processId.slice(0, 8)}`,
+      numeroEmpenho: "",
+      fornecedor: "",
+      status: "Aguardando envio para liquidacao",
+      dataEnvioFornecedor: "2024-01-10",
+      dataEntrega: "2024-01-11",
+      materiais: [],
+      documentos: {},
+      versao: 1,
+      inativo: false
+    });
+    await writeStore(store);
+    const pdf = validPdfBuffer();
+    const attached = await postJson(`/api/processes/${processId}/documents`, token, {
+      documentKey: "notaEmpenho",
+      fileName: "nota-empenho.pdf",
+      mimeType: "application/pdf",
+      contentBase64: pdf.toString("base64")
+    });
+    assert.equal(attached.statusCode, 200);
+
+    const advancePayload = {
+      numeroProcesso: attached.json().numeroProcesso,
+      numeroEmpenho: attached.json().numeroEmpenho,
+      fornecedor: attached.json().fornecedor,
+      materiais: attached.json().materiais,
+      dataEnvioFornecedor: attached.json().dataEnvioFornecedor,
+      dataEntrega: attached.json().dataEntrega,
+      dataEnvioLiquidacao: "2024-01-12",
+      status: "Enviado para liquidacao",
+      versao: attached.json().versao
+    };
+    const advanced = await putJson(`/api/processes/${processId}`, token, advancePayload);
+    assert.equal(advanced.statusCode, 200);
+
+    const relativePath = advanced.json().documentos.notaEmpenho.path.replace(/^\/uploads\/+/, "");
+    await rm(join(process.env.UPLOAD_STORAGE_ROOT, relativePath));
+    const unavailable = await putJson(`/api/processes/${processId}`, token, {
+      ...advancePayload,
+      versao: advanced.json().versao
+    });
+    assert.equal(unavailable.statusCode, 400);
+    assert.match(unavailable.json().error, /nao esta disponivel no armazenamento/i);
+  });
+
+  it("preserva extensao e nome original de documentos com nome longo", async () => {
+    const { token } = await authenticatedAs("almoxarifado");
+    const created = await postJson("/api/processes", token, {
+      numeroProcesso: `LONG-${crypto.randomUUID().slice(0, 8)}`
+    });
+    const fileName = `${"arquivo-muito-longo-".repeat(11)}á.pdf`.slice(0, 250 - 4) + ".pdf";
+    const pdf = validPdfBuffer();
+    const attached = await postJson(`/api/processes/${created.json().id}/documents`, token, {
+      documentKey: "processoSped",
+      fileName,
+      mimeType: "application/pdf",
+      contentBase64: pdf.toString("base64")
+    });
+    assert.equal(attached.statusCode, 200);
+    const path = attached.json().documentos.processoSped.path;
+    assert.match(path, /\.pdf$/i);
+
+    const response = await invokeRequest({ method: "GET", path, headers: { authorization: `Bearer ${token}` } });
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.headers["content-type"], "application/pdf");
+    assert.match(response.headers["content-disposition"], /filename\*=UTF-8''/);
+    assert.equal(decodeURIComponent(response.headers["content-disposition"].split("filename*=UTF-8''")[1]), fileName);
   });
 
   it("impede auditor de criar processos", async () => {
@@ -961,6 +1230,33 @@ describe("rotas http", () => {
     assert.match(response.text(), /login para acessar documentos/i);
   });
 });
+
+function validPdfBuffer() {
+  const objects = [
+    "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
+    "2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n",
+    "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << >> /Contents 4 0 R >>\nendobj\n",
+    "4 0 obj\n<< /Length 0 >>\nstream\n\nendstream\nendobj\n"
+  ];
+  const chunks = [Buffer.from("%PDF-1.4\n", "ascii")];
+  const offsets = [];
+  let length = chunks[0].length;
+  for (const object of objects) {
+    offsets.push(length);
+    const chunk = Buffer.from(object, "ascii");
+    chunks.push(chunk);
+    length += chunk.length;
+  }
+  const xrefOffset = length;
+  const xref = [
+    `xref\n0 ${objects.length + 1}\n`,
+    "0000000000 65535 f \n",
+    ...offsets.map((offset) => `${String(offset).padStart(10, "0")} 00000 n \n`),
+    `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`
+  ].join("");
+  chunks.push(Buffer.from(xref, "ascii"));
+  return Buffer.concat(chunks);
+}
 
 async function authenticatedAs(role, options = {}) {
   const store = await readStore();

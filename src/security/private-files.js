@@ -119,7 +119,8 @@ export async function readRegularFileLimited(filePath, options = {}) {
 export async function createPrivateFile(filePath, content, options = {}) {
   const target = resolve(filePath);
   const root = resolve(options.root || dirname(target));
-  await ensurePrivateDirectory(dirname(target), { root });
+  const directory = dirname(target);
+  await ensurePrivateDirectory(directory, { root });
   assertContained(root, target);
 
   const handle = await open(target, CREATE_FLAGS, options.mode || 0o600);
@@ -129,6 +130,14 @@ export async function createPrivateFile(filePath, content, options = {}) {
     await handle.chmod(options.mode || 0o600);
   } finally {
     await handle.close();
+  }
+  if (options.sync === true) {
+    const openedDirectory = await openDirectoryNoFollow(directory, { root });
+    try {
+      await openedDirectory.handle.sync();
+    } finally {
+      await openedDirectory.handle.close();
+    }
   }
   return target;
 }

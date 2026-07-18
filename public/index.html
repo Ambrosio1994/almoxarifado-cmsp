@@ -294,11 +294,12 @@
         <strong id="documentPreviewDialogTitle">Visualizar documento</strong>
         <button type="submit" class="secondary">Fechar</button>
       </form>
+      <p id="documentPreviewStatus" class="document-preview-status" role="status" aria-live="polite"></p>
       <div id="documentPreviewContent" class="document-preview-content" aria-busy="false"></div>
       <div class="actions document-preview-actions">
-        <button type="button" class="secondary" id="documentPreviewDownload">Baixar</button>
+        <button type="button" class="secondary" id="documentPreviewDownload" disabled>Baixar</button>
       </div>
-      <p class="form-message" id="documentPreviewMessage" role="alert" aria-live="assertive"></p>
+      <p class="form-message error" id="documentPreviewMessage" role="alert" aria-live="assertive"></p>
     </dialog>
 
     <dialog id="documentMetadataDialog" class="small-dialog" aria-labelledby="documentMetadataDialogTitle">
@@ -308,8 +309,8 @@
       </form>
       <form id="documentMetadataForm" class="process-form document-metadata-form">
         <p class="selected-file" id="documentSelectedFile"></p>
-        <label>Nome <input name="titulo" required></label>
-        <label>Descricao <textarea name="descricao" rows="3" placeholder="Opcional"></textarea></label>
+        <label>Nome <input name="titulo" maxlength="150" required></label>
+        <label>Descricao <textarea name="descricao" rows="3" maxlength="1000" placeholder="Opcional"></textarea></label>
         <div class="actions">
           <button type="submit">Salvar documento</button>
           <button type="button" id="cancelDocumentMetadata" class="secondary">Cancelar</button>
