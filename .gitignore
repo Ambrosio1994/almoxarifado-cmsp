@@ -2,6 +2,9 @@
 .env.*
 !.env.example
 !.env.production.example
+*.serviceaccount.json
+google-credentials*.json
+site-almox-*.json
 
 node_modules/
 npm-debug.log*

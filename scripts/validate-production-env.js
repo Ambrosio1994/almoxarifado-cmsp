@@ -33,6 +33,7 @@ export function validateProductionEnvironment() {
     errors.push("EMAIL_FROM_ADDRESS deve ser um endereco de e-mail valido.");
   }
   required("EMAIL_TEST_RECIPIENT");
+  validateUploadStorage(process.env);
 
   if (process.env.LOCAL_ADMIN_PASSWORD && !isValidPassword(process.env.LOCAL_ADMIN_PASSWORD)) {
     errors.push(`LOCAL_ADMIN_PASSWORD invalida. ${PASSWORD_POLICY_MESSAGE}`);
@@ -93,6 +94,32 @@ export function validateAdminBootstrap(environment = {}) {
     adminErrors.push("Configure LOCAL_ADMIN_EMAIL/LOCAL_ADMIN_PASSWORD para bootstrap ou, somente em banco ja provisionado, ADMIN_EMAILS e CONFIRM_EXISTING_ADMIN_PROVISIONED=true.");
   }
   return adminErrors;
+}
+
+export function validateUploadStorage(environment = {}) {
+  const uploadErrors = [];
+  const backend = String(environment.UPLOAD_STORAGE_BACKEND || "local").trim().toLowerCase();
+  if (!["local", "drive"].includes(backend)) {
+    uploadErrors.push("UPLOAD_STORAGE_BACKEND deve ser local ou drive.");
+    return uploadErrors;
+  }
+  if (backend !== "drive") return uploadErrors;
+  if (!String(environment.GOOGLE_DRIVE_FOLDER_ID || "").trim()) {
+    uploadErrors.push("GOOGLE_DRIVE_FOLDER_ID e obrigatoria quando UPLOAD_STORAGE_BACKEND=drive.");
+  }
+  if (!String(environment.GOOGLE_SERVICE_ACCOUNT_KEY || "").trim()) {
+    uploadErrors.push("GOOGLE_SERVICE_ACCOUNT_KEY e obrigatoria quando UPLOAD_STORAGE_BACKEND=drive.");
+    return uploadErrors;
+  }
+  try {
+    const credentials = JSON.parse(environment.GOOGLE_SERVICE_ACCOUNT_KEY);
+    if (credentials.type !== "service_account" || !credentials.client_email || !credentials.private_key) {
+      uploadErrors.push("GOOGLE_SERVICE_ACCOUNT_KEY deve conter uma chave JSON completa de service account.");
+    }
+  } catch {
+    uploadErrors.push("GOOGLE_SERVICE_ACCOUNT_KEY deve conter JSON valido.");
+  }
+  return uploadErrors;
 }
 
 function required(name) {

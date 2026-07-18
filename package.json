@@ -9,7 +9,8 @@
     "start": "NODE_ENV=production node src/server.js",
     "test": "node scripts/run-tests.js",
     "test:db": "node scripts/run-database-tests.js",
-    "check": "node --check src/server.js && node --check src/storage.js && node --check src/db/postgres.js && node --check src/uploads/storage-identity.js && node --check public/app.js && node --check public/password-fields.js && node --check scripts/db-migrate.js && node --check scripts/db-import-store.js && node --check scripts/run-tests.js && node --check scripts/run-database-tests.js && node --check scripts/cleanup-orphan-uploads.js && node --check scripts/validate-production-env.js && node --check scripts/backup-production.js && bash -n scripts/deploy-production.sh",
+    "check": "node --check src/server.js && node --check src/storage.js && node --check src/db/postgres.js && node --check src/uploads/storage-identity.js && node --check src/uploads/drive-storage.js && node --check src/uploads/drive-storage-identity.js && node --check src/uploads/local-storage.js && node --check src/uploads/pdf-validation.js && node --check src/uploads/upload-storage.js && node --check public/app.js && node --check public/password-fields.js && node --check scripts/db-migrate.js && node --check scripts/db-import-store.js && node --check scripts/run-tests.js && node --check scripts/run-database-tests.js && node --check scripts/cleanup-orphan-uploads.js && node --check scripts/check-drive-storage.js && node --check scripts/validate-production-env.js && node --check scripts/backup-production.js && bash -n scripts/deploy-production.sh",
+    "drive:check": "node scripts/check-drive-storage.js",
     "db:migrate": "node scripts/db-migrate.js",
     "db:migrate:production": "NODE_ENV=production node scripts/db-migrate.js",
     "validate:production": "node scripts/validate-production-env.js",
@@ -26,6 +27,7 @@
     "node": ">=20"
   },
   "dependencies": {
+    "googleapis": "^173.0.0",
     "pg": "^8.22.0"
   },
   "devDependencies": {

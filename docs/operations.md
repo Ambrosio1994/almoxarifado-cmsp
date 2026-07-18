@@ -25,7 +25,11 @@ Use esse campo no monitor externo para detectar regressao de storage.
 
 ## Uploads
 
-Em producao, os uploads devem apontar para um volume montado fora da imagem, por exemplo:
+O backend e selecionado por `UPLOAD_STORAGE_BACKEND`: `local` (padrao, inclusive nos testes) ou `drive`. Novos arquivos no Drive usam caminhos `/uploads/drive/<fileId>/<nome-codificado>`; leituras e exclusoes escolhem o backend pelo proprio caminho, portanto registros locais legados e registros do Drive podem coexistir no banco. O Drive usa uma identidade independente, `uploadStorageIdentityDrive`, para impedir que uma troca acidental de `GOOGLE_DRIVE_FOLDER_ID` faca a aplicacao subir apontando para uma pasta vazia.
+
+No Render, configure `UPLOAD_STORAGE_BACKEND=drive`, `GOOGLE_DRIVE_FOLDER_ID` e o JSON completo da service account em `GOOGLE_SERVICE_ACCOUNT_KEY`. Confirme upload, leitura e exclusao com `npm run drive:check` antes do deploy. Essas credenciais devem existir somente no cofre do provedor.
+
+Quando o backend for local em producao, os uploads devem apontar para um volume montado fora da imagem, por exemplo:
 
 ```bash
 docker run -e UPLOAD_STORAGE_ROOT=/data/uploads -v almox_uploads:/data/uploads ...
@@ -42,6 +46,8 @@ A instrucao `VOLUME` da imagem nao provisiona nem torna persistente um disco na 
 Os arquivos nao sao mais servidos anonimamente: downloads exigem sessao autenticada por cookie `HttpOnly`. O login nao entrega token no corpo; clientes automatizados devem manter o cookie recebido em `Set-Cookie`. O suporte a Bearer existente e apenas de compatibilidade legada e nao constitui um fluxo para novos clientes. Em mais de uma replica, substitua o volume local por armazenamento de objetos ou filesystem compartilhado.
 
 Revise arquivos orfaos sem remover nada com `npm run uploads:cleanup:dry-run`. Alem de `orphan`, a ferramenta informa `missing-reference` quando o banco aponta para um arquivo que nao existe no volume; esse segundo caso nunca e removido automaticamente e exige restauracao ou novo anexo. A ferramenta falha se o backend ativo diferir de `--expect-backend`, e protege arquivos recentes por 24 horas por padrao (`ORPHAN_UPLOAD_GRACE_MS`). Depois de conferir a lista, remova somente com confirmacao explicita. Em producao, use um backup verificado:
+
+Essa limpeza percorre somente o volume local; ela nao lista nem remove objetos do Drive.
 
 ```bash
 NODE_ENV=production npm run uploads:cleanup -- --expect-backend=postgres --confirm-backup
