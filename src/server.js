@@ -61,9 +61,15 @@ import { closePool, databaseConfigured, query } from "./db/postgres.js";
 import { cleanupRateLimits, clearRateLimit, consumeRateLimitAttempt } from "./repositories/rate-limits.js";
 import { listSecurityEvents, recordSecurityEvent } from "./repositories/security-audit.js";
 import {
-  ensureUploadStorageIdentity,
-  readUploadStorageIdentity
-} from "./uploads/storage-identity.js";
+  configuredUploadStorageBackend,
+  deleteUploadFile,
+  ensureUploadStorageReady,
+  getUploadBuffer,
+  getUploadMetadata,
+  inspectUploadIntegrity,
+  putUploadFile,
+  streamUploadTo
+} from "./uploads/upload-storage.js";
 import {
   hashPassword,
   isValidPassword,
@@ -72,12 +78,7 @@ import {
   verifyPassword
 } from "./security/password-policy.js";
 import {
-  createPrivateFile,
-  ensurePrivateDirectory,
-  hardenPrivateTree,
   openRegularFileNoFollow,
-  privateFileMetadata,
-  readRegularFileLimited,
   UnsafeFilePathError
 } from "./security/private-files.js";
 
@@ -89,6 +90,7 @@ const FAVICON_FILE = fileURLToPath(new URL("../my-fav.webp", import.meta.url));
 const UPLOAD_ROOT = process.env.UPLOAD_STORAGE_ROOT
   ? resolveUploadRoot(process.env.UPLOAD_STORAGE_ROOT)
   : fileURLToPath(new URL("../uploads/", import.meta.url));
+const UPLOAD_STORAGE_BACKEND = (process.env.UPLOAD_STORAGE_BACKEND || "local").trim().toLowerCase();
 const ADMIN_EMAILS = new Set(parseList(process.env.ADMIN_EMAILS));
 const LOCAL_ADMIN_EMAIL = normalizeEmail(process.env.LOCAL_ADMIN_EMAIL);
 const LOCAL_ADMIN_PASSWORD = process.env.LOCAL_ADMIN_PASSWORD || "";
@@ -126,7 +128,6 @@ const ADMIN_MAX_BODY_BYTES = Math.min(
 const LOGIN_SCRYPT_CONCURRENCY = positiveRuntimeInteger(process.env.LOGIN_SCRYPT_CONCURRENCY, 4);
 const LOGIN_SCRYPT_MAX_QUEUE = positiveRuntimeInteger(process.env.LOGIN_SCRYPT_MAX_QUEUE, 16);
 const DASHBOARD_CACHE_TTL_MS = positiveRuntimeInteger(process.env.DASHBOARD_CACHE_TTL_MS, 5_000);
-const UPLOAD_INTEGRITY_CACHE_TTL_MS = positiveRuntimeInteger(process.env.UPLOAD_INTEGRITY_CACHE_TTL_MS, 60_000);
 const MAX_UPLOAD_BYTES = positiveRuntimeInteger(process.env.MAX_UPLOAD_BYTES, 15 * 1024 * 1024);
 const MAX_PROCESS_UPLOAD_BYTES = positiveRuntimeInteger(process.env.MAX_PROCESS_UPLOAD_BYTES, 75 * 1024 * 1024);
 const MAX_TEMPLATE_UPLOAD_BYTES = positiveRuntimeInteger(process.env.MAX_TEMPLATE_UPLOAD_BYTES, 50 * 1024 * 1024);
@@ -175,11 +176,6 @@ const emailSchedulerState = {
 let maintenanceInterval;
 let localAdminBootstrapped = false;
 let activeCompiledDownloads = 0;
-let uploadStorageIdentity = "";
-const uploadIntegrityCache = {
-  checkedAt: 0,
-  result: null
-};
 const loginScryptLimiter = createWorkLimiter(LOGIN_SCRYPT_CONCURRENCY, LOGIN_SCRYPT_MAX_QUEUE);
 const dashboardCache = {
   generation: 0,
@@ -416,10 +412,13 @@ if (isMainModule()) {
   if (process.env.NODE_ENV === "production" && storeBackend !== "postgres") {
     throw new Error("A aplicacao exige PostgreSQL migrado em producao.");
   }
-  await hardenPrivateTree(UPLOAD_ROOT);
+  await ensureUploadStorageReady({ backend: UPLOAD_STORAGE_BACKEND, root: UPLOAD_ROOT });
   if (process.env.NODE_ENV === "production") {
-    uploadStorageIdentity = await initializeUploadStorageIdentity();
-    const uploadIntegrity = await inspectUploadStorageIntegrity({ force: true });
+    const uploadIntegrity = await inspectUploadIntegrity({
+      backend: UPLOAD_STORAGE_BACKEND,
+      root: UPLOAD_ROOT,
+      force: true
+    });
     if (!uploadIntegrity.ok) {
       logError("upload_storage_incomplete", uploadIntegrity);
     }
@@ -431,7 +430,8 @@ if (isMainModule()) {
   }
   if (!uploadStorageCheckOnly) {
     console.log(`Storage backend ativo: ${storeBackend}`);
-    console.log(`Upload root ativo: ${UPLOAD_ROOT}`);
+    console.log(`Upload backend ativo: ${configuredUploadStorageBackend({ backend: UPLOAD_STORAGE_BACKEND })}`);
+    if (UPLOAD_STORAGE_BACKEND === "local") console.log(`Upload root ativo: ${UPLOAD_ROOT}`);
     server.listen(PORT, () => {
       console.log(`Almoxarifado CMSP em http://localhost:${PORT}`);
       startEmailScheduler();
@@ -937,22 +937,21 @@ async function handleApi(req, res, url) {
     const safeTemplateKey = safeName(templateKey);
     const attachmentId = crypto.randomUUID();
     const safeFileName = `${attachmentId}-${safeDocumentFileName(fileName)}`;
-    const dir = join(UPLOAD_ROOT, "email-templates", safeTemplateKey);
-    const fullPath = join(dir, safeFileName);
-    await createPrivateFile(fullPath, content, { root: UPLOAD_ROOT, mode: 0o600, sync: true });
-    const pdfValidationError = await persistedPdfValidationError(fullPath, content);
-    if (pdfValidationError) {
-      await rm(fullPath, { force: true }).catch(() => null);
-      sendJson(res, pdfValidationError.statusCode, { error: pdfValidationError.message });
-      return;
-    }
+    const { path: storedPath, sizeBytes } = await putUploadFile(content, {
+      fileName: safeFileName,
+      mimeType,
+      category: "email-templates",
+      scope: safeTemplateKey,
+      backend: UPLOAD_STORAGE_BACKEND,
+      root: UPLOAD_ROOT
+    });
 
     const attachment = {
       id: attachmentId,
       fileName,
-      path: `/uploads/email-templates/${safeTemplateKey}/${safeFileName}`,
+      path: storedPath,
       mimeType: mimeType || contentTypeForPath(safeFileName),
-      sizeBytes: content.length,
+      sizeBytes,
       uploadedAt: new Date().toISOString(),
       uploadedBy: usuario,
       uploadedByEmail: user.email,
@@ -965,7 +964,7 @@ async function handleApi(req, res, url) {
         metadata: { templateKey, attachmentId, sizeBytes: content.length }
       })]);
     } catch (error) {
-      await rm(fullPath, { force: true }).catch(() => null);
+      await deleteUploadFile(storedPath, { root: UPLOAD_ROOT }).catch(() => null);
       throw error;
     }
     sendJson(res, 200, settingsPayload(store));
@@ -1533,8 +1532,6 @@ async function handleApi(req, res, url) {
 
     const safeProcessId = safeName(documentMatch[1]);
     const safeFileName = `${crypto.randomUUID()}-${safeName(documentKey)}-${safeDocumentFileName(fileName)}`;
-    const dir = join(UPLOAD_ROOT, safeProcessId);
-    const fullPath = join(dir, safeFileName);
     const currentDocuments = documentEntries(current.documentos);
     const resultingCount = currentDocuments.length + (replacedDocument ? 0 : 1);
     const resultingBytes = await totalStoredAttachmentBytes(currentDocuments, MAX_PROCESS_UPLOAD_BYTES)
@@ -1548,21 +1545,21 @@ async function handleApi(req, res, url) {
       sendJson(res, 413, { error: "O limite total de documentos deste processo foi atingido." });
       return;
     }
-    await createPrivateFile(fullPath, content, { root: UPLOAD_ROOT, mode: 0o600, sync: true });
-    const pdfValidationError = await persistedPdfValidationError(fullPath, content);
-    if (pdfValidationError) {
-      await rm(fullPath, { force: true }).catch(() => null);
-      sendJson(res, pdfValidationError.statusCode, { error: pdfValidationError.message });
-      return;
-    }
+    const { path: storedPath, sizeBytes } = await putUploadFile(content, {
+      fileName: safeFileName,
+      mimeType,
+      processId: safeProcessId,
+      backend: UPLOAD_STORAGE_BACKEND,
+      root: UPLOAD_ROOT
+    });
 
     const documentInfo = {
       fileName,
       titulo: documentKey === "complementares" ? title : undefined,
       descricao: documentKey === "complementares" ? description : undefined,
-      path: `/uploads/${safeProcessId}/${safeFileName}`,
+      path: storedPath,
       mimeType: mimeType || contentTypeForPath(safeFileName),
-      sizeBytes: content.length,
+      sizeBytes,
       uploadedAt: new Date().toISOString(),
       uploadedBy: usuario,
       uploadedByEmail: user.email,
@@ -1601,7 +1598,7 @@ async function handleApi(req, res, url) {
     try {
       await writeStore(store);
     } catch (error) {
-      await rm(fullPath, { force: true }).catch(() => null);
+      await deleteUploadFile(storedPath, { root: UPLOAD_ROOT }).catch(() => null);
       throw error;
     }
     if (replacedDocumentPath && replacedDocumentPath !== documentInfo.path) {
@@ -2005,14 +2002,7 @@ async function serveUpload(req, res, pathname) {
     sendJson(res, 403, { error: "Acesso negado." });
     return;
   }
-  const fullPath = uploadReferenceFilePath(reference.path);
-
-  if (!fullPath) {
-    sendJson(res, 403, { error: "Caminho de documento invalido." });
-    return;
-  }
-
-  await serveFile(res, fullPath, {
+  await streamUploadTo(res, reference.path, {
     "cache-control": "private, no-store",
     "content-type": documentContentType(reference),
     "content-disposition": documentContentDisposition(documentDownloadFileName(reference))
@@ -2112,17 +2102,7 @@ async function serveFavicon(req, res) {
 }
 
 async function removeUploadedFile(uploadPath = "") {
-  if (!String(uploadPath).startsWith("/uploads/")) return;
-  const relativePath = String(uploadPath).replace(/^\/uploads\/+/, "");
-  const fullPath = normalize(join(UPLOAD_ROOT, relativePath));
-  if (!isPathWithin(UPLOAD_ROOT, fullPath)) return;
-  try {
-    await privateFileMetadata(fullPath, { root: UPLOAD_ROOT, mode: 0o600 });
-  } catch (error) {
-    if (error.code === "ENOENT") return;
-    throw error;
-  }
-  await rm(fullPath, { force: true });
+  return deleteUploadFile(uploadPath, { root: UPLOAD_ROOT });
 }
 
 export async function serveFile(res, filePath, extraHeaders = {}, options = {}) {
@@ -2353,7 +2333,7 @@ async function handleHealth(res, pathname = "/health") {
   }
   if (process.env.NODE_ENV === "production" && checks.storage) {
     try {
-      checks.uploads = await inspectUploadStorageIntegrity();
+      checks.uploads = await inspectUploadIntegrity({ backend: UPLOAD_STORAGE_BACKEND, root: UPLOAD_ROOT });
     } catch {
       checks.uploads = { ok: false, referenced: 0, available: 0, missing: null };
     }
@@ -2367,67 +2347,6 @@ async function handleHealth(res, pathname = "/health") {
     checks,
     checkedAt: new Date().toISOString()
   });
-}
-
-async function initializeUploadStorageIdentity() {
-  return ensureUploadStorageIdentity({
-    root: UPLOAD_ROOT,
-    loadDatabaseIdentity: async () => {
-      const result = await query("SELECT value FROM app_settings WHERE key = 'uploadStorageIdentity' LIMIT 1");
-      return result.rows[0]?.value?.id || "";
-    },
-    claimDatabaseIdentity: async (identity) => {
-      await query(`
-        INSERT INTO app_settings (key, value, updated_at)
-        VALUES ('uploadStorageIdentity', $1::jsonb, now())
-        ON CONFLICT (key) DO NOTHING
-      `, [JSON.stringify({ id: identity })]);
-      const result = await query("SELECT value FROM app_settings WHERE key = 'uploadStorageIdentity' LIMIT 1");
-      return result.rows[0]?.value?.id || "";
-    }
-  });
-}
-
-async function inspectUploadStorageIntegrity(options = {}) {
-  const now = Date.now();
-  if (!options.force && uploadIntegrityCache.result && now - uploadIntegrityCache.checkedAt < UPLOAD_INTEGRITY_CACHE_TTL_MS) {
-    return uploadIntegrityCache.result;
-  }
-
-  const [processStore, settingsStore] = await Promise.all([readProcessesStore(), readSettingsStore()]);
-  const references = buildUploadReferenceMap({
-    processos: processStore.processos,
-    configuracoes: settingsStore.configuracoes
-  });
-  let available = 0;
-  let missing = 0;
-  for (const reference of references.values()) {
-    const fullPath = uploadReferenceFilePath(reference.path);
-    if (!fullPath) {
-      missing += 1;
-      continue;
-    }
-    try {
-      await privateFileMetadata(fullPath, { root: UPLOAD_ROOT, mode: 0o600 });
-      available += 1;
-    } catch (error) {
-      if (error.code !== "ENOENT") throw error;
-      missing += 1;
-    }
-  }
-
-  const markerIdentity = await readUploadStorageIdentity(UPLOAD_ROOT);
-  const identityMatches = Boolean(uploadStorageIdentity) && markerIdentity === uploadStorageIdentity;
-  const result = Object.freeze({
-    ok: identityMatches && missing === 0,
-    identity: identityMatches,
-    referenced: references.size,
-    available,
-    missing
-  });
-  uploadIntegrityCache.checkedAt = now;
-  uploadIntegrityCache.result = result;
-  return result;
 }
 
 function logInfo(event, data = {}) {
@@ -2868,14 +2787,11 @@ async function emailTemplateAttachments(template = {}) {
   for (const attachment of template.anexos || []) {
     const uploadPath = String(attachment.path || "");
     if (!uploadPath.startsWith("/uploads/")) continue;
-    const relativePath = uploadPath.replace(/^\/uploads\/+/, "");
-    const fullPath = normalize(join(UPLOAD_ROOT, relativePath));
-    if (!isPathWithin(UPLOAD_ROOT, fullPath)) continue;
     try {
       attachments.push({
         fileName: attachment.fileName || "anexo",
-        mimeType: attachment.mimeType || contentTypeForPath(fullPath),
-        content: await readPrivateUpload(fullPath, MAX_UPLOAD_BYTES)
+        mimeType: attachment.mimeType || contentTypeForPath(uploadPath),
+        content: await getUploadBuffer(uploadPath, MAX_UPLOAD_BYTES, { root: UPLOAD_ROOT })
       });
     } catch {
       // Missing attachments should not block the notification itself.
@@ -3293,28 +3209,14 @@ async function storedAttachmentByteSize(attachment) {
   if (!attachment) return 0;
   const normalizedAttachment = normalizeDocumentEntry(attachment);
   const declaredSize = attachmentByteSize(normalizedAttachment);
-  const fullPath = uploadReferenceFilePath(normalizedAttachment.path);
-  if (!fullPath) return declaredSize;
-  try {
-    return (await privateFileMetadata(fullPath, { root: UPLOAD_ROOT, mode: 0o600 })).size;
-  } catch (error) {
-    // A legacy record can reference a removed upload. Preserve its declared
-    // size so inconsistent metadata cannot be used to bypass quotas.
-    if (error.code === "ENOENT") return declaredSize;
-    throw error;
-  }
+  const metadata = await getUploadMetadata(normalizedAttachment.path, { root: UPLOAD_ROOT });
+  // A legacy record can reference a removed upload. Preserve its declared
+  // size so inconsistent metadata cannot be used to bypass quotas.
+  return metadata?.sizeBytes ?? declaredSize;
 }
 
 async function storedAttachmentExists(attachment) {
-  const fullPath = uploadReferenceFilePath(normalizeDocumentEntry(attachment).path);
-  if (!fullPath) return false;
-  try {
-    await privateFileMetadata(fullPath, { root: UPLOAD_ROOT, mode: 0o600 });
-    return true;
-  } catch (error) {
-    if (error.code === "ENOENT") return false;
-    throw error;
-  }
+  return Boolean(await getUploadMetadata(normalizeDocumentEntry(attachment).path, { root: UPLOAD_ROOT }));
 }
 
 async function processHasAvailableLiquidationDocument(processo = {}) {
@@ -3324,28 +3226,12 @@ async function processHasAvailableLiquidationDocument(processo = {}) {
   return false;
 }
 
-async function readPrivateUpload(fullPath, maximumBytes) {
-  return (await readRegularFileLimited(fullPath, {
-    root: UPLOAD_ROOT,
-    mode: 0o600,
-    maximumBytes
-  })).content;
-}
-
 export function stableLegacyId(prefix, ...parts) {
   const hash = createHash("sha256")
     .update(parts.map((part) => String(part || "").trim()).join("\u0000"))
     .digest("hex")
     .slice(0, 24);
   return `${safeName(prefix)}-${hash}`;
-}
-
-function uploadReferenceFilePath(uploadPath = "") {
-  const path = String(uploadPath || "");
-  if (!path.startsWith("/uploads/")) return "";
-  const relativePath = path.replace(/^\/uploads\/+/, "");
-  const fullPath = normalize(join(UPLOAD_ROOT, relativePath));
-  return isPathWithin(UPLOAD_ROOT, fullPath) ? fullPath : "";
 }
 
 function sanitizeNotificationRules(input = {}) {
@@ -3910,19 +3796,18 @@ async function processDocumentEntries(processo) {
       const referencedPath = typeof rawItem === "string" ? rawItem : rawItem?.path;
       if (!String(referencedPath || "").startsWith("/uploads/")) continue;
       const fileName = documentDownloadFileName(item) || `${safeName(key)}-${index + 1}`;
-      const fullPath = uploadReferenceFilePath(item.path);
-      if (!fullPath) {
-        unavailable.push(fileName);
-        continue;
-      }
       try {
-        const data = await readPrivateUpload(fullPath, MAX_UPLOAD_BYTES);
+        const data = await getUploadBuffer(item.path, MAX_UPLOAD_BYTES, { root: UPLOAD_ROOT });
         enforceAggregateDownloadLimit(entries, data);
         entries.push({
           name: `documentos/${safeName(key)}${items.length > 1 ? `-${index + 1}` : ""}-${safeDocumentFileName(fileName)}`,
           data
         });
       } catch (error) {
+        if (error.code === "UNSAFE_FILE_PATH") {
+          unavailable.push(fileName);
+          continue;
+        }
         if (error.statusCode) throw error;
         if (error.code !== "ENOENT") throw error;
         unavailable.push(fileName);
@@ -4009,23 +3894,6 @@ function runCommand(command, args, timeoutMs = 10_000) {
     child.on("error", () => finish(-1));
     child.on("close", (code) => finish(code ?? -1));
   });
-}
-
-async function persistedPdfValidationError(filePath, content) {
-  const buffer = Buffer.isBuffer(content) ? content : Buffer.from(content || "");
-  if (!buffer.subarray(0, 4).equals(Buffer.from("%PDF"))) return null;
-  const result = await runCommand("pdfinfo", [filePath], PDF_COMMAND_TIMEOUT_MS);
-  if (result === 0) return null;
-  if (result < 0) {
-    return {
-      statusCode: 503,
-      message: "O servico de validacao de PDF esta indisponivel. Tente novamente mais tarde."
-    };
-  }
-  return {
-    statusCode: 400,
-    message: "O PDF esta corrompido ou nao possui uma estrutura renderizavel."
-  };
 }
 
 function mergePdfDocuments(pdfBuffers) {

@@ -11,7 +11,7 @@ import {
   dockerUploadsArchiveArgs,
   verifyBackupManifest
 } from "../scripts/backup-production.js";
-import { validateAdminBootstrap } from "../scripts/validate-production-env.js";
+import { validateAdminBootstrap, validateUploadStorage } from "../scripts/validate-production-env.js";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const temporaryRoot = await mkdtemp(join(tmpdir(), "almox-operations-tests-"));
@@ -79,6 +79,24 @@ describe("scripts operacionais", () => {
       CONFIRM_EXISTING_ADMIN_PROVISIONED: "false"
     });
     assert.deepEqual(bootstrap, []);
+  });
+
+  it("exige pasta e chave JSON completas ao ativar o backend Drive", () => {
+    assert.match(validateUploadStorage({ UPLOAD_STORAGE_BACKEND: "drive" }).join(" "), /GOOGLE_DRIVE_FOLDER_ID/);
+    assert.match(validateUploadStorage({
+      UPLOAD_STORAGE_BACKEND: "drive",
+      GOOGLE_DRIVE_FOLDER_ID: "folder",
+      GOOGLE_SERVICE_ACCOUNT_KEY: "nao-json"
+    }).join(" "), /JSON valido/);
+    assert.deepEqual(validateUploadStorage({
+      UPLOAD_STORAGE_BACKEND: "drive",
+      GOOGLE_DRIVE_FOLDER_ID: "folder",
+      GOOGLE_SERVICE_ACCOUNT_KEY: JSON.stringify({
+        type: "service_account",
+        client_email: "storage@example.iam.gserviceaccount.com",
+        private_key: "private-key"
+      })
+    }), []);
   });
 
   it("le dominio e porta do env como texto, sem source nem avaliacao de shell", async () => {
