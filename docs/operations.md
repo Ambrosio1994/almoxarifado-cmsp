@@ -29,6 +29,10 @@ O backend e selecionado por `UPLOAD_STORAGE_BACKEND`: `local` (padrao, inclusive
 
 No Render, configure `UPLOAD_STORAGE_BACKEND=drive`, `GOOGLE_DRIVE_FOLDER_ID`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` e `GOOGLE_REFRESH_TOKEN`. Confirme upload, leitura e exclusao com `npm run drive:check` antes do deploy. Essas credenciais devem existir somente no cofre do provedor.
 
+Antes do deploy, `npm run google:check` valida o OAuth, a pasta e as identidades sem alterar o banco nem o marcador. Se o banco e a pasta divergirem, a aplicacao continua bloqueando a inicializacao. Para uma migracao deliberada, configure temporariamente `UPLOAD_STORAGE_ALLOW_IDENTITY_MIGRATION=true` em uma unica inicializacao. O processo cria ou valida o marcador primeiro e atualiza a identidade do banco por comparacao atomica; reinicios podem retomar a operacao sem gerar outra identidade. Remova a variavel assim que o evento `upload_storage_identity_migration_completed` aparecer. Mantê-la habilitada gera um aviso estruturado.
+
+As identidades sao independentes: o volume local usa a chave `uploadStorageIdentity` e o Drive usa `uploadStorageIdentityDrive` em `app_settings`. A mensagem sobre marcador ausente no "volume montado" pertence exclusivamente ao backend local; no backend Drive, as mensagens mencionam a pasta configurada. Se a primeira aparecer durante um deploy esperado como Drive, confirme `UPLOAD_STORAGE_BACKEND=drive` e o commit efetivamente executado antes de autorizar qualquer migracao.
+
 Quando o backend for local em producao, os uploads devem apontar para um volume montado fora da imagem, por exemplo:
 
 ```bash

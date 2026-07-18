@@ -1,13 +1,26 @@
 import { Readable } from "node:stream";
 import { google } from "googleapis";
 
-const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive";
-
 export function getDriveClient(options = {}) {
   const credentials = resolveOAuthCredentials(options);
   const oauth2Client = new google.auth.OAuth2(credentials.clientId, credentials.clientSecret);
   oauth2Client.setCredentials({ refresh_token: credentials.refreshToken });
   return google.drive({ version: "v3", auth: oauth2Client });
+}
+
+export function validateDriveConfiguration(options = {}) {
+  resolveOAuthCredentials(options);
+  return { folderId: resolveFolderId(options) };
+}
+
+export async function getDriveAccountIdentity(options = {}) {
+  const drive = options.client || getDriveClient(options);
+  try {
+    const response = await drive.about.get({ fields: "user(displayName,emailAddress,permissionId)" });
+    return response.data.user || {};
+  } catch (error) {
+    throw normalizeDriveOAuthError(error);
+  }
 }
 
 export async function uploadToDrive(content, options = {}) {
@@ -112,18 +125,30 @@ export async function verifyDriveFolderAccess(options = {}) {
       supportsAllDrives: true
     });
     if (response.data.trashed || response.data.mimeType !== "application/vnd.google-apps.folder") {
-      throw new Error("GOOGLE_DRIVE_FOLDER_ID nao aponta para uma pasta ativa do Drive.");
+      throw driveFolderValidationError(
+        "GOOGLE_DRIVE_FOLDER_ID nao aponta para uma pasta ativa do Drive.",
+        "GOOGLE_DRIVE_FOLDER_NOT_FOUND",
+        404
+      );
     }
     if (response.data.capabilities?.canAddChildren === false) {
-      throw new Error("A conta OAuth nao pode adicionar arquivos na pasta configurada.");
+      throw driveFolderValidationError(
+        "A conta OAuth nao pode adicionar arquivos na pasta configurada.",
+        "GOOGLE_DRIVE_FOLDER_ACCESS_DENIED",
+        403
+      );
     }
     return response.data;
   } catch (error) {
-    throw wrapDriveError(error, "verificar pasta");
+    throw normalizeDriveFolderError(error);
   }
 }
 
 export async function findFileInFolder(name, options = {}) {
+  return (await listFilesInFolder(name, { ...options, pageSize: 1 }))[0]?.id || null;
+}
+
+export async function listFilesInFolder(name, options = {}) {
   const folderId = resolveFolderId(options);
   const drive = options.client || getDriveClient(options);
   try {
@@ -131,11 +156,11 @@ export async function findFileInFolder(name, options = {}) {
       q: `name='${escapeDriveQueryValue(name)}' and '${escapeDriveQueryValue(folderId)}' in parents and trashed=false`,
       fields: "files(id, name)",
       spaces: "drive",
-      pageSize: 1,
+      pageSize: options.pageSize || 100,
       includeItemsFromAllDrives: true,
       supportsAllDrives: true
     });
-    return response.data.files?.[0]?.id || null;
+    return response.data.files || [];
   } catch (error) {
     throw wrapDriveError(error, "listar arquivos");
   }
@@ -182,6 +207,42 @@ function wrapDriveError(error, operation) {
   wrapped.reason = reason;
   wrapped.cause = error;
   return wrapped;
+}
+
+function normalizeDriveOAuthError(error) {
+  const wrapped = wrapDriveError(error, "autenticar via OAuth2");
+  const status = driveErrorStatus(error);
+  const reason = String(wrapped.reason || error?.response?.data?.error || "").toLowerCase();
+  const message = String(error?.response?.data?.error_description || error?.message || "").toLowerCase();
+  if (status === 401 || reason === "invalid_grant" || message.includes("invalid_grant")) {
+    wrapped.code = "GOOGLE_REFRESH_TOKEN_INVALID";
+    wrapped.statusCode = status || 401;
+    wrapped.message = "GOOGLE_REFRESH_TOKEN invalido, expirado ou revogado.";
+  }
+  return wrapped;
+}
+
+function normalizeDriveFolderError(error) {
+  if (String(error?.code || "").startsWith("GOOGLE_DRIVE_FOLDER_")) return error;
+  const wrapped = wrapDriveError(error, "verificar pasta");
+  const status = driveErrorStatus(error);
+  if (status === 404) {
+    wrapped.code = "GOOGLE_DRIVE_FOLDER_NOT_FOUND";
+    wrapped.statusCode = 404;
+    wrapped.message = "A pasta configurada em GOOGLE_DRIVE_FOLDER_ID nao foi encontrada.";
+  } else if (status === 403) {
+    wrapped.code = "GOOGLE_DRIVE_FOLDER_ACCESS_DENIED";
+    wrapped.statusCode = 403;
+    wrapped.message = "A conta OAuth nao possui permissao para acessar a pasta configurada.";
+  }
+  return wrapped;
+}
+
+function driveFolderValidationError(message, code, statusCode) {
+  const error = new Error(message);
+  error.code = code;
+  error.statusCode = statusCode;
+  return error;
 }
 
 function normalizeMaximumBytes(value) {
