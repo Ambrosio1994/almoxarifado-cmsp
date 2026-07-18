@@ -58,7 +58,8 @@ describe("Documentos no DOM", () => {
         return jsonResponse([process, secondProcess]);
       }
       if (path === "/api/suppliers") return jsonResponse([]);
-      if (path === `/api/processes/${process.id}/observations` || path === `/api/processes/${secondProcess.id}/observations`) return jsonResponse([]);
+      if (path === `/api/processes/${process.id}/observations`) return jsonResponse(observationFixture(process));
+      if (path === `/api/processes/${secondProcess.id}/observations`) return jsonResponse([]);
       if (path === `/api/processes/${process.id}/audit`) {
         auditRequests += 1;
         return jsonResponse(auditFixture(process));
@@ -182,11 +183,18 @@ describe("Documentos no DOM", () => {
       const currentRequestsBeforeTimeline = uploadRequests.get("/uploads/p1/current.pdf") || 0;
       dom.window.document.querySelector("#documentPreviewDialog").close();
       dom.window.document.querySelector('[data-detail-tab="timeline"]').click();
+      await waitFor(() => dom.window.document.querySelector("#detailPanel").textContent.includes("Observação: Material conferido"));
+      const timelineItems = [...dom.window.document.querySelectorAll(".timeline > li")];
+      assert.equal(timelineItems.filter((item) => item.textContent.includes("Material conferido")).length, 1);
+      assert.doesNotMatch(dom.window.document.querySelector("#detailPanel").textContent, /Inclus[aã]o de observa[cç][aã]o/i);
+      assert.match(dom.window.document.querySelector("#detailPanel").textContent, /Nota de empenho anexada/);
+      assert.match(dom.window.document.querySelector("#detailPanel").textContent, /Nota fiscal anexada/);
+      assert.doesNotMatch(dom.window.document.querySelector("#detailPanel").textContent, /notaEmpenho|notaFiscal|Documento nota (?:de )?empenho anexado|Documento nota fiscal anexado/i);
       await waitFor(() => (uploadRequests.get("/uploads/p1/current.pdf") || 0) > currentRequestsBeforeTimeline);
       await waitFor(() => (uploadRequests.get("/uploads/p1/missing.pdf") || 0) > 1);
       await waitFor(() => (uploadRequests.get("/uploads/p1/foto.png") || 0) > 0);
       assert.equal(uploadRequests.get("/uploads/p1/old.pdf") || 0, 0);
-      assert.equal(dom.window.document.querySelectorAll(".timeline-document-preview").length, 3);
+      assert.equal(dom.window.document.querySelectorAll(".timeline-document-preview").length, 4);
       const failedPreview = [...dom.window.document.querySelectorAll(".timeline-document-preview")]
         .find((item) => item.textContent.includes("Arquivo nao encontrado"));
       assert.ok(failedPreview);
@@ -206,7 +214,7 @@ describe("Documentos no DOM", () => {
       const revokedBeforeImageError = revokedUrls.length;
       timelineImage.dispatchEvent(new dom.window.Event("error"));
       await waitFor(() => revokedUrls.length > revokedBeforeImageError);
-      assert.match(timelineImage.parentElement?.textContent || dom.window.document.body.textContent, /nao conseguiu renderizar/);
+      assert.match(timelineImage.parentElement?.textContent || dom.window.document.body.textContent, /não conseguiu renderizar/);
       assert.ok(revokedUrls.length >= 1, "URLs Blob do dialogo fechado devem ser revogadas");
 
       dom.window.document.querySelector('[data-detail-tab="documents"]').click();
@@ -291,6 +299,14 @@ function secondProcessFixture() {
 function auditFixture(process) {
   return [
     {
+      id: "audit-observation",
+      processoId: process.id,
+      acao: "Inclusao de observacao",
+      detalhes: "Observacao registrada no processo.",
+      usuario: "Teste",
+      criadoEm: "2026-07-17T11:30:00.000Z"
+    },
+    {
       id: "audit-missing",
       processoId: process.id,
       acao: "Anexo de documento",
@@ -298,6 +314,15 @@ function auditFixture(process) {
       usuario: "Teste",
       criadoEm: "2026-07-17T11:00:00.000Z",
       documento: { fileName: "empenho.pdf", path: "/uploads/p1/missing.pdf", mimeType: "application/pdf" }
+    },
+    {
+      id: "audit-invoice",
+      processoId: process.id,
+      acao: "Anexo de documento",
+      detalhes: "Documento notaFiscal anexado.",
+      usuario: "Teste",
+      criadoEm: "2026-07-17T10:45:00.000Z",
+      documento: { chave: "notaFiscal", fileName: "timeout.pdf", path: "/uploads/p1/timeout.pdf", mimeType: "application/pdf" }
     },
     {
       id: "audit-photo",
@@ -327,6 +352,16 @@ function auditFixture(process) {
       documento: { fileName: "antigo.pdf", path: "/uploads/p1/old.pdf", mimeType: "application/pdf" }
     }
   ];
+}
+
+function observationFixture(process) {
+  return [{
+    id: "observation-1",
+    processoId: process.id,
+    conteudo: "Material conferido",
+    usuario: "Teste",
+    criadoEm: "2026-07-17T11:30:00.000Z"
+  }];
 }
 
 function dashboardPayload() {
