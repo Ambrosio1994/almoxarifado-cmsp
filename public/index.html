@@ -257,6 +257,24 @@
       </form>
     </dialog>
 
+    <dialog id="deleteTimelineDialog" class="small-dialog" aria-labelledby="deleteTimelineDialogTitle">
+      <form method="dialog" class="dialog-header">
+        <strong id="deleteTimelineDialogTitle">Excluir da linha do tempo</strong>
+        <button type="submit" class="secondary">Fechar</button>
+      </form>
+      <form id="deleteTimelineForm" class="process-form">
+        <p class="selected-file" id="deleteTimelineDescription"></p>
+        <label>Motivo
+          <textarea name="motivo" maxlength="1000" required placeholder="Explique por que este dado deve ser removido da linha do tempo."></textarea>
+        </label>
+        <div class="actions">
+          <button type="button" class="secondary" id="cancelDeleteTimeline">Cancelar</button>
+          <button type="submit" class="danger-action">Excluir da linha do tempo</button>
+        </div>
+        <p class="form-message" id="deleteTimelineMessage" role="alert" aria-live="assertive"></p>
+      </form>
+    </dialog>
+
     <dialog id="rollbackStatusDialog" class="small-dialog" aria-labelledby="rollbackStatusDialogTitle">
       <form method="dialog" class="dialog-header">
         <strong id="rollbackStatusDialogTitle">Retroceder status</strong>

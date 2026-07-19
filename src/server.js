@@ -694,7 +694,11 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === "GET" && url.pathname === "/api/meta") {
-    sendJson(res, 200, { status: STATUS, filtrosRapidos: QUICK_FILTERS, transicoes: PROCESS_TRANSITIONS });
+    sendJson(res, 200, {
+      status: STATUS.filter((status) => status !== "Aguardando envio para liquidacao"),
+      filtrosRapidos: QUICK_FILTERS,
+      transicoes: PROCESS_TRANSITIONS
+    });
     return;
   }
 
@@ -1471,6 +1475,70 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  const timelineItemMatch = url.pathname.match(/^\/api\/processes\/([^/]+)\/timeline-items$/);
+  if (timelineItemMatch && req.method === "DELETE") {
+    if (role !== "admin") {
+      sendJson(res, 403, { error: "Somente administradores podem excluir dados da linha do tempo." });
+      return;
+    }
+    const processo = store.processos.find((item) => item.id === timelineItemMatch[1]);
+    if (!processo) {
+      sendJson(res, 404, { error: "Processo nao encontrado" });
+      return;
+    }
+    const body = await readJson(req);
+    const type = String(body.tipo || "").trim();
+    const itemId = String(body.id || "").trim();
+    const reason = String(body.motivo || "").trim();
+    if (!reason || reason.length > 1000) {
+      sendJson(res, 400, { error: "Informe o motivo da exclusao com ate 1000 caracteres." });
+      return;
+    }
+    const timelineKey = `${type}:${itemId}`;
+    const hiddenKeys = new Set(store.auditoria
+      .filter((entry) => entry.processoId === processo.id && entry.acao === "Exclusao de dado da linha do tempo")
+      .map((entry) => entry.alteracoes?.linhaDoTempo?.novo)
+      .filter(Boolean));
+    if (hiddenKeys.has(timelineKey)) {
+      sendJson(res, 409, { error: "Este dado ja foi excluido da linha do tempo." });
+      return;
+    }
+
+    const auditTarget = type === "auditoria" && store.auditoria.some((entry) => (
+      entry.id === itemId && entry.processoId === processo.id && entry.acao !== "Exclusao de dado da linha do tempo"
+    ));
+    const observationTarget = type === "observacao" && store.observacoes.some((entry) => (
+      entry.id === itemId && entry.processoId === processo.id
+    ));
+    const milestoneTargets = {
+      "entrega-parcial": processo.status === "Entrega parcial" && Boolean(processo.dataEntrega),
+      entregue: hasProcessReachedDelivery(processo) && Boolean(processo.dataEntrega),
+      "envio-liquidacao": Boolean(processo.dataEnvioLiquidacao),
+      liquidado: ["Liquidado", "Pago"].includes(processo.status),
+      pago: processo.status === "Pago",
+      anulado: processo.status === "Anulado"
+    };
+    const milestoneTarget = type === "marco" && milestoneTargets[itemId] === true;
+    if (!auditTarget && !observationTarget && !milestoneTarget) {
+      sendJson(res, 404, { error: "Dado da linha do tempo nao encontrado." });
+      return;
+    }
+
+    store.auditoria.unshift(createAuditEntry({
+      processoId: processo.id,
+      ...auditActor,
+      acao: "Exclusao de dado da linha do tempo",
+      detalhes: `Dado ${timelineKey} ocultado da linha do tempo. Motivo: ${reason}`,
+      alteracoes: {
+        linhaDoTempo: { anterior: null, novo: timelineKey },
+        motivo: { anterior: null, novo: reason }
+      }
+    }));
+    await writeStore(store);
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+
   const obsMatch = url.pathname.match(/^\/api\/processes\/([^/]+)\/observations$/);
   if (obsMatch && req.method === "GET") {
     const observacoes = store.observacoes
@@ -1879,6 +1947,7 @@ export function requiresAdmin(method = "", pathname = "") {
   if (pathname === "/api/emails/status") return true;
   if (pathname.startsWith("/api/settings")) return true;
   if (pathname.startsWith("/api/admin/")) return true;
+  if (pathname.endsWith("/timeline-items")) return true;
   return false;
 }
 

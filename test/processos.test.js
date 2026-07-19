@@ -49,7 +49,7 @@ describe("regras de processo", () => {
   });
 
   it("permite retrocesso somente para status anteriores e limpa marcos desfeitos", () => {
-    assert.deepEqual(previousProcessStatuses("Liquidado").slice(-2), ["Aguardando envio para liquidacao", "Enviado para liquidacao"]);
+    assert.deepEqual(previousProcessStatuses("Liquidado").slice(-2), ["Entregue", "Enviado para liquidacao"]);
     assert.equal(isValidStatusRollback("Liquidado", "Entregue"), true);
     assert.equal(isValidStatusRollback("Liquidado", "Pago"), false);
     const rolledBack = rollbackProcessStatus({
@@ -228,8 +228,9 @@ describe("regras de processo", () => {
   });
 
   it("centraliza o fluxo e impede saltos de etapa", () => {
-    assert.equal(isValidStatusTransition("Entregue", "Aguardando envio para liquidacao"), true);
-    assert.equal(isValidStatusTransition("Entregue", "Enviado para liquidacao"), false);
+    assert.equal(isValidStatusTransition("Entregue", "Aguardando envio para liquidacao"), false);
+    assert.equal(isValidStatusTransition("Entregue", "Enviado para liquidacao"), true);
+    assert.equal(isValidStatusTransition("Aguardando envio para liquidacao", "Enviado para liquidacao"), true);
     assert.equal(isValidStatusTransition("Empenho enviado ao fornecedor", "Aguardando entrega"), true);
   });
 
