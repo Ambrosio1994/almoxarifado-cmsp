@@ -33,7 +33,8 @@ export async function uploadToDrive(content, options = {}) {
     const response = await drive.files.create({
       requestBody: {
         name,
-        parents: [folderId]
+        parents: [folderId],
+        ...(options.appProperties ? { appProperties: options.appProperties } : {})
       },
       media: {
         mimeType: options.mimeType || "application/octet-stream",
@@ -163,6 +164,28 @@ export async function listFilesInFolder(name, options = {}) {
     return response.data.files || [];
   } catch (error) {
     throw wrapDriveError(error, "listar arquivos");
+  }
+}
+
+export async function listFilesByAppProperty(propertyName, propertyValue, options = {}) {
+  const folderId = resolveFolderId(options);
+  const drive = options.client || getDriveClient(options);
+  const key = String(propertyName || "").trim();
+  if (!/^[A-Za-z0-9_-]{1,100}$/.test(key)) throw new TypeError("Nome de appProperty do Drive invalido.");
+  const value = String(propertyValue || "").trim();
+  if (!value) throw new TypeError("Valor de appProperty do Drive obrigatorio.");
+  try {
+    const response = await drive.files.list({
+      q: `appProperties has { key='${key}' and value='${escapeDriveQueryValue(value)}' } and '${escapeDriveQueryValue(folderId)}' in parents and trashed=false`,
+      fields: "files(id, name, size, mimeType, modifiedTime, md5Checksum, trashed, appProperties)",
+      spaces: "drive",
+      pageSize: 100,
+      includeItemsFromAllDrives: true,
+      supportsAllDrives: true
+    });
+    return response.data.files || [];
+  } catch (error) {
+    throw wrapDriveError(error, "procurar arquivo administrativo");
   }
 }
 
