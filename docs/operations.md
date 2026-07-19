@@ -51,11 +51,31 @@ Os arquivos nao sao mais servidos anonimamente: downloads exigem sessao autentic
 
 Revise arquivos orfaos sem remover nada com `npm run uploads:cleanup:dry-run`. Alem de `orphan`, a ferramenta informa `missing-reference` quando o banco aponta para um arquivo que nao existe no volume; esse segundo caso nunca e removido automaticamente e exige restauracao ou novo anexo. A ferramenta falha se o backend ativo diferir de `--expect-backend`, e protege arquivos recentes por 24 horas por padrao (`ORPHAN_UPLOAD_GRACE_MS`). Depois de conferir a lista, remova somente com confirmacao explicita. Em producao, use um backup verificado:
 
-Essa limpeza percorre somente o volume local; ela nao lista nem remove objetos do Drive.
-
 ```bash
 NODE_ENV=production npm run uploads:cleanup -- --expect-backend=postgres --confirm-backup
 ```
+
+Essa limpeza percorre somente o volume local; ela nao lista nem remove objetos do Drive.
+
+### Substituicao administrativa de documento ausente
+
+Quando um registro ainda aponta para um upload local cujos bytes foram perdidos, execute o reparo de uma maquina administrativa com acesso ao Neon e ao Google Drive. Configure `DATABASE_URL`, `DB_SSL=true`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN` e `GOOGLE_DRIVE_FOLDER_ID`. Nenhuma credencial e impressa pelo comando.
+
+Primeiro valide sem alterar Drive ou banco:
+
+```bash
+npm run storage:replace-document -- \
+  --process-id 09bf523f-156a-4712-84b3-2896fc557e86 \
+  --document-key notaEmpenho \
+  --file "/caminho/NE25_25 Maio 26.pdf" \
+  --technical-user "administrador@cmsp" \
+  --reason "Reposicao de upload local indisponivel" \
+  --dry-run
+```
+
+Depois de conferir o resultado, troque somente `--dry-run` por `--confirm`. Repita o comando com `--document-key notaFiscal` e o arquivo `NF 895 _ CELO .pdf`. Processos em estado `Pago` sao bloqueados; uma excecao deliberada exige também `--allow-paid` e fica registrada na auditoria.
+
+O script preserva o nome original registrado, grava o caminho anterior na auditoria append-only e atualiza o processo somente depois de confirmar tamanho e checksum do objeto no Drive. Uma propriedade deterministica no arquivo permite reutilizar o mesmo upload caso a execucao seja interrompida antes do commit no Neon. O comando nunca exclui arquivos nem registros.
 
 ## Release
 
