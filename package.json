@@ -1,8 +1,8 @@
 {
-  "name": "almoxarifado-cmsp",
+  "name": "almoxarifado",
   "version": "0.1.0",
   "private": true,
-  "description": "Sistema de Gerenciamento de Processos do Almoxarifado - CMSP",
+  "description": "Sistema de Gerenciamento de Processos do Almoxarifado",
   "type": "module",
   "scripts": {
     "dev": "NODE_ENV=development node src/server.js",

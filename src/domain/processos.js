@@ -84,6 +84,34 @@ export function isValidStatusTransition(currentStatus = "", nextStatus = "") {
   return Boolean(currentStatus) && PROCESS_TRANSITIONS[currentStatus] === nextStatus;
 }
 
+export function previousProcessStatuses(currentStatus = "") {
+  const currentIndex = PROCESS_WORKFLOW.indexOf(currentStatus);
+  return currentIndex > 0 ? PROCESS_WORKFLOW.slice(0, currentIndex) : [];
+}
+
+export function isValidStatusRollback(currentStatus = "", targetStatus = "") {
+  return previousProcessStatuses(currentStatus).includes(targetStatus);
+}
+
+export function rollbackProcessStatus(processo = {}, targetStatus = "") {
+  if (!isValidStatusRollback(processo.status, targetStatus)) return null;
+
+  const targetIndex = PROCESS_WORKFLOW.indexOf(targetStatus);
+  const updated = { ...processo, status: targetStatus };
+  const milestones = [
+    ["dataEnvioFornecedor", "Empenho enviado ao fornecedor"],
+    ["dataEnvioEmpenho", "Empenho enviado ao fornecedor"],
+    ["dataEntrega", "Entrega parcial"],
+    ["dataEnvioLiquidacao", "Enviado para liquidacao"],
+    ["dataLiquidacao", "Liquidado"],
+    ["dataPagamento", "Pago"]
+  ];
+  for (const [field, milestoneStatus] of milestones) {
+    if (targetIndex < PROCESS_WORKFLOW.indexOf(milestoneStatus)) updated[field] = "";
+  }
+  return updated;
+}
+
 export function isPdfDocument(fileName = "", mimeType = "") {
   const normalizedMime = String(mimeType || "").toLowerCase();
   const normalizedName = String(fileName || "").toLowerCase();

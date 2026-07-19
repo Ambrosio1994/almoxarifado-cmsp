@@ -3,8 +3,8 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Almoxarifado CMSP</title>
-    <link rel="icon" type="image/webp" href="/my-fav.webp">
+    <title>Almoxarifado</title>
+    <link rel="icon" type="image/png" href="/new_favicon.png">
     <link rel="stylesheet" href="/styles.css">
   </head>
   <body class="auth-pending">
@@ -16,7 +16,7 @@
             <label class="password-step" id="passwordStep"><span class="sr-only">Senha</span><input name="senha" type="password" autocomplete="current-password" maxlength="256" placeholder="Digite sua senha" required></label>
             <button type="submit" class="email-submit" id="emailSubmitButton">Entrar</button>
           </form>
-          <p class="auth-note">Ao continuar, voce reconhece a Politica de Privacidade do Almoxarifado CMSP.</p>
+          <p class="auth-note">Ao continuar, voce reconhece a Politica de Privacidade do Almoxarifado.</p>
           <p class="auth-note">O acesso deve ser cadastrado previamente por um administrador.</p>
           <p class="auth-message" id="authMessage" role="alert" aria-live="assertive"></p>
         </section>
@@ -27,7 +27,7 @@
       <div class="sidebar-header">
         <div class="brand">
           <strong>Almoxarifado</strong>
-          <span>CMSP · CONTROLE DE EMPENHOS</span>
+          <span>CONTROLE DE EMPENHOS</span>
         </div>
         <button type="button" class="sidebar-toggle" id="sidebarToggle" aria-label="Minimizar menu">‹</button>
       </div>
@@ -254,6 +254,27 @@
           <button type="submit">Salvar</button>
         </div>
         <p class="form-message" id="processStepMessage" role="alert" aria-live="assertive"></p>
+      </form>
+    </dialog>
+
+    <dialog id="rollbackStatusDialog" class="small-dialog" aria-labelledby="rollbackStatusDialogTitle">
+      <form method="dialog" class="dialog-header">
+        <strong id="rollbackStatusDialogTitle">Retroceder status</strong>
+        <button type="submit" class="secondary">Fechar</button>
+      </form>
+      <form id="rollbackStatusForm" class="process-form">
+        <p class="selected-file" id="rollbackStatusDescription"></p>
+        <label>Status anterior
+          <select name="status" required></select>
+        </label>
+        <label>Motivo
+          <textarea name="motivo" maxlength="1000" required placeholder="Explique por que o status precisa ser corrigido."></textarea>
+        </label>
+        <div class="actions">
+          <button type="button" class="secondary" id="cancelRollbackStatus">Cancelar</button>
+          <button type="submit">Confirmar retrocesso</button>
+        </div>
+        <p class="form-message" id="rollbackStatusMessage" role="alert" aria-live="assertive"></p>
       </form>
     </dialog>
 

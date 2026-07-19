@@ -36,8 +36,8 @@ describe("respostas de erro do servidor", () => {
     assert.deepEqual(errorResponsePayload(error), { error: "Processo nao encontrado" });
   });
 
-  it("identifica corretamente o tipo do favicon webp", () => {
-    assert.equal(contentTypeForPath("my-fav.webp"), "image/webp");
+  it("identifica corretamente o tipo do favicon png", () => {
+    assert.equal(contentTypeForPath("new_favicon.png"), "image/png");
   });
 
   it("identifica corretamente js e css", () => {
@@ -142,7 +142,7 @@ describe("rotas http", () => {
 
     assert.equal(response.statusCode, 200);
     assert.match(response.headers["content-type"] || "", /text\/html/);
-    assert.match(body, /\/my-fav\.webp/);
+    assert.match(body, /\/new_favicon\.png/);
     assert.doesNotMatch(body, /Olá, Administrador|id="sidebarUserRole">admin/);
     assert.match(body, /data-section="settings"[^>]*hidden|class="[^"]*hidden[^"]*" data-section="settings"/);
     assert.match(body, /id="mobileMenuToggle"/);
@@ -165,11 +165,14 @@ describe("rotas http", () => {
     assert.match(styles, /data-theme="dark"\] \.search-box input[\s\S]*?background: transparent;/);
   });
 
-  it("serve o favicon em webp via rota nova e alias legado", async () => {
+  it("serve o favicon em png via rota principal e alias legado", async () => {
+    const primary = await invokeRequest({ method: "GET", path: "/new_favicon.png" });
     const response = await invokeRequest({ method: "GET", path: "/favicon.ico" });
 
+    assert.equal(primary.statusCode, 200);
+    assert.equal(primary.headers["content-type"], "image/png");
     assert.equal(response.statusCode, 200);
-    assert.equal(response.headers["content-type"], "image/webp");
+    assert.equal(response.headers["content-type"], "image/png");
     assert.ok(response.body.length > 0);
   });
 
@@ -494,6 +497,58 @@ describe("rotas http", () => {
     await writeStore(paidStore);
     const inactivation = await postJson(`/api/processes/${paid.id}/inactivate`, adminToken, {});
     assert.equal(inactivation.statusCode, 403);
+  });
+
+  it("permite somente ao administrador retroceder status e registra a correcao", async () => {
+    const store = await readStore();
+    const process = {
+      id: crypto.randomUUID(),
+      numeroProcesso: `ROLLBACK-${crypto.randomUUID().slice(0, 8)}`,
+      status: "Pago",
+      dataEnvioFornecedor: "2024-01-10",
+      dataEntrega: "2024-01-15",
+      dataEnvioLiquidacao: "2024-01-16",
+      dataLiquidacao: "2024-01-17",
+      dataPagamento: "2024-01-18",
+      materiais: [], documentos: {}, versao: 4, inativo: false
+    };
+    store.processos.push(process);
+    await writeStore(store);
+
+    const { token: warehouseToken } = await authenticatedAs("almoxarifado");
+    const forbidden = await postJson(`/api/processes/${process.id}/rollback-status`, warehouseToken, {
+      status: "Entregue", motivo: "Correcao", versao: 4
+    });
+    assert.equal(forbidden.statusCode, 403);
+
+    const { token: adminToken } = await authenticatedAs("admin");
+    const invalid = await postJson(`/api/processes/${process.id}/rollback-status`, adminToken, {
+      status: "Anulado", motivo: "Correcao", versao: 4
+    });
+    assert.equal(invalid.statusCode, 400);
+
+    const response = await postJson(`/api/processes/${process.id}/rollback-status`, adminToken, {
+      status: "Entregue", motivo: "Liquidacao registrada por engano", versao: 4
+    });
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.json().status, "Entregue");
+    assert.equal(response.json().versao, 5);
+    assert.equal(response.json().dataEntrega, "2024-01-15");
+    assert.equal(response.json().dataEnvioLiquidacao, "");
+    assert.equal(response.json().dataLiquidacao, "");
+    assert.equal(response.json().dataPagamento, "");
+
+    const persisted = await readStore();
+    const audit = persisted.auditoria.find((entry) => entry.processoId === process.id
+      && entry.acao === "Retrocesso administrativo de status");
+    assert.equal(audit.alteracoes.status.anterior, "Pago");
+    assert.equal(audit.alteracoes.status.novo, "Entregue");
+    assert.equal(audit.alteracoes.motivo.novo, "Liquidacao registrada por engano");
+
+    const stale = await postJson(`/api/processes/${process.id}/rollback-status`, adminToken, {
+      status: "Aguardando entrega", motivo: "Outra correcao", versao: 4
+    });
+    assert.equal(stale.statusCode, 409);
   });
 
   it("aplica o fluxo intermediario e reconcilia saldo ao editar materiais entregues", async () => {
@@ -1082,7 +1137,7 @@ describe("rotas http", () => {
       headers: { cookie }
     });
     assert.equal(reloadedSession.statusCode, 200);
-    assert.equal(reloadedSession.json().email, "teste-admin@cmsp.local");
+    assert.equal(reloadedSession.json().email, "teste-admin@example.test");
     assert.match(reloadedSession.headers["set-cookie"] || "", /almox_session=.*HttpOnly/);
 
     const blocked = await invokeRequest({
@@ -1110,7 +1165,7 @@ describe("rotas http", () => {
       method: "POST",
       path: "/auth/login",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ email: "teste-almoxarifado@cmsp.local", senha: password })
+      body: JSON.stringify({ email: "teste-almoxarifado@example.test", senha: password })
     });
     assert.equal(login.statusCode, 200);
     assertSensitiveCredentialsAbsent(login.json(), password);
@@ -1200,7 +1255,7 @@ describe("rotas http", () => {
   it("permite ao admin alterar perfil e senha, excluir usuario e remove-lo das configuracoes", async () => {
     const { token } = await authenticatedAs("admin");
     const suffix = crypto.randomUUID().slice(0, 8);
-    const email = `gerenciado-${suffix}@cmsp.local`;
+    const email = `gerenciado-${suffix}@example.test`;
     const created = await postJson("/api/admin/users", token, {
       nome: "Usuario Gerenciado",
       email,
@@ -1324,7 +1379,7 @@ async function authenticatedAs(role, options = {}) {
   const user = {
     id: `test-${role}`,
     nome: `Teste ${role}`,
-    email: `teste-${role}@cmsp.local`,
+    email: `teste-${role}@example.test`,
     senhaHash: options.password ? await hashPassword(options.password) : "",
     precisaDefinirSenha: Boolean(options.precisaDefinirSenha),
     authVersion: 1,

@@ -1,7 +1,9 @@
+name: almoxarifado
+
 services:
   postgres:
     image: postgres:15
-    container_name: almoxarifado-cmsp-postgres
+    container_name: almoxarifado-postgres
     restart: unless-stopped
     ports:
       - "127.0.0.1:5432:5432"

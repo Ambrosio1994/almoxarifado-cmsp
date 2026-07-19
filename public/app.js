@@ -139,6 +139,11 @@ const processStepDateGroup = document.querySelector("#processStepDateGroup");
 const processStepDateLabel = document.querySelector("#processStepDateLabel");
 const processStepMessage = document.querySelector("#processStepMessage");
 const cancelProcessStep = document.querySelector("#cancelProcessStep");
+const rollbackStatusDialog = document.querySelector("#rollbackStatusDialog");
+const rollbackStatusForm = document.querySelector("#rollbackStatusForm");
+const rollbackStatusDescription = document.querySelector("#rollbackStatusDescription");
+const rollbackStatusMessage = document.querySelector("#rollbackStatusMessage");
+const cancelRollbackStatus = document.querySelector("#cancelRollbackStatus");
 const cancelProcessDialog = document.querySelector("#cancelProcessDialog");
 const cancelProcessForm = document.querySelector("#cancelProcessForm");
 const cancelProcessMessage = document.querySelector("#cancelProcessMessage");
@@ -418,6 +423,7 @@ function clearClientSession() {
     editObservationDialog,
     deliveryDialog,
     processStepDialog,
+    rollbackStatusDialog,
     cancelProcessDialog,
     downloadDialog,
     documentPreviewDialog,
@@ -1182,6 +1188,10 @@ detailPanel.addEventListener("click", async (event) => {
       cancelProcessForm?.elements.motivo?.focus();
     }
 
+    if (event.target.dataset.rollbackStatus) {
+      openRollbackStatusDialog();
+    }
+
     if (event.target.dataset.inactivateProcess) {
       await inactivateSelectedProcess();
     }
@@ -1333,6 +1343,12 @@ processStepForm?.addEventListener("input", (event) => {
   event.target.removeAttribute("aria-invalid");
   if (processStepMessage) processStepMessage.textContent = "";
 });
+cancelRollbackStatus?.addEventListener("click", () => rollbackStatusDialog?.close());
+rollbackStatusDialog?.addEventListener("close", () => {
+  rollbackStatusForm?.reset();
+  if (rollbackStatusMessage) rollbackStatusMessage.textContent = "";
+});
+rollbackStatusForm?.addEventListener("submit", saveStatusRollback);
 closeCancelProcess?.addEventListener("click", () => cancelProcessDialog?.close());
 cancelProcessDialog?.addEventListener("close", () => {
   cancelProcessForm?.reset();
@@ -1519,6 +1535,7 @@ function renderGeneralModule(processo) {
     <div class="detail-actions">
       ${canEditGeneralInUi(processo) ? '<button type="button" class="detail-primary-action" data-open-edit="true">Editar dados do processo</button>' : ""}
       ${newDataButton(processo)}
+      ${canRollbackStatusInUi(processo) ? '<button type="button" class="secondary" data-rollback-status="true">Retroceder status</button>' : ""}
       ${canCancelProcessInUi(processo) ? '<button type="button" class="secondary danger-action" data-cancel-process="true">Anular empenho</button>' : ""}
       ${canInactivateProcessInUi(processo) ? '<button type="button" class="secondary danger-action" data-inactivate-process="true">Inativar empenho</button>' : ""}
     </div>
@@ -2020,6 +2037,55 @@ function resetProcessStepDialog() {
   processStepForm?.querySelectorAll("[aria-invalid]").forEach((input) => input.removeAttribute("aria-invalid"));
   processStepDateGroup?.classList.remove("hidden");
   if (processStepMessage) processStepMessage.textContent = "";
+}
+
+function previousStatusesInUi(processo) {
+  const workflow = (state.meta.status || []).filter((status) => status !== "Anulado");
+  const currentIndex = workflow.indexOf(processo?.status);
+  return currentIndex > 0 ? workflow.slice(0, currentIndex) : [];
+}
+
+function canRollbackStatusInUi(processo) {
+  return Boolean(isCurrentUserAdmin() && processo && !processo.inativo && previousStatusesInUi(processo).length);
+}
+
+function openRollbackStatusDialog() {
+  const processo = state.selectedProcess;
+  if (!canRollbackStatusInUi(processo) || !rollbackStatusDialog || !rollbackStatusForm) return;
+  rollbackStatusForm.reset();
+  rollbackStatusDescription.textContent = `Status atual: ${processo.status}. Selecione o status anterior correto.`;
+  rollbackStatusForm.elements.status.innerHTML = previousStatusesInUi(processo)
+    .map((status) => `<option value="${escapeAttribute(status)}">${escapeHtml(status)}</option>`)
+    .join("");
+  if (rollbackStatusMessage) rollbackStatusMessage.textContent = "";
+  rollbackStatusDialog.showModal();
+  rollbackStatusForm.elements.status.focus();
+}
+
+async function saveStatusRollback(event) {
+  event.preventDefault();
+  const processo = state.selectedProcess;
+  const data = Object.fromEntries(new FormData(event.currentTarget));
+  const motivo = String(data.motivo || "").trim();
+  if (!processo || !previousStatusesInUi(processo).includes(data.status) || !motivo || motivo.length > 1000) {
+    rollbackStatusMessage.textContent = "Selecione um status anterior e informe o motivo do retrocesso.";
+    return;
+  }
+  setFormBusy(event.currentTarget, true, "Salvando...");
+  try {
+    const updated = await api(`/api/processes/${processo.id}/rollback-status`, {
+      method: "POST",
+      body: JSON.stringify({ status: data.status, motivo, versao: processo.versao })
+    });
+    state.selectedProcess = updated;
+    rollbackStatusDialog.close();
+    renderProcessDetail();
+    await refreshAfterMutation("O status foi retrocedido");
+  } catch (error) {
+    rollbackStatusMessage.textContent = error.message || "Nao foi possivel retroceder o status.";
+  } finally {
+    setFormBusy(event.currentTarget, false);
+  }
 }
 
 function registerPartialDelivery() {
