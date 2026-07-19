@@ -405,6 +405,7 @@ describe("rotas http", () => {
     assert.equal(roleCanMutate("admin"), true);
     assert.equal(roleCanMutate("almoxarifado"), true);
     assert.equal(roleCanMutate("auditor"), false);
+    assert.equal(requiresAdmin("DELETE", "/api/processes/process-1/timeline-items"), true);
   });
 
   it("impede usuario comum de alterar configuracoes e ler auditoria de seguranca", async () => {
@@ -446,6 +447,38 @@ describe("rotas http", () => {
       headers: { authorization: `Bearer ${token}` }
     });
     assert.equal(globalAudit.statusCode, 403);
+  });
+
+  it("permite somente ao admin excluir um dado da linha do tempo sem apagar a auditoria", async () => {
+    const { token: warehouseToken } = await authenticatedAs("almoxarifado");
+    const created = await postJson("/api/processes", warehouseToken, {
+      numeroProcesso: `TIMELINE-${crypto.randomUUID().slice(0, 8)}`
+    });
+    assert.equal(created.statusCode, 201);
+
+    const store = await readStore();
+    const target = store.auditoria.find((entry) => entry.processoId === created.json().id
+      && entry.acao === "Criacao de processo");
+    const requestDeletion = (token, motivo) => invokeRequest({
+      method: "DELETE",
+      path: `/api/processes/${created.json().id}/timeline-items`,
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ tipo: "auditoria", id: target.id, motivo })
+    });
+
+    assert.equal((await requestDeletion(warehouseToken, "Correcao visual")).statusCode, 403);
+
+    const { token: adminToken } = await authenticatedAs("admin");
+    assert.equal((await requestDeletion(adminToken, " ")).statusCode, 400);
+    assert.equal((await requestDeletion(adminToken, "Registro exibido indevidamente")).statusCode, 200);
+
+    const persisted = await readStore();
+    assert.ok(persisted.auditoria.some((entry) => entry.id === target.id), "o evento original deve permanecer imutavel");
+    const deletion = persisted.auditoria.find((entry) => entry.processoId === created.json().id
+      && entry.acao === "Exclusao de dado da linha do tempo");
+    assert.equal(deletion.alteracoes.linhaDoTempo.novo, `auditoria:${target.id}`);
+    assert.equal(deletion.alteracoes.motivo.novo, "Registro exibido indevidamente");
+    assert.equal((await requestDeletion(adminToken, "Repeticao")).statusCode, 409);
   });
 
   it("cria processo somente com processo, somente com empenho ou com ambos", async () => {
@@ -551,7 +584,7 @@ describe("rotas http", () => {
     assert.equal(stale.statusCode, 409);
   });
 
-  it("aplica o fluxo intermediario e reconcilia saldo ao editar materiais entregues", async () => {
+  it("envia o processo entregue diretamente para liquidacao e reconcilia saldo ao editar materiais", async () => {
     const { token } = await authenticatedAs("almoxarifado");
     const store = await readStore();
     const base = {
@@ -585,19 +618,8 @@ describe("rotas http", () => {
       versao: process.versao,
       ...overrides
     });
-    const skipped = await putJson(`/api/processes/${workflowProcess.id}`, token, payload(workflowProcess, {
+    const missingDate = await putJson(`/api/processes/${workflowProcess.id}`, token, payload(workflowProcess, {
       status: "Enviado para liquidacao",
-      dataEnvioLiquidacao: "2024-01-16"
-    }));
-    assert.equal(skipped.statusCode, 400);
-    assert.match(skipped.json().error, /transicao/i);
-
-    const awaiting = await putJson(`/api/processes/${workflowProcess.id}`, token, payload(workflowProcess, {
-      status: "Aguardando envio para liquidacao"
-    }));
-    assert.equal(awaiting.statusCode, 200);
-    const missingDate = await putJson(`/api/processes/${workflowProcess.id}`, token, payload(awaiting.json(), {
-      status: "Enviado para liquidacao"
     }));
     assert.equal(missingDate.statusCode, 400);
     assert.match(missingDate.json().error, /data de envio para liquidacao/i);

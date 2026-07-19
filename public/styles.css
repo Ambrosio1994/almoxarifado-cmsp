@@ -1881,6 +1881,10 @@ button.group-bar:focus-visible {
   display: block;
 }
 
+.timeline .timeline-delete-action {
+  margin-top: 10px;
+}
+
 .timeline strong {
   font-size: 14px;
 }

@@ -27,6 +27,7 @@ const state = {
   detailAudit: [],
   deliveryDraft: null,
   processStepDraft: null,
+  timelineDeleteDraft: null,
   observationProcessId: null,
   selectedProcess: null,
   detailReturnSection: "processes",
@@ -139,6 +140,11 @@ const processStepDateGroup = document.querySelector("#processStepDateGroup");
 const processStepDateLabel = document.querySelector("#processStepDateLabel");
 const processStepMessage = document.querySelector("#processStepMessage");
 const cancelProcessStep = document.querySelector("#cancelProcessStep");
+const deleteTimelineDialog = document.querySelector("#deleteTimelineDialog");
+const deleteTimelineForm = document.querySelector("#deleteTimelineForm");
+const deleteTimelineDescription = document.querySelector("#deleteTimelineDescription");
+const deleteTimelineMessage = document.querySelector("#deleteTimelineMessage");
+const cancelDeleteTimeline = document.querySelector("#cancelDeleteTimeline");
 const rollbackStatusDialog = document.querySelector("#rollbackStatusDialog");
 const rollbackStatusForm = document.querySelector("#rollbackStatusForm");
 const rollbackStatusDescription = document.querySelector("#rollbackStatusDescription");
@@ -423,6 +429,7 @@ function clearClientSession() {
     editObservationDialog,
     deliveryDialog,
     processStepDialog,
+    deleteTimelineDialog,
     rollbackStatusDialog,
     cancelProcessDialog,
     downloadDialog,
@@ -1177,6 +1184,16 @@ detailPanel.addEventListener("click", async (event) => {
       await deleteObservation(deleteObservationId);
     }
 
+    const deleteTimelineButton = event.target.closest("[data-delete-timeline]");
+    if (deleteTimelineButton) {
+      openDeleteTimelineDialog({
+        type: deleteTimelineButton.dataset.timelineType,
+        id: deleteTimelineButton.dataset.timelineId,
+        label: deleteTimelineButton.dataset.timelineLabel
+      });
+      return;
+    }
+
     if (event.target.dataset.registerPartialDelivery) {
       await registerPartialDelivery();
     }
@@ -1343,6 +1360,13 @@ processStepForm?.addEventListener("input", (event) => {
   event.target.removeAttribute("aria-invalid");
   if (processStepMessage) processStepMessage.textContent = "";
 });
+cancelDeleteTimeline?.addEventListener("click", () => deleteTimelineDialog?.close());
+deleteTimelineDialog?.addEventListener("close", () => {
+  state.timelineDeleteDraft = null;
+  deleteTimelineForm?.reset();
+  if (deleteTimelineMessage) deleteTimelineMessage.textContent = "";
+});
+deleteTimelineForm?.addEventListener("submit", saveTimelineDeletion);
 cancelRollbackStatus?.addEventListener("click", () => rollbackStatusDialog?.close());
 rollbackStatusDialog?.addEventListener("close", () => {
   rollbackStatusForm?.reset();
@@ -1606,10 +1630,46 @@ function renderTimelineModule(processo) {
           ${event.meta ? `<span>${escapeHtml(event.meta)}</span>` : ""}
           ${event.details ? `<span>${escapeHtml(event.details)}</span>` : ""}
           ${event.documento?.path ? documentTimelinePreview(event.documento) : ""}
+          ${isCurrentUserAdmin() && event.sourceType && event.sourceId
+            ? `<button type="button" class="secondary small-action timeline-delete-action" data-delete-timeline="true" data-timeline-type="${escapeAttribute(event.sourceType)}" data-timeline-id="${escapeAttribute(event.sourceId)}" data-timeline-label="${escapeAttribute(event.label)}">Excluir</button>`
+            : ""}
         </li>
       `).join("")}
     </ol>
   `;
+}
+
+function openDeleteTimelineDialog(item = {}) {
+  if (!isCurrentUserAdmin() || !state.selectedProcess || !item.type || !item.id || !deleteTimelineDialog || !deleteTimelineForm) return;
+  state.timelineDeleteDraft = { processId: state.selectedProcess.id, ...item };
+  deleteTimelineForm.reset();
+  deleteTimelineDescription.textContent = `Item: ${item.label || "Dado da linha do tempo"}`;
+  if (deleteTimelineMessage) deleteTimelineMessage.textContent = "";
+  deleteTimelineDialog.showModal();
+  deleteTimelineForm.elements.motivo.focus();
+}
+
+async function saveTimelineDeletion(event) {
+  event.preventDefault();
+  const draft = state.timelineDeleteDraft;
+  const motivo = String(new FormData(event.currentTarget).get("motivo") || "").trim();
+  if (!draft || draft.processId !== state.selectedProcess?.id || !motivo || motivo.length > 1000) {
+    deleteTimelineMessage.textContent = "Informe o motivo da exclusao com ate 1000 caracteres.";
+    return;
+  }
+  setFormBusy(event.currentTarget, true, "Excluindo...");
+  try {
+    await api(`/api/processes/${draft.processId}/timeline-items`, {
+      method: "DELETE",
+      body: JSON.stringify({ tipo: draft.type, id: draft.id, motivo })
+    });
+    deleteTimelineDialog.close();
+    await refreshAfterMutation("O dado foi excluido da linha do tempo");
+  } catch (error) {
+    deleteTimelineMessage.textContent = error.message || "Nao foi possivel excluir o dado da linha do tempo.";
+  } finally {
+    setFormBusy(event.currentTarget, false);
+  }
 }
 
 function renderDeliveriesModule(processo) {
@@ -2609,12 +2669,14 @@ function nextProcessStep(processo) {
       field: "dataEntrega"
     },
     "Entregue": {
-      button: "Confirmar aguardando envio para liquidação",
-      title: "Confirme que o processo esta aguardando envio para liquidação.",
-      status: "Aguardando envio para liquidacao"
+      button: "Confirmar envio para liquidação",
+      title: "Informe a data do envio para liquidação.",
+      status: "Enviado para liquidacao",
+      field: "dataEnvioLiquidacao",
+      dateLabel: "Data do envio para liquidação"
     },
     "Aguardando envio para liquidacao": {
-      button: "Registrar envio para liquidação",
+      button: "Confirmar envio para liquidação",
       title: "Informe a data do envio para liquidação.",
       status: "Enviado para liquidacao",
       field: "dataEnvioLiquidacao",
@@ -3937,13 +3999,14 @@ function daysCell(processo) {
 }
 
 function timelineEvents(processo) {
+  const hiddenKeys = hiddenTimelineKeys(processo);
   const explicitEvents = [
-    processo.status === "Entrega parcial" && processo.dataEntrega && { label: "Entrega parcial", date: processo.dataEntrega },
-    hasReachedDeliveryInUi(processo) && processo.dataEntrega && { label: "Entregue", date: processo.dataEntrega },
-    processo.dataEnvioLiquidacao && { label: "Enviado para liquidação", date: processo.dataEnvioLiquidacao },
-    ["Liquidado", "Pago"].includes(processo.status) && { label: "Liquidado", date: processo.dataLiquidacao || processo.dataEnvioLiquidacao || processo.atualizadoEm },
-    processo.status === "Pago" && { label: "Pago", date: processo.dataPagamento || processo.atualizadoEm },
-    processo.status === "Anulado" && { label: "Anulado", date: processo.anuladoEm || processo.atualizadoEm }
+    processo.status === "Entrega parcial" && processo.dataEntrega && { label: "Entrega parcial", date: processo.dataEntrega, sourceType: "marco", sourceId: "entrega-parcial" },
+    hasReachedDeliveryInUi(processo) && processo.dataEntrega && { label: "Entregue", date: processo.dataEntrega, sourceType: "marco", sourceId: "entregue" },
+    processo.dataEnvioLiquidacao && { label: "Enviado para liquidação", date: processo.dataEnvioLiquidacao, sourceType: "marco", sourceId: "envio-liquidacao" },
+    ["Liquidado", "Pago"].includes(processo.status) && { label: "Liquidado", date: processo.dataLiquidacao || processo.dataEnvioLiquidacao || processo.atualizadoEm, sourceType: "marco", sourceId: "liquidado" },
+    processo.status === "Pago" && { label: "Pago", date: processo.dataPagamento || processo.atualizadoEm, sourceType: "marco", sourceId: "pago" },
+    processo.status === "Anulado" && { label: "Anulado", date: processo.anuladoEm || processo.atualizadoEm, sourceType: "marco", sourceId: "anulado" }
   ].filter(Boolean);
 
   const auditEvents = visibleAuditEntries(processo)
@@ -3954,18 +4017,23 @@ function timelineEvents(processo) {
       details: timelineAuditDetails(entry),
       documento: currentDocumentFromAuditEntry(processo, entry),
       kind: entry.acao === "Remocao de documento" ? "danger" : "",
-      showTime: true
+      showTime: true,
+      sourceType: "auditoria",
+      sourceId: entry.id
     }));
 
   const observationEvents = state.detailObservations
     .map((observacao) => ({
       label: `Observação: ${observacao.conteudo}`,
       date: observacao.atualizadoEm || observacao.criadoEm,
-      kind: "observation"
+      kind: "observation",
+      sourceType: "observacao",
+      sourceId: observacao.id
     }));
 
   const events = dedupeTimelineDocuments([...auditEvents, ...explicitEvents, ...observationEvents]
     .filter((event) => event.label && event.date)
+    .filter((event) => !hiddenKeys.has(`${event.sourceType}:${event.sourceId}`))
     .filter((event, index, list) => list.findIndex((item) => (
       item.label === event.label
         && formatDateTime(item.date) === formatDateTime(event.date)
@@ -3974,6 +4042,13 @@ function timelineEvents(processo) {
     .sort((a, b) => new Date(a.date) - new Date(b.date)));
 
   return events;
+}
+
+function hiddenTimelineKeys(processo) {
+  return new Set(state.detailAudit
+    .filter((entry) => entry.processoId === processo.id && entry.acao === "Exclusao de dado da linha do tempo")
+    .map((entry) => entry.alteracoes?.linhaDoTempo?.novo)
+    .filter(Boolean));
 }
 
 function dedupeTimelineDocuments(events = []) {
@@ -4328,7 +4403,7 @@ function accentTimelineText(value = "") {
 function visibleAuditEntries(processo) {
   return state.detailAudit
     .filter((entry) => entry.processoId === processo.id)
-    .filter((entry) => !["Carga inicial", "Inclusao de observacao"].includes(entry.acao))
+    .filter((entry) => !["Carga inicial", "Inclusao de observacao", "Exclusao de dado da linha do tempo"].includes(entry.acao))
     .sort((a, b) => new Date(a.criadoEm) - new Date(b.criadoEm));
 }
 

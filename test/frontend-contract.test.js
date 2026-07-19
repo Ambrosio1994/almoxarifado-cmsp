@@ -66,7 +66,8 @@ describe("contrato visual e de navegacao", () => {
     assert.match(html, /id="processStepForm"/);
     assert.match(html, /id="cancelProcessStep">Cancelar<\/button>/);
     assert.match(app, /openProcessStepDialog\(step\)/);
-    assert.match(app, /button: "Registrar envio para liquidação"/);
+    assert.match(app, /"Entregue": \{[\s\S]*?button: "Confirmar envio para liquidação"[\s\S]*?status: "Enviado para liquidacao"/);
+    assert.doesNotMatch(app, /button: "Confirmar aguardando envio para liquidação"/);
     assert.match(app, /dateLabel: "Data do envio para liquidação"/);
     assert.doesNotMatch(app, /newDataPanel/);
   });
@@ -98,6 +99,17 @@ describe("contrato visual e de navegacao", () => {
     assert.match(app, /loadDetailAudit\(processo\.id/);
     assert.match(app, /\/api\/processes\/\$\{processId\}\/audit/);
     assert.match(app, /return state\.detailAudit/);
+  });
+
+  it("permite ao admin excluir itens da linha do tempo com motivo e sem apagar auditoria", () => {
+    assert.match(html, /id="deleteTimelineDialog"/);
+    assert.match(html, /id="deleteTimelineForm"/);
+    assert.match(html, /id="deleteTimelineForm"[\s\S]*?name="motivo"[^>]*maxlength="1000"[^>]*required/);
+    assert.match(app, /isCurrentUserAdmin\(\).*event\.sourceType.*event\.sourceId/s);
+    assert.match(app, /\/timeline-items/);
+    assert.match(app, /method: "DELETE"/);
+    assert.match(app, /Exclusao de dado da linha do tempo/);
+    assert.match(app, /hiddenTimelineKeys\(processo\)/);
   });
 
   it("mostra previa do documento anexado na linha do tempo e o abre em dialogo", () => {
