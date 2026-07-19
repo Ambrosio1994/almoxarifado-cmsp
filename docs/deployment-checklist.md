@@ -10,7 +10,7 @@ Alvo oficial: `https://sapgestao.dpdns.org`, com PostgreSQL de producao no Neon.
 - [ ] Confirmar `DB_SSL=true` e `sslmode=require` ou `sslmode=verify-full` nas duas URLs; manter `channel_binding=require` quando fornecido pelo Neon.
 - [ ] Confirmar que a role de runtime tem somente os privilegios necessarios e que a credencial de migracao fica restrita ao operador/CI.
 - [ ] Em instalacao nova, configurar `LOCAL_ADMIN_EMAIL` e `LOCAL_ADMIN_PASSWORD`. Em banco existente, confirmar por consulta e teste de login que ha administrador local ativo antes de usar `CONFIRM_EXISTING_ADMIN_PROVISIONED=true`; `ADMIN_EMAILS` sozinho nao cria acesso.
-- [ ] Validar SMTP, `EMAIL_FROM_ADDRESS` em dominio verificado, administradores, limites de body/scrypt/cache, `TRUST_PROXY=true` e o volume persistente `almoxarifado-cmsp_almoxarifado_uploads`.
+- [ ] Validar SMTP, `EMAIL_FROM_ADDRESS` em dominio verificado, administradores, limites de body/scrypt/cache, `TRUST_PROXY=true` e o volume persistente `almoxarifado_uploads`.
 - [ ] Garantir que `.env.production`, dumps, `.deploy/` e certificados privados nao aparecem em `git status` nem no artefato da imagem.
 
 ## DNS, firewall e TLS

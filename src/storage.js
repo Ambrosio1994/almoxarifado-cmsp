@@ -538,7 +538,7 @@ export function resolveStoreFilePath() {
     return process.env.APP_STORE_PATH ? resolve(process.env.APP_STORE_PATH) : DEFAULT_STORE_FILE;
   }
   const testRoot = resolve(
-    process.env.TEST_STORAGE_ROOT || join(tmpdir(), "almoxarifado-cmsp-tests")
+    process.env.TEST_STORAGE_ROOT || join(tmpdir(), "almoxarifado-tests")
   );
   return join(testRoot, String(process.pid), "store.json");
 }

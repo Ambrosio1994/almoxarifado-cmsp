@@ -25,6 +25,7 @@ import {
   hasProcessReachedDelivery,
   isPdfDocument,
   isMutationRequest,
+  isValidStatusRollback,
   isValidStatusTransition,
   LIQUIDATION_DOCUMENT_KEYS,
   processDeadlineDate,
@@ -32,6 +33,7 @@ import {
   QUICK_FILTERS,
   PROCESS_TRANSITIONS,
   REQUIRED_DOCUMENT_KEYS,
+  rollbackProcessStatus,
   summarizeMaterials,
   STATUS,
   validateDocumentUpload,
@@ -87,7 +89,7 @@ loadLocalEnv();
 
 const PORT = Number(process.env.PORT || 3000);
 const ROOT = fileURLToPath(new URL("../public/", import.meta.url));
-const FAVICON_FILE = fileURLToPath(new URL("../my-fav.webp", import.meta.url));
+const FAVICON_FILE = fileURLToPath(new URL("../new_favicon.png", import.meta.url));
 const UPLOAD_ROOT = process.env.UPLOAD_STORAGE_ROOT
   ? resolveUploadRoot(process.env.UPLOAD_STORAGE_ROOT)
   : fileURLToPath(new URL("../uploads/", import.meta.url));
@@ -102,7 +104,7 @@ const EMAIL_CONFIGURATION = resolveEmailConfiguration(process.env);
 const SMTP_AUTH_USER = EMAIL_CONFIGURATION.authUser;
 const SMTP_AUTH_PASSWORD = EMAIL_CONFIGURATION.authPassword;
 const EMAIL_FROM_ADDRESS = EMAIL_CONFIGURATION.fromAddress;
-const EMAIL_FROM_NAME = process.env.EMAIL_FROM_NAME || "Almoxarifado CMSP";
+const EMAIL_FROM_NAME = process.env.EMAIL_FROM_NAME || "Almoxarifado";
 const EMAIL_CHECK_INTERVAL_MS = positiveRuntimeInteger(process.env.EMAIL_CHECK_INTERVAL_MS, 60 * 60 * 1000);
 const APP_TIME_ZONE = process.env.APP_TIME_ZONE || "America/Sao_Paulo";
 const EMAIL_SCHEDULER_START_DELAY_MS = 10_000;
@@ -380,7 +382,7 @@ export async function requestHandler(req, res) {
       return;
     }
 
-    if (url.pathname === "/favicon.svg" || url.pathname === "/favicon.ico" || url.pathname === "/my-fav.webp") {
+    if (["/favicon.svg", "/favicon.ico", "/my-fav.webp", "/new_favicon.png"].includes(url.pathname)) {
       await serveFavicon(req, res);
       return;
     }
@@ -484,7 +486,7 @@ async function startApplication() {
     console.log(`Storage backend ativo: ${storeBackend}`);
     console.log(`Upload backend ativo: ${configuredUploadStorageBackend({ backend: UPLOAD_STORAGE_BACKEND })}`);
     if (UPLOAD_STORAGE_BACKEND === "local") console.log(`Upload root ativo: ${UPLOAD_ROOT}`);
-    console.log(`Almoxarifado CMSP em http://localhost:${PORT}`);
+    console.log(`Almoxarifado em http://localhost:${PORT}`);
     startEmailScheduler();
     startMaintenance();
   }
@@ -1178,6 +1180,57 @@ async function handleApi(req, res, url) {
     }));
     await writeStore(store);
     sendJson(res, 201, enrichProcess(processo));
+    return;
+  }
+
+  const rollbackStatusMatch = url.pathname.match(/^\/api\/processes\/([^/]+)\/rollback-status$/);
+  if (rollbackStatusMatch && req.method === "POST") {
+    if (role !== "admin") {
+      sendJson(res, 403, { error: "Somente administradores podem retroceder o status de um processo." });
+      return;
+    }
+    const body = await readJson(req);
+    const targetStatus = String(body.status || "").trim();
+    const reason = String(body.motivo || "").trim();
+    if (!reason || reason.length > 1000) {
+      sendJson(res, 400, { error: "Informe o motivo do retrocesso com ate 1000 caracteres." });
+      return;
+    }
+    const index = store.processos.findIndex((processo) => processo.id === rollbackStatusMatch[1]);
+    if (index === -1) {
+      sendJson(res, 404, { error: "Processo nao encontrado" });
+      return;
+    }
+    const current = store.processos[index];
+    if (current.inativo || current.status === "Anulado") {
+      sendJson(res, 403, { error: "Este processo nao permite retrocesso de status." });
+      return;
+    }
+    if (body.versao && Number(body.versao) !== Number(current.versao)) {
+      sendJson(res, 409, { error: "O processo foi alterado por outro usuario. Atualize a tela antes de tentar novamente." });
+      return;
+    }
+    if (!isValidStatusRollback(current.status, targetStatus)) {
+      sendJson(res, 400, { error: "Selecione um status anterior ao status atual do processo." });
+      return;
+    }
+
+    const updated = rollbackProcessStatus(current, targetStatus);
+    updated.versao = Number(current.versao || 0) + 1;
+    updated.atualizadoEm = new Date().toISOString();
+    store.processos[index] = updated;
+    store.auditoria.unshift(createAuditEntry({
+      processoId: updated.id,
+      ...auditActor,
+      acao: "Retrocesso administrativo de status",
+      detalhes: `Status alterado de ${current.status} para ${targetStatus}. Motivo: ${reason}`,
+      alteracoes: {
+        ...processChanges(current, updated),
+        motivo: { anterior: null, novo: reason }
+      }
+    }));
+    await writeStore(store);
+    sendJson(res, 200, enrichProcess(updated));
     return;
   }
 
@@ -3088,7 +3141,7 @@ function buildMimeMessage(message) {
     `Subject: ${encodeHeader(message.subject)}`,
     "MIME-Version: 1.0",
     `Date: ${new Date().toUTCString()}`,
-    `Message-ID: <${randomBytes(16).toString("hex")}@almoxarifado-cmsp.local>`
+    `Message-ID: <${randomBytes(16).toString("hex")}@almoxarifado.local>`
   ];
 
   if (!message.attachments?.length) {

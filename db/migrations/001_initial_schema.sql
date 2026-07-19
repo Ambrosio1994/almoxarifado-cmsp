@@ -1,4 +1,4 @@
--- Initial PostgreSQL schema for Almoxarifado CMSP.
+-- Initial PostgreSQL schema for Almoxarifado.
 -- This version intentionally excludes process data.
 
 BEGIN;

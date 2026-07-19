@@ -36,7 +36,7 @@ Gere uma CA e um certificado de servidor exclusivos para desenvolvimento:
 mkdir -p certs
 openssl genrsa -out certs/local-dev-ca.key 4096
 openssl req -x509 -new -nodes -key certs/local-dev-ca.key -sha256 -days 365 \
-  -subj '/CN=Almoxarifado CMSP Local Dev CA' \
+  -subj '/CN=Almoxarifado Local Dev CA' \
   -out certs/local-dev-ca.crt
 openssl genrsa -out certs/local-dev-server.key 2048
 openssl req -new -key certs/local-dev-server.key \
@@ -63,7 +63,7 @@ Copie `.env.example` para `.env` se ainda nao existir e preencha senhas fortes, 
 ```text
 LOCAL_POSTGRES_ADMIN_PASSWORD=<senha-forte-admin-local>
 LOCAL_POSTGRES_APP_PASSWORD=<senha-forte-app-local>
-DATABASE_URL=postgres://almoxarifado_app:<senha-url-encoded>@localhost:5432/almoxarifado_cmsp
+DATABASE_URL=postgres://almoxarifado_app:<senha-url-encoded>@localhost:5432/almoxarifado
 DB_SSL=true
 DB_CA_CERT_PATH=./certs/local-dev-ca.crt
 DB_POOL_MIN=0
@@ -91,7 +91,7 @@ docker compose ps
 Resultado esperado:
 
 ```text
-almoxarifado-cmsp-postgres ... Up ... (healthy) ... 127.0.0.1:5432->5432/tcp
+almoxarifado-postgres ... Up ... (healthy) ... 127.0.0.1:5432->5432/tcp
 ```
 
 ### Criar banco e usuario da aplicacao
@@ -103,7 +103,7 @@ CREATE ROLE almoxarifado_app
   WITH LOGIN PASSWORD '<senha-forte-app-local>'
   NOSUPERUSER NOCREATEDB NOCREATEROLE;
 
-CREATE DATABASE almoxarifado_cmsp OWNER almoxarifado_app;
+CREATE DATABASE almoxarifado OWNER almoxarifado_app;
 ```
 
 Se a role ou o banco ja existirem, atualize a senha da role e confirme o owner do banco:
@@ -113,7 +113,7 @@ ALTER ROLE almoxarifado_app
   WITH LOGIN PASSWORD '<senha-forte-app-local>'
   NOSUPERUSER NOCREATEDB NOCREATEROLE;
 
-ALTER DATABASE almoxarifado_cmsp OWNER TO almoxarifado_app;
+ALTER DATABASE almoxarifado OWNER TO almoxarifado_app;
 ```
 
 Extensoes exigidas pelo schema:

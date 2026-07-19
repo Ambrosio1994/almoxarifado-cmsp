@@ -1,4 +1,4 @@
-# Sistema de Gerenciamento de Processos do Almoxarifado - CMSP
+# Sistema de Gerenciamento de Processos do Almoxarifado
 
 Projeto iniciado a partir do documento `Requisitos_Sistema_Almoxarifado.docx`.
 
@@ -89,7 +89,7 @@ Pendencias atuais:
 ## Estrutura
 
 ```text
-almoxarifado-cmsp/
+almoxarifado/
   data/
     store.json
   docs/

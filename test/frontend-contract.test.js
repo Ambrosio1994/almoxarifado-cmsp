@@ -71,6 +71,14 @@ describe("contrato visual e de navegacao", () => {
     assert.doesNotMatch(app, /newDataPanel/);
   });
 
+  it("oferece retrocesso de status somente pelo fluxo administrativo dedicado", () => {
+    assert.match(html, /id="rollbackStatusDialog"/);
+    assert.match(html, /id="rollbackStatusForm"/);
+    assert.match(html, /name="motivo"[^>]*maxlength="1000"[^>]*required/);
+    assert.match(app, /isCurrentUserAdmin\(\).*previousStatusesInUi/);
+    assert.match(app, /\/rollback-status/);
+  });
+
   it("oferece o download completo somente no modulo Documentos", () => {
     assert.doesNotMatch(html, /id="downloadProcessButton"/);
     const documentsModule = app.slice(app.indexOf("function renderDocumentsModule"), app.indexOf("function renderTimelineModule"));

@@ -1,9 +1,11 @@
+name: almoxarifado
+
 services:
   app:
     build:
       context: .
       dockerfile: Dockerfile
-    image: ${APP_IMAGE:-almoxarifado-cmsp:production}
+    image: ${APP_IMAGE:-almoxarifado:production}
     restart: unless-stopped
     init: true
     ports:
@@ -38,4 +40,4 @@ services:
 
 volumes:
   almoxarifado_uploads:
-    name: almoxarifado-cmsp_almoxarifado_uploads
+    name: almoxarifado_uploads

@@ -37,7 +37,7 @@ APP_PORT="${APP_PORT:-${file_app_port:-3000}}"
 COMPOSE=(docker compose --env-file "$ENV_FILE" -f compose.production.yml)
 STATE_DIR="$ROOT_DIR/.deploy"
 APP_RESTART_REQUIRED=false
-UPLOAD_VOLUME_NAME="almoxarifado-cmsp_almoxarifado_uploads"
+UPLOAD_VOLUME_NAME="almoxarifado_uploads"
 
 usage() {
   echo "Uso: $0 {check|backup|deploy|smoke|rollback|target}"

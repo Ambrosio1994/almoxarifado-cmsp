@@ -37,7 +37,7 @@ export async function runMigrations(options = {}) {
   await client.connect();
   let migrationLockHeld = false;
   try {
-    await client.query("SELECT pg_advisory_lock(hashtext('almoxarifado_cmsp_schema_migrations'))");
+    await client.query("SELECT pg_advisory_lock(hashtext('almoxarifado_schema_migrations'))");
     migrationLockHeld = true;
     const appliedMigrations = await loadAppliedMigrations(client);
     const result = { applied: [], skipped: [] };
@@ -70,7 +70,7 @@ export async function runMigrations(options = {}) {
     return result;
   } finally {
     if (migrationLockHeld) {
-      await client.query("SELECT pg_advisory_unlock(hashtext('almoxarifado_cmsp_schema_migrations'))").catch(() => null);
+      await client.query("SELECT pg_advisory_unlock(hashtext('almoxarifado_schema_migrations'))").catch(() => null);
     }
     await client.end();
   }

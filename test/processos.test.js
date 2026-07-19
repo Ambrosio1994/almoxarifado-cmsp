@@ -19,9 +19,12 @@ import {
   isPdfDocument,
   isMutationRequest,
   isProcessOverdue,
+  isValidStatusRollback,
   isValidStatusTransition,
   normalizeMaterials,
   processHasRequiredDocuments,
+  previousProcessStatuses,
+  rollbackProcessStatus,
   summarizeMaterials,
   validateDocumentUpload,
   validateProcessDocumentUpload
@@ -43,6 +46,21 @@ describe("regras de processo", () => {
 
   it("restringe outras edicoes em liquidado ao administrador", () => {
     assert.equal(canEditProcess({ status: "Liquidado" }, "almoxarifado", "Liquidado"), false);
+  });
+
+  it("permite retrocesso somente para status anteriores e limpa marcos desfeitos", () => {
+    assert.deepEqual(previousProcessStatuses("Liquidado").slice(-2), ["Aguardando envio para liquidacao", "Enviado para liquidacao"]);
+    assert.equal(isValidStatusRollback("Liquidado", "Entregue"), true);
+    assert.equal(isValidStatusRollback("Liquidado", "Pago"), false);
+    const rolledBack = rollbackProcessStatus({
+      status: "Pago", dataEntrega: "2026-01-01", dataEnvioLiquidacao: "2026-01-02",
+      dataLiquidacao: "2026-01-03", dataPagamento: "2026-01-04"
+    }, "Entregue");
+    assert.equal(rolledBack.status, "Entregue");
+    assert.equal(rolledBack.dataEntrega, "2026-01-01");
+    assert.equal(rolledBack.dataEnvioLiquidacao, "");
+    assert.equal(rolledBack.dataLiquidacao, "");
+    assert.equal(rolledBack.dataPagamento, "");
   });
 
   it("calcula dias decorridos desde a emissao do empenho", () => {
@@ -198,15 +216,15 @@ describe("regras de processo", () => {
   });
 
   it("permite anulacao pelo criador ou administrador", () => {
-    const processo = { status: "Aguardando entrega", criadoPorEmail: "usuario@cmsp.local" };
-    assert.equal(canCancelProcess(processo, { email: "usuario@cmsp.local", role: "almoxarifado" }), true);
-    assert.equal(canCancelProcess(processo, { email: "outro@cmsp.local", role: "almoxarifado" }), false);
-    assert.equal(canCancelProcess(processo, { email: "admin@cmsp.local", role: "admin" }), true);
-    assert.equal(canCancelProcess({ ...processo, status: "Pago" }, { email: "admin@cmsp.local", role: "admin" }), false);
-    assert.equal(canCancelProcess({ ...processo, status: "Pago" }, { email: "usuario@cmsp.local", role: "almoxarifado" }), false);
-    assert.equal(canCancelProcess({ ...processo, criadoPorId: "user-1" }, { id: "user-1", email: "novo@cmsp.local", role: "almoxarifado" }), true);
-    assert.equal(canCancelProcess({ ...processo, criadoPorId: "user-1" }, { id: "user-2", email: "usuario@cmsp.local", role: "almoxarifado" }), false);
-    assert.equal(canCancelProcess({ ...processo, status: "Liquidado" }, { email: "usuario@cmsp.local", role: "almoxarifado" }), false);
+    const processo = { status: "Aguardando entrega", criadoPorEmail: "usuario@example.test" };
+    assert.equal(canCancelProcess(processo, { email: "usuario@example.test", role: "almoxarifado" }), true);
+    assert.equal(canCancelProcess(processo, { email: "outro@example.test", role: "almoxarifado" }), false);
+    assert.equal(canCancelProcess(processo, { email: "admin@example.test", role: "admin" }), true);
+    assert.equal(canCancelProcess({ ...processo, status: "Pago" }, { email: "admin@example.test", role: "admin" }), false);
+    assert.equal(canCancelProcess({ ...processo, status: "Pago" }, { email: "usuario@example.test", role: "almoxarifado" }), false);
+    assert.equal(canCancelProcess({ ...processo, criadoPorId: "user-1" }, { id: "user-1", email: "novo@example.test", role: "almoxarifado" }), true);
+    assert.equal(canCancelProcess({ ...processo, criadoPorId: "user-1" }, { id: "user-2", email: "usuario@example.test", role: "almoxarifado" }), false);
+    assert.equal(canCancelProcess({ ...processo, status: "Liquidado" }, { email: "usuario@example.test", role: "almoxarifado" }), false);
   });
 
   it("centraliza o fluxo e impede saltos de etapa", () => {

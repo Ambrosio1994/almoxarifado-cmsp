@@ -41,7 +41,7 @@ docker run -e UPLOAD_STORAGE_ROOT=/data/uploads -v almox_uploads:/data/uploads .
 
 No Dockerfile, o caminho padrao de runtime esta em `/data/uploads`.
 
-O Compose usa deliberadamente o nome fixo `almoxarifado-cmsp_almoxarifado_uploads`, independente do diretorio ou do nome calculado para o projeto. Na primeira inicializacao, a aplicacao grava uma identidade privada no volume e no PostgreSQL. Se o volume for apagado, recriado ou trocado, a producao recusa a inicializacao. Se apenas alguns arquivos referenciados estiverem ausentes, a aplicacao permanece acessivel para reparo, registra `upload_storage_incomplete` e o readiness retorna `503` ate todos os arquivos serem restaurados ou substituidos.
+O Compose usa deliberadamente o nome fixo `almoxarifado_uploads`, independente do diretorio ou do nome calculado para o projeto. Na primeira inicializacao, a aplicacao grava uma identidade privada no volume e no PostgreSQL. Se o volume for apagado, recriado ou trocado, a producao recusa a inicializacao. Se apenas alguns arquivos referenciados estiverem ausentes, a aplicacao permanece acessivel para reparo, registra `upload_storage_incomplete` e o readiness retorna `503` ate todos os arquivos serem restaurados ou substituidos.
 
 `npm start` e reservado para producao e define `NODE_ENV=production`; desenvolvimento local deve usar somente `npm run dev`. Isso evita iniciar acidentalmente uma segunda instancia gravando em `./uploads`. Nunca use `docker compose down -v` em producao.
 
@@ -68,7 +68,7 @@ npm run storage:replace-document -- \
   --process-id <ID_DO_PROCESSO> \
   --document-key notaEmpenho \
   --file "/caminho/nota-empenho-exemplo.pdf" \
-  --technical-user "administrador@cmsp" \
+  --technical-user "administrador@example.test" \
   --reason "Reposicao de upload local indisponivel" \
   --dry-run
 ```

@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 
 const databaseMode = process.argv.includes("--db");
 const forwardedArgs = process.argv.slice(2).filter((argument) => argument !== "--db");
-const testRoot = mkdtempSync(join(tmpdir(), "almoxarifado-cmsp-tests-"));
+const testRoot = mkdtempSync(join(tmpdir(), "almoxarifado-tests-"));
 const testDatabaseUrl = databaseMode ? process.env.TEST_DATABASE_URL : "";
 
 if (databaseMode) validateTestDatabaseUrl(testDatabaseUrl);

@@ -23,7 +23,7 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run check
-      - run: docker build -t almoxarifado-cmsp:ci .
+      - run: docker build -t almoxarifado:ci .
 
   migration-smoke:
     runs-on: ubuntu-latest

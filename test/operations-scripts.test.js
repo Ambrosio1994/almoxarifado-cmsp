@@ -193,7 +193,7 @@ describe("scripts operacionais", () => {
     assert.match(cleanup, /missing-reference:/);
     assert.match(cleanup, /UPLOAD_STORAGE_MARKER_NAME/);
     const compose = readText("compose.production.yml");
-    assert.match(compose, /name: almoxarifado-cmsp_almoxarifado_uploads/);
+    assert.match(compose, /name: almoxarifado_uploads/);
     const deploy = readText("scripts/deploy-production.sh");
     assert.match(deploy, /verify_upload_mount/);
     assert.match(deploy, /run --rm --no-deps app node src\/server\.js --check-upload-storage/);
