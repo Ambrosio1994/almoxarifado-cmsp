@@ -47,6 +47,8 @@ const MAX_DOCUMENT_FILE_BYTES = 15 * 1024 * 1024;
 const DOCUMENT_FETCH_TIMEOUT_MS = 30_000;
 const DOCUMENT_MEDIA_RENDER_TIMEOUT_MS = 10_000;
 const DOCUMENT_TEXT_PREVIEW_BYTES = 200_000;
+const APP_SECTIONS = new Set(["dashboard", "processes", "suppliers", "audit", "users", "settings"]);
+const ACTIVE_SECTION_STORAGE_PREFIX = "almoxActiveSection";
 const ALLOWED_DOCUMENT_RESPONSE_MIME_TYPES = new Set([
   "application/pdf",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -647,7 +649,7 @@ async function boot() {
   fillSelect(statusFilter, state.meta.status, "Todos os status");
   fillSelect(quickFilter, state.meta.filtrosRapidos, "Filtros rapidos");
   renderQuickFilters();
-  await openSection("dashboard");
+  await openSection(savedActiveSection());
 }
 
 async function loadDashboardData(year = state.dashboardYear) {
@@ -2379,9 +2381,11 @@ function escapeHtml(value = "") {
 }
 
 async function openSection(section) {
+  if (!APP_SECTIONS.has(section)) section = "dashboard";
   if (["users", "settings"].includes(section) && currentUser?.role !== "admin") section = "dashboard";
   if (section === "audit" && !["admin", "auditor"].includes(currentUser?.role)) section = "dashboard";
   state.activeSection = section;
+  rememberActiveSection(section);
   detailController?.abort();
   detailSequence += 1;
   activateSectionShell(section);
@@ -2405,6 +2409,28 @@ async function openSection(section) {
     }
     const target = { dashboard: dashboardView, suppliers: suppliersView, audit: auditView, users: usersView, settings: settingsView }[section];
     renderSectionError(target, error.message || "Nao foi possivel carregar esta secao.", section);
+  }
+}
+
+function activeSectionStorageKey() {
+  const userKey = String(currentUser?.email || currentUser?.id || "usuario").trim().toLowerCase();
+  return `${ACTIVE_SECTION_STORAGE_PREFIX}:${userKey}`;
+}
+
+function savedActiveSection() {
+  try {
+    const section = window.sessionStorage.getItem(activeSectionStorageKey());
+    return APP_SECTIONS.has(section) ? section : "dashboard";
+  } catch {
+    return "dashboard";
+  }
+}
+
+function rememberActiveSection(section) {
+  try {
+    window.sessionStorage.setItem(activeSectionStorageKey(), section);
+  } catch {
+    // A navegacao continua funcionando mesmo se o navegador bloquear o armazenamento.
   }
 }
 
@@ -4012,17 +4038,20 @@ function timelineEvents(processo) {
   ].filter(Boolean);
 
   const auditEvents = visibleAuditEntries(processo)
-    .map((entry) => ({
-      label: auditLabel(entry),
-      date: entry.criadoEm,
-      meta: entry.usuario || "Usuário",
-      details: timelineAuditDetails(entry),
-      documento: currentDocumentFromAuditEntry(processo, entry),
-      kind: entry.acao === "Remocao de documento" ? "danger" : "",
-      showTime: true,
-      sourceType: "auditoria",
-      sourceId: entry.id
-    }));
+    .map((entry) => {
+      const usesProcessDate = entry.acao === "Criacao de processo" && Boolean(processo.dataProcesso);
+      return {
+        label: auditLabel(entry),
+        date: usesProcessDate ? processo.dataProcesso : entry.criadoEm,
+        meta: entry.usuario || "Usuário",
+        details: timelineAuditDetails(entry),
+        documento: currentDocumentFromAuditEntry(processo, entry),
+        kind: entry.acao === "Remocao de documento" ? "danger" : "",
+        showTime: !usesProcessDate,
+        sourceType: "auditoria",
+        sourceId: entry.id
+      };
+    });
 
   const observationEvents = state.detailObservations
     .map((observacao) => ({

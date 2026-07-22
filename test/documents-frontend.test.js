@@ -186,6 +186,10 @@ describe("Documentos no DOM", () => {
       await waitFor(() => dom.window.document.querySelector("#detailPanel").textContent.includes("Observação: Material conferido"));
       const timelineItems = [...dom.window.document.querySelectorAll(".timeline > li")];
       assert.equal(timelineItems.filter((item) => item.textContent.includes("Material conferido")).length, 1);
+      const processCreation = timelineItems.find((item) => item.querySelector("strong")?.textContent === "Processo criado");
+      assert.ok(processCreation);
+      assert.match(processCreation.textContent, /15-06-2026/);
+      assert.doesNotMatch(processCreation.textContent, /17-07-2026/);
       assert.doesNotMatch(dom.window.document.querySelector("#detailPanel").textContent, /Inclus[aã]o de observa[cç][aã]o/i);
       assert.match(dom.window.document.querySelector("#detailPanel").textContent, /Nota de empenho anexada/);
       assert.match(dom.window.document.querySelector("#detailPanel").textContent, /Nota fiscal anexada/);
@@ -282,6 +286,7 @@ function processFixture() {
     numeroProcesso: "PROC-1",
     numeroEmpenho: "EMP-1",
     fornecedor: "Fornecedor",
+    dataProcesso: "2026-06-15",
     status: "Enviado para SALC",
     materiais: [],
     valorTotal: 0,
@@ -313,6 +318,14 @@ function secondProcessFixture() {
 
 function auditFixture(process) {
   return [
+    {
+      id: "audit-creation",
+      processoId: process.id,
+      acao: "Criacao de processo",
+      detalhes: "Processo PROC-1 criado.",
+      usuario: "Teste",
+      criadoEm: "2026-07-17T12:00:00.000Z"
+    },
     {
       id: "audit-observation",
       processoId: process.id,

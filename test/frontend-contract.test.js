@@ -20,12 +20,14 @@ describe("contrato visual e de navegacao", () => {
     assert.doesNotMatch(loginForm, /consultar empenhos/i);
   });
 
-  it("abre no Painel sem carregar a lista completa de processos no boot", () => {
+  it("restaura a ultima secao no boot sem carregar processos antecipadamente", () => {
     const boot = app.slice(app.indexOf("async function boot()"), app.indexOf("async function loadDashboardData"));
     assert.match(boot, /api\("\/api\/meta"\)/);
     assert.match(boot, /loadDashboardData\(\)/);
-    assert.match(boot, /openSection\("dashboard"\)/);
+    assert.match(boot, /openSection\(savedActiveSection\(\)\)/);
     assert.doesNotMatch(boot, /\/api\/processes/);
+    assert.match(app, /sessionStorage\.getItem\(activeSectionStorageKey\(\)\)/);
+    assert.match(app, /sessionStorage\.setItem\(activeSectionStorageKey\(\), section\)/);
     const processView = html.match(/<section[^>]*id="processListView"[^>]*>/)?.[0] || "";
     assert.match(processView, /class="[^"]*hidden[^"]*"/);
     assert.match(html, /id="dashboardView"/);
