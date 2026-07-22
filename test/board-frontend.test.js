@@ -7,7 +7,6 @@ const STATUSES = [
   "Criado",
   "Enviado para SALC",
   "Empenho enviado ao fornecedor",
-  "Aguardando entrega",
   "Entrega parcial",
   "Entregue",
   "Enviado para liquidacao",
@@ -19,7 +18,7 @@ const STATUSES = [
 const TRANSITIONS = {
   Criado: "Enviado para SALC",
   "Enviado para SALC": "Empenho enviado ao fornecedor",
-  "Empenho enviado ao fornecedor": "Aguardando entrega",
+  "Empenho enviado ao fornecedor": "Entrega parcial",
   "Aguardando entrega": "Entrega parcial",
   "Entrega parcial": "Entregue",
   Entregue: "Enviado para liquidacao",
@@ -83,8 +82,8 @@ describe("Quadro kanban no DOM", () => {
       assert.ok([...dom.window.document.querySelector("#boardSupplierFilter").options].some((option) => option.value === "Beta"));
       assert.match(columnFor(board, "Entregue").textContent, /Nenhum processo neste status/);
       const supplierColumn = columnFor(board, "Empenho enviado ao fornecedor");
-      assert.equal(supplierColumn.querySelector(".kanban-column-header > strong").textContent, "2");
-      assert.match(supplierColumn.querySelector(".kanban-column-header span").textContent, /400,00/);
+      assert.equal(supplierColumn.querySelector(".kanban-column-header > strong").textContent, "1");
+      assert.match(supplierColumn.querySelector(".kanban-column-header span").textContent, /200,00/);
       assert.doesNotMatch(board.textContent, /undefined|null|NaN/);
 
       const hideEmpty = dom.window.document.querySelector("#boardHideEmptyColumns");
@@ -155,22 +154,30 @@ describe("Quadro kanban no DOM", () => {
       const p4Card = board.querySelector('[data-process-id="p4"]');
       const p4Transfer = dataTransfer();
       p4Card.dispatchEvent(dragEvent(dom.window, "dragstart", p4Transfer));
-      const waitingColumn = columnFor(board, "Aguardando entrega");
-      waitingColumn.dispatchEvent(dragEvent(dom.window, "dragover", p4Transfer));
-      assert.equal(waitingColumn.classList.contains("is-drag-over"), true);
-      waitingColumn.dispatchEvent(dragEvent(dom.window, "drop", p4Transfer));
-      await waitFor(() => columnFor(board, "Aguardando entrega").querySelector('[data-process-id="p4"]'));
+      const supplierTargetColumn = columnFor(board, "Empenho enviado ao fornecedor");
+      supplierTargetColumn.dispatchEvent(dragEvent(dom.window, "dragover", p4Transfer));
+      assert.equal(supplierTargetColumn.classList.contains("is-drag-over"), true);
+      supplierTargetColumn.dispatchEvent(dragEvent(dom.window, "drop", p4Transfer));
+      await waitFor(() => dom.window.document.querySelector("#processStepDialog").open);
+      dom.window.document.querySelector('#processStepForm input[name="data"]').value = "01-06-2026";
+      submit(dom.window, dom.window.document.querySelector("#processStepForm"));
+      await waitFor(() => columnFor(board, "Empenho enviado ao fornecedor").querySelector('[data-process-id="p4"]'));
       assert.equal(putRequests.filter((request) => request.id === "p4").length, 1);
 
       const p5Move = board.querySelector('[data-process-id="p5"] [data-board-move]');
-      p5Move.value = "Aguardando entrega";
+      p5Move.value = "Empenho enviado ao fornecedor";
       p5Move.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+      await waitFor(() => dom.window.document.querySelector("#processStepDialog").open);
+      dom.window.document.querySelector('#processStepForm input[name="data"]').value = "01-06-2026";
+      submit(dom.window, dom.window.document.querySelector("#processStepForm"));
       await waitFor(() => board.querySelector('[data-process-id="p5"]')?.getAttribute("aria-busy") === "true");
       assert.equal(board.querySelector('[data-process-id="p5"] [data-board-move]'), null);
       assert.equal(putRequests.filter((request) => request.id === "p5").length, 1);
       resolveFailedUpdate();
-      await waitFor(() => dom.window.document.querySelector("#boardMessage").textContent.includes("permaneceu"));
-      assert.ok(columnFor(board, "Empenho enviado ao fornecedor").querySelector('[data-process-id="p5"]'));
+      await waitFor(() => dom.window.document.querySelector("#processStepMessage").textContent.includes("alterado por outro usuário"));
+      dom.window.document.querySelector("#cancelProcessStep").click();
+      await waitFor(() => !dom.window.document.querySelector("#processStepDialog").open);
+      assert.ok(columnFor(board, "Enviado para SALC").querySelector('[data-process-id="p5"]'));
 
       const paidMove = board.querySelector('[data-process-id="p6"] [data-board-move]');
       paidMove.value = "Pago";
@@ -268,10 +275,10 @@ describe("Quadro kanban no DOM", () => {
 function processFixtures() {
   return [
     processFixture({ id: "p1", numeroProcesso: "PROC-1", status: "Criado", fornecedor: "Alpha", criadoPor: "Ana", valorTotal: 100, dataEnvioSalc: "", dataEnvioFornecedor: "", dataReferenciaPrazo: "", diasDecorridos: 0 }),
-    processFixture({ id: "p2", numeroProcesso: "PROC-2", status: "Aguardando entrega", fornecedor: "Beta", criadoPor: "Bruno", valorTotal: 200, diasDecorridos: 31 }),
+    processFixture({ id: "p2", numeroProcesso: "PROC-2", status: "Empenho enviado ao fornecedor", fornecedor: "Beta", criadoPor: "Bruno", valorTotal: 200, diasDecorridos: 31 }),
     processFixture({ id: "p3", numeroProcesso: "PROC-3", status: "Pago", fornecedor: "Gamma", criadoPor: "Ana", valorTotal: 300, dataEntrega: "2026-06-10", dataEnvioLiquidacao: "2026-06-20", dataLiquidacao: "2026-06-25", dataPagamento: "2026-06-30" }),
-    processFixture({ id: "p4", numeroProcesso: "PROC-4", status: "Empenho enviado ao fornecedor", fornecedor: "Delta", criadoPor: "Carla", valorTotal: 150 }),
-    processFixture({ id: "p5", numeroProcesso: "PROC-5", status: "Empenho enviado ao fornecedor", fornecedor: "Epsilon", criadoPor: "Diego", valorTotal: 250 }),
+    processFixture({ id: "p4", numeroProcesso: "PROC-4", status: "Enviado para SALC", fornecedor: "Delta", criadoPor: "Carla", valorTotal: 150 }),
+    processFixture({ id: "p5", numeroProcesso: "PROC-5", status: "Enviado para SALC", fornecedor: "Epsilon", criadoPor: "Diego", valorTotal: 250 }),
     processFixture({ id: "p6", numeroProcesso: "PROC-6", status: "Liquidado", fornecedor: "Zeta", criadoPor: "Eva", valorTotal: 500, dataEntrega: "2026-06-10", dataEnvioLiquidacao: "2026-06-20", dataLiquidacao: "2026-06-30" })
   ];
 }

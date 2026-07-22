@@ -61,7 +61,11 @@ describe("contrato visual e de navegacao", () => {
     assert.match(html, /id="newProcessButton">\+ Novo<\/button>/);
     assert.doesNotMatch(html, /id="newProcessButton">\+ Novo processo<\/button>/);
     assert.match(html, /name="numeroProcesso" maxlength="20"/);
-    assert.match(html, /name="numeroEmpenho" maxlength="20"/);
+    assert.match(html, /id="commitmentYear"[^>]*aria-label="Ano do empenho"[^>]*required/);
+    assert.match(html, /class="commitment-number-prefix"[^>]*>NE000<\/span>/);
+    assert.match(html, /id="commitmentSequence"[^>]*inputmode="numeric"[^>]*pattern="\[0-9\]\+"[^>]*required/);
+    assert.match(html, /type="hidden" name="numeroEmpenho"/);
+    assert.match(app, /formatCommitmentNumber\(commitmentYear\?\.value, commitmentSequence\?\.value\)/);
     assert.match(html, /name="fornecedor" maxlength="100"/);
     assert.match(html, /name="dataProcesso"[\s\S]*?data-date-input[\s\S]*?placeholder="DDMMAAAA"[\s\S]*?maxlength="10"/);
     assert.match(html, /name="conteudo"[^>]*minlength="1"[^>]*maxlength="350"/);
@@ -95,6 +99,12 @@ describe("contrato visual e de navegacao", () => {
     assert.match(app, /Criado:\s*\{[\s\S]*?button: "Registrar envio para SALC"[\s\S]*?status: "Enviado para SALC"[\s\S]*?field: "dataEnvioSalc"/);
     assert.match(app, /status: processo\.status \|\| "Criado"/);
     assert.match(app, /"Enviado para SALC": \["dataEnvioSalc"\]/);
+  });
+
+  it("oferece registro de entrega logo apos o envio ao fornecedor", () => {
+    assert.match(app, /"Empenho enviado ao fornecedor": \{[\s\S]*?button: "Registrar entrega"[\s\S]*?status: "Entrega parcial"/);
+    assert.doesNotMatch(app, /button: "Confirmar aguardando entrega"/);
+    assert.match(app, /\["Empenho enviado ao fornecedor", "Aguardando entrega"\]\.includes\(process\.status\)/);
   });
 
   it("oferece retrocesso de status somente pelo fluxo administrativo dedicado", () => {

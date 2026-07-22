@@ -21,6 +21,8 @@ import {
   isProcessOverdue,
   isValidStatusRollback,
   isValidStatusTransition,
+  PROCESS_TRANSITIONS,
+  PROCESS_WORKFLOW,
   normalizeMaterials,
   processHasRequiredDocuments,
   previousProcessStatuses,
@@ -242,7 +244,10 @@ describe("regras de processo", () => {
     assert.equal(isValidStatusTransition("Entregue", "Aguardando envio para liquidacao"), false);
     assert.equal(isValidStatusTransition("Entregue", "Enviado para liquidacao"), true);
     assert.equal(isValidStatusTransition("Aguardando envio para liquidacao", "Enviado para liquidacao"), true);
-    assert.equal(isValidStatusTransition("Empenho enviado ao fornecedor", "Aguardando entrega"), true);
+    assert.equal(PROCESS_WORKFLOW.includes("Aguardando entrega"), false);
+    assert.equal(PROCESS_TRANSITIONS["Empenho enviado ao fornecedor"], "Entrega parcial");
+    assert.equal(PROCESS_TRANSITIONS["Aguardando entrega"], "Entrega parcial");
+    assert.equal(isValidStatusTransition("Empenho enviado ao fornecedor", "Aguardando entrega"), false);
   });
 
   it("calcula totais monetarios sem propagar valores nao finitos", () => {
