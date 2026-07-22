@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { JSDOM } from "jsdom";
 
 const STATUSES = [
+  "Criado",
   "Enviado para SALC",
   "Empenho enviado ao fornecedor",
   "Aguardando entrega",
@@ -16,6 +17,7 @@ const STATUSES = [
 ];
 
 const TRANSITIONS = {
+  Criado: "Enviado para SALC",
   "Enviado para SALC": "Empenho enviado ao fornecedor",
   "Empenho enviado ao fornecedor": "Aguardando entrega",
   "Aguardando entrega": "Entrega parcial",
@@ -98,7 +100,7 @@ describe("Quadro kanban no DOM", () => {
       assert.equal(firstCard.getAttribute("role"), "button");
       assert.equal(firstCard.getAttribute("tabindex"), "0");
       assert.equal(firstCard.draggable, true);
-      assert.deepEqual([...firstCard.querySelectorAll("[data-board-move] option")].slice(1).map((item) => item.value), ["Empenho enviado ao fornecedor"]);
+      assert.deepEqual([...firstCard.querySelectorAll("[data-board-move] option")].slice(1).map((item) => item.value), ["Enviado para SALC"]);
 
       firstCard.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
       await waitFor(() => !dom.window.document.querySelector("#processDetailView").classList.contains("hidden"));
@@ -134,9 +136,10 @@ describe("Quadro kanban no DOM", () => {
       assert.equal(putRequests.length, requestCountBeforeInvalid);
 
       const p1Move = board.querySelector('[data-process-id="p1"] [data-board-move]');
-      p1Move.value = "Empenho enviado ao fornecedor";
+      p1Move.value = "Enviado para SALC";
       p1Move.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
       await waitFor(() => dom.window.document.querySelector("#processStepDialog").open);
+      assert.equal(dom.window.document.querySelector("#processStepDateLabel").textContent, "Data do envio para SALC");
       assert.equal(putRequests.length, requestCountBeforeInvalid);
       dom.window.document.querySelector("#cancelProcessStep").click();
       await waitFor(() => !dom.window.document.querySelector("#processStepDialog").open);
@@ -264,7 +267,7 @@ describe("Quadro kanban no DOM", () => {
 
 function processFixtures() {
   return [
-    processFixture({ id: "p1", numeroProcesso: "PROC-1", status: "Enviado para SALC", fornecedor: "Alpha", criadoPor: "Ana", valorTotal: 100, dataEnvioFornecedor: "", dataReferenciaPrazo: "", diasDecorridos: 0 }),
+    processFixture({ id: "p1", numeroProcesso: "PROC-1", status: "Criado", fornecedor: "Alpha", criadoPor: "Ana", valorTotal: 100, dataEnvioSalc: "", dataEnvioFornecedor: "", dataReferenciaPrazo: "", diasDecorridos: 0 }),
     processFixture({ id: "p2", numeroProcesso: "PROC-2", status: "Aguardando entrega", fornecedor: "Beta", criadoPor: "Bruno", valorTotal: 200, diasDecorridos: 31 }),
     processFixture({ id: "p3", numeroProcesso: "PROC-3", status: "Pago", fornecedor: "Gamma", criadoPor: "Ana", valorTotal: 300, dataEntrega: "2026-06-10", dataEnvioLiquidacao: "2026-06-20", dataLiquidacao: "2026-06-25", dataPagamento: "2026-06-30" }),
     processFixture({ id: "p4", numeroProcesso: "PROC-4", status: "Empenho enviado ao fornecedor", fornecedor: "Delta", criadoPor: "Carla", valorTotal: 150 }),

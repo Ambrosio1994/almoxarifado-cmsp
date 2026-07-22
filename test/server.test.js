@@ -682,6 +682,48 @@ describe("rotas http", () => {
     assert.equal(persisted.processos.find((processo) => processo.numeroProcesso === processNumber)?.dataProcesso, "2024-02-29");
   });
 
+  it("cria o processo como Criado e exige a data para registrar o envio para SALC", async () => {
+    const { token } = await authenticatedAs("almoxarifado");
+    const processNumber = `INICIAL-${crypto.randomUUID().slice(0, 6)}`;
+    const bypass = await postJson("/api/processes", token, {
+      numeroProcesso: `${processNumber}-B`,
+      status: "Enviado para SALC"
+    });
+    assert.equal(bypass.statusCode, 400);
+    assert.match(bypass.json().error, /deve iniciar em Criado/i);
+
+    const created = await postJson("/api/processes", token, { numeroProcesso: processNumber });
+    assert.equal(created.statusCode, 201);
+    assert.equal(created.json().status, "Criado");
+
+    const payload = {
+      numeroProcesso: processNumber,
+      numeroEmpenho: "",
+      fornecedor: "",
+      materiais: [],
+      dataProcesso: "",
+      dataEnvioSalc: "",
+      dataEnvioFornecedor: "",
+      dataEntrega: "",
+      dataEnvioLiquidacao: "",
+      dataLiquidacao: "",
+      dataPagamento: "",
+      status: "Enviado para SALC",
+      versao: created.json().versao
+    };
+    const missingDate = await putJson(`/api/processes/${created.json().id}`, token, payload);
+    assert.equal(missingDate.statusCode, 400);
+    assert.match(missingDate.json().error, /data de envio para SALC/i);
+
+    const sent = await putJson(`/api/processes/${created.json().id}`, token, {
+      ...payload,
+      dataEnvioSalc: "2024-01-02"
+    });
+    assert.equal(sent.statusCode, 200);
+    assert.equal(sent.json().status, "Enviado para SALC");
+    assert.equal(sent.json().dataEnvioSalc, "2024-01-02");
+  });
+
   it("valida observacoes entre 1 e 350 caracteres", async () => {
     const { token } = await authenticatedAs("almoxarifado");
     const processResponse = await postJson("/api/processes", token, {

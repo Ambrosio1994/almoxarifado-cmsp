@@ -1294,6 +1294,11 @@ async function handleApi(req, res, url) {
       atualizadoEm: new Date().toISOString()
     };
 
+    if (current.status === "Criado" && updated.status === "Enviado para SALC" && !updated.dataEnvioSalc) {
+      sendJson(res, 400, { error: "Informe a data de envio para SALC antes de avancar." });
+      return;
+    }
+
     const statusError = validateProcessForStatus(updated);
     if (statusError) {
       sendJson(res, 400, { error: statusError });
@@ -3501,6 +3506,7 @@ function sanitizeProcessInput(input = {}, current = {}) {
     fornecedor: String(value("fornecedor") || "").trim().slice(0, 100),
     materiais: sanitizeMaterials(value("materiais") || input, current.materiais || []),
     dataProcesso: safeDate(value("dataProcesso")),
+    dataEnvioSalc: safeDate(value("dataEnvioSalc")),
     dataEnvioEmpenho: safeDate(value("dataEnvioEmpenho")),
     dataEnvioFornecedor: safeDate(value("dataEnvioFornecedor")),
     dataEntrega: safeDate(value("dataEntrega")),
@@ -3525,7 +3531,7 @@ export function validateProcessBody(input = {}) {
   if (Object.prototype.hasOwnProperty.call(input, "materiais") && !Array.isArray(input.materiais)) {
     return "Materiais deve ser uma lista.";
   }
-  const dateFields = ["dataProcesso", "dataEnvioEmpenho", "dataEnvioFornecedor", "dataEntrega", "dataEnvioLiquidacao", "dataLiquidacao", "dataPagamento"];
+  const dateFields = ["dataProcesso", "dataEnvioSalc", "dataEnvioEmpenho", "dataEnvioFornecedor", "dataEntrega", "dataEnvioLiquidacao", "dataLiquidacao", "dataPagamento"];
   for (const field of dateFields) {
     if (input[field] && !safeDate(input[field])) return `Data invalida no campo ${field}.`;
   }
@@ -3587,6 +3593,7 @@ function validateProcessForStatus(processo = {}) {
 function validateProcessChronology(processo = {}) {
   const datedEvents = [
     ["dataProcesso", safeDate(processo.dataProcesso), "data do processo"],
+    ["dataEnvioSalc", safeDate(processo.dataEnvioSalc), "envio para SALC"],
     ["dataEnvioFornecedor", processDeadlineDate(processo), "envio ao fornecedor"],
     ["dataEntrega", safeDate(processo.dataEntrega), "entrega"],
     ["dataEnvioLiquidacao", safeDate(processo.dataEnvioLiquidacao), "envio para liquidacao"],

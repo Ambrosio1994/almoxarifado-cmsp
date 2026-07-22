@@ -1953,6 +1953,7 @@ function renderGeneralModule(processo) {
     <div class="detail-grid">
       ${detailField("Fornecedor", processo.fornecedor)}
       ${detailField("Data do processo", dateCell(processo.dataProcesso))}
+      ${detailField("Data de envio para SALC", dateCell(processo.dataEnvioSalc))}
       ${detailField("CNPJ", fornecedor?.cnpj)}
       ${detailField("Materiais", processo.materiais.map((material) => material.descricao).join(", "))}
       ${detailField("Valor unitario medio", money(unitAverage))}
@@ -2743,13 +2744,14 @@ function processUpdatePayloadFor(processo, overrides = {}) {
     numeroEmpenho: processo.numeroEmpenho || "",
     fornecedor: processo.fornecedor || "",
     dataProcesso: processo.dataProcesso || "",
+    dataEnvioSalc: processo.dataEnvioSalc || "",
     materiais: processo.materiais || [],
     dataEnvioFornecedor: processo.dataEnvioFornecedor || deadlineDate(processo),
     dataEntrega: processo.dataEntrega || "",
     dataEnvioLiquidacao: processo.dataEnvioLiquidacao || "",
     dataLiquidacao: processo.dataLiquidacao || "",
     dataPagamento: processo.dataPagamento || "",
-    status: processo.status || "Enviado para SALC",
+    status: processo.status || "Criado",
     versao: processo.versao,
     ...overrides
   };
@@ -3120,6 +3122,13 @@ function newDataButton(processo) {
 function nextProcessStep(processo) {
   if (!processo || ["Pago", "Anulado"].includes(processo.status)) return null;
   const steps = {
+    Criado: {
+      button: "Registrar envio para SALC",
+      title: "Informe a data do envio para SALC.",
+      status: "Enviado para SALC",
+      field: "dataEnvioSalc",
+      dateLabel: "Data do envio para SALC"
+    },
     "Enviado para SALC": {
       button: "Registrar envio ao fornecedor",
       title: "Informe a data do envio ao fornecedor.",
@@ -4826,6 +4835,7 @@ function timelineAuditBusinessDate(processo, entry = {}) {
 
   const status = entry.alteracoes?.status?.novo;
   const dateFieldsByStatus = {
+    "Enviado para SALC": ["dataEnvioSalc"],
     "Empenho enviado ao fornecedor": ["dataEnvioFornecedor", "dataEnvioEmpenho"],
     "Entrega parcial": ["dataEntrega"],
     Entregue: ["dataEntrega"],
