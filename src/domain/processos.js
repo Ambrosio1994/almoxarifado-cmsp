@@ -1,4 +1,5 @@
 export const STATUS = [
+  "Criado",
   "Enviado para SALC",
   "Empenho enviado ao fornecedor",
   "Aguardando entrega",
@@ -100,6 +101,7 @@ export function rollbackProcessStatus(processo = {}, targetStatus = "") {
   const targetIndex = PROCESS_WORKFLOW.indexOf(targetStatus);
   const updated = { ...processo, status: targetStatus };
   const milestones = [
+    ["dataEnvioSalc", "Enviado para SALC"],
     ["dataEnvioFornecedor", "Empenho enviado ao fornecedor"],
     ["dataEnvioEmpenho", "Empenho enviado ao fornecedor"],
     ["dataEntrega", "Entrega parcial"],
