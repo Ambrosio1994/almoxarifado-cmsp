@@ -91,6 +91,12 @@ describe("contrato visual e de navegacao", () => {
     assert.doesNotMatch(app, /newDataPanel/);
   });
 
+  it("distingue a criacao do processo do envio para SALC", () => {
+    assert.match(app, /Criado:\s*\{[\s\S]*?button: "Registrar envio para SALC"[\s\S]*?status: "Enviado para SALC"[\s\S]*?field: "dataEnvioSalc"/);
+    assert.match(app, /status: processo\.status \|\| "Criado"/);
+    assert.match(app, /"Enviado para SALC": \["dataEnvioSalc"\]/);
+  });
+
   it("oferece retrocesso de status somente pelo fluxo administrativo dedicado", () => {
     assert.match(html, /id="rollbackStatusDialog"/);
     assert.match(html, /id="rollbackStatusForm"/);

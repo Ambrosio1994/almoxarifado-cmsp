@@ -33,6 +33,17 @@ import { closePool } from "../src/db/postgres.js";
 import { createSession, resolveSession, revokeSession } from "../src/repositories/sessions.js";
 
 describe("regras de processo", () => {
+  it("inicia o fluxo em Criado antes do envio para SALC", () => {
+    assert.equal(isValidStatusTransition("Criado", "Enviado para SALC"), true);
+    assert.equal(isValidStatusTransition("Criado", "Empenho enviado ao fornecedor"), false);
+    const rolledBack = rollbackProcessStatus({
+      status: "Enviado para SALC",
+      dataEnvioSalc: "2026-07-01"
+    }, "Criado");
+    assert.equal(rolledBack.status, "Criado");
+    assert.equal(rolledBack.dataEnvioSalc, "");
+  });
+
   it("bloqueia processo pago permanentemente para edicao", () => {
     assert.equal(canEditProcess({ status: "Pago" }, "admin"), false);
     assert.equal(canEditProcess({ status: "Pago" }, "almoxarifado"), false);
