@@ -45,6 +45,7 @@
       <nav class="side-nav" aria-label="Navegacao principal">
         <a href="#" class="nav-item active" data-section="dashboard" aria-current="page"><span aria-hidden="true">▦</span>Painel</a>
         <a href="#" class="nav-item" data-section="processes"><span aria-hidden="true">▱</span>Empenhos</a>
+        <a href="#" class="nav-item" data-section="board"><span aria-hidden="true">▥</span>Quadro</a>
         <a href="#" class="nav-item" data-section="suppliers"><span aria-hidden="true">▤</span>Fornecedores</a>
         <a href="#" class="nav-item hidden" data-section="audit"><span aria-hidden="true">◫</span>Auditoria</a>
         <a href="#" class="nav-item hidden" data-section="users"><span aria-hidden="true">♙</span>Usuarios e permissoes</a>
@@ -122,6 +123,35 @@
         </section>
 
         <section class="module-view" id="dashboardView"><p class="empty-state">Carregando painel...</p></section>
+        <section class="module-view hidden board-view" id="boardView">
+          <div class="content-header board-heading">
+            <div>
+              <h1>Quadro de processos</h1>
+              <span>Visualize e avance os empenhos pelas etapas permitidas.</span>
+            </div>
+          </div>
+          <div class="board-toolbar" aria-label="Filtros do quadro">
+            <label class="search-box board-search" aria-label="Pesquisar no quadro">
+              <span aria-hidden="true">⌕</span>
+              <input id="boardSearchInput" placeholder="Buscar processo, empenho, fornecedor, material ou responsável">
+            </label>
+            <label><span class="sr-only">Filtrar por responsável</span><select id="boardResponsibleFilter" aria-label="Responsável"><option value="">Todos os responsáveis</option></select></label>
+            <label><span class="sr-only">Filtrar por fornecedor</span><select id="boardSupplierFilter" aria-label="Fornecedor"><option value="">Todos os fornecedores</option></select></label>
+            <label><span class="sr-only">Filtrar por prazo</span><select id="boardDeadlineFilter" aria-label="Situação do prazo">
+              <option value="">Todos os prazos</option>
+              <option value="overdue">Em atraso</option>
+              <option value="today">Vence hoje</option>
+              <option value="upcoming">Próximos 7 dias</option>
+              <option value="none">Sem prazo</option>
+            </select></label>
+            <label><span class="sr-only">Filtrar por status</span><select id="boardStatusFilter" aria-label="Status"><option value="">Todos os status</option></select></label>
+            <label class="board-empty-toggle"><input id="boardHideEmptyColumns" type="checkbox"> Ocultar colunas vazias</label>
+            <button type="button" class="secondary" id="clearBoardFilters">Limpar filtros</button>
+            <button type="button" class="secondary" id="refreshBoardButton">Atualizar</button>
+          </div>
+          <p class="board-message" id="boardMessage" role="status" aria-live="polite"></p>
+          <div id="kanbanBoard" class="kanban-board" aria-label="Quadro de processos"></div>
+        </section>
         <section class="module-view hidden" id="suppliersView"></section>
         <section class="module-view hidden" id="auditView"></section>
         <section class="module-view hidden" id="usersView"></section>

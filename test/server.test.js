@@ -195,6 +195,13 @@ describe("rotas http", () => {
     assert.ok(index.headers.etag);
   });
 
+  it("serve o modulo JavaScript do quadro", async () => {
+    const response = await invokeRequest({ method: "GET", path: "/kanban-board.js" });
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.headers["content-type"], "text/javascript; charset=utf-8");
+    assert.match(response.text(), /export function groupProcessesByStatus/);
+  });
+
   it("expoe readiness e telemetria sanitizada do scheduler sem ler o store completo", async () => {
     const response = await invokeRequest({ method: "GET", path: "/health/ready" });
     const payload = response.json();
