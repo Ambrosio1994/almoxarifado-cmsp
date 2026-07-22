@@ -2457,6 +2457,54 @@ textarea {
   grid-template-columns: 1fr 1fr;
 }
 
+.commitment-number-field {
+  align-items: stretch;
+  border: 1px solid var(--line-dark);
+  border-radius: 5px;
+  display: grid;
+  grid-template-columns: minmax(92px, .8fr) auto minmax(90px, 1fr);
+  margin-top: 6px;
+  overflow: hidden;
+}
+
+.commitment-number-field select,
+.commitment-number-field input {
+  border: 0;
+  border-radius: 0;
+  min-width: 0;
+}
+
+.commitment-number-field select {
+  border-right: 1px solid var(--line);
+}
+
+.commitment-number-field input {
+  border-left: 1px solid var(--line);
+}
+
+.commitment-number-field:focus-within {
+  border-color: var(--orange);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--orange) 22%, transparent);
+}
+
+.commitment-number-prefix {
+  align-items: center;
+  background: var(--panel);
+  color: var(--ink);
+  display: flex;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-weight: 800;
+  justify-content: center;
+  padding: 0 10px;
+}
+
+#commitmentNumberPreview {
+  color: var(--muted);
+  display: block;
+  font-size: 11px;
+  margin-top: 5px;
+}
+
 .actions {
   display: flex;
   gap: 10px;
@@ -2862,6 +2910,10 @@ dialog::backdrop {
   .charts-grid,
   .split {
     grid-template-columns: 1fr;
+  }
+
+  .commitment-number-field {
+    grid-template-columns: 96px auto minmax(80px, 1fr);
   }
 
   .grouped-chart-card {

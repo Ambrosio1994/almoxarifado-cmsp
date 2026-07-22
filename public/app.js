@@ -16,6 +16,11 @@ import {
   processObservationCount,
   safeBoardStatusId
 } from "./kanban-board.js";
+import {
+  formatCommitmentNumber,
+  normalizeCommitmentSequence,
+  parseCommitmentNumber
+} from "./process-fields.js";
 
 const state = {
   meta: { status: [], filtrosRapidos: [], transicoes: {} },
@@ -129,6 +134,9 @@ const quickFilter = document.querySelector("#quickFilter");
 const quickFilterBar = document.querySelector("#quickFilterBar");
 const searchInput = document.querySelector("#searchInput");
 const processForm = document.querySelector("#processForm");
+const commitmentYear = document.querySelector("#commitmentYear");
+const commitmentSequence = document.querySelector("#commitmentSequence");
+const commitmentNumberPreview = document.querySelector("#commitmentNumberPreview");
 const processDialog = document.querySelector("#processDialog");
 const processDialogTitle = document.querySelector("#processDialogTitle");
 const newProcessButton = document.querySelector("#newProcessButton");
@@ -232,6 +240,7 @@ const adminPasswordUser = document.querySelector("#adminPasswordUser");
 const adminPasswordMessage = document.querySelector("#adminPasswordMessage");
 
 bindDateInputs();
+initCommitmentFields();
 initTheme();
 await initAuth();
 
@@ -241,6 +250,59 @@ function bindDateInputs() {
       input.value = formatDateInput(input.value);
     });
   });
+}
+
+function initCommitmentFields() {
+  if (!commitmentYear || !commitmentSequence) return;
+  const currentYear = new Date().getFullYear();
+  commitmentYear.innerHTML = Array.from({ length: currentYear - 1999 }, (_, index) => currentYear - index)
+    .map((year) => `<option value="${year}">${year}</option>`)
+    .join("");
+  commitmentYear.value = String(currentYear);
+  commitmentYear.addEventListener("change", updateCommitmentNumberPreview);
+  commitmentSequence.addEventListener("input", () => {
+    commitmentSequence.value = String(commitmentSequence.value || "").replace(/\D/g, "").slice(0, 11);
+    updateCommitmentNumberPreview();
+  });
+  commitmentSequence.addEventListener("blur", () => {
+    commitmentSequence.value = normalizeCommitmentSequence(commitmentSequence.value);
+    updateCommitmentNumberPreview();
+  });
+  updateCommitmentNumberPreview();
+}
+
+function updateCommitmentNumberPreview() {
+  if (!commitmentNumberPreview) return;
+  const formatted = formatCommitmentNumber(commitmentYear?.value, commitmentSequence?.value);
+  commitmentNumberPreview.textContent = formatted ? `Empenho: ${formatted}` : `Exemplo: ${commitmentYear?.value || new Date().getFullYear()}NE00010`;
+}
+
+function configureCommitmentFields(numeroEmpenho = "") {
+  if (!commitmentYear || !commitmentSequence || !processForm?.elements.numeroEmpenho) return;
+  const parsed = parseCommitmentNumber(numeroEmpenho);
+  const legacy = Boolean(numeroEmpenho && !parsed);
+  commitmentYear.disabled = legacy;
+  commitmentSequence.disabled = legacy;
+  commitmentYear.required = !legacy;
+  commitmentSequence.required = !legacy;
+  if (parsed) {
+    if (![...commitmentYear.options].some((option) => option.value === parsed.year)) {
+      const option = document.createElement("option");
+      option.value = parsed.year;
+      option.textContent = parsed.year;
+      commitmentYear.add(option);
+    }
+    commitmentYear.value = parsed.year;
+    commitmentSequence.value = parsed.sequence;
+  } else if (legacy) {
+    commitmentSequence.value = "";
+  } else {
+    commitmentYear.value = String(new Date().getFullYear());
+    commitmentSequence.value = "";
+    processForm.elements.numeroEmpenho.value = "";
+  }
+  if (legacy) commitmentNumberPreview.textContent = `Formato legado preservado: ${numeroEmpenho}`;
+  else updateCommitmentNumberPreview();
 }
 
 function initTheme() {
@@ -983,7 +1045,7 @@ async function requestBoardTransition(processId, targetStatus) {
     setBoardMessage(`Não é possível mover este processo de “${process.status}” para “${targetStatus}”.`, "error");
     return;
   }
-  const deliveryTransition = (process.status === "Aguardando entrega" && targetStatus === "Entrega parcial")
+  const deliveryTransition = (["Empenho enviado ao fornecedor", "Aguardando entrega"].includes(process.status) && targetStatus === "Entrega parcial")
     || (process.status === "Entrega parcial" && targetStatus === "Entregue");
   if (deliveryTransition) {
     state.boardUpdatingProcesses.add(processId);
@@ -1174,6 +1236,16 @@ function processAccessibleName(processo = {}) {
 
 processForm.addEventListener("submit", async (event) => {
   event.preventDefault();
+  const editingLegacyCommitment = Boolean(commitmentSequence?.disabled && processForm.elements.numeroEmpenho.value);
+  if (!editingLegacyCommitment) {
+    const numeroEmpenho = formatCommitmentNumber(commitmentYear?.value, commitmentSequence?.value);
+    if (!numeroEmpenho) {
+      formMessage.textContent = "Selecione o ano e informe somente o número sequencial do empenho.";
+      commitmentSequence?.focus();
+      return;
+    }
+    processForm.elements.numeroEmpenho.value = numeroEmpenho;
+  }
   const data = Object.fromEntries(new FormData(processForm));
   data.materiais = readMaterials();
   const id = data.id;
@@ -1819,6 +1891,7 @@ function fillForm(processo) {
     if (processForm.elements[key]) processForm.elements[key].value = value ?? "";
   }
   if (processForm.elements.dataProcesso) processForm.elements.dataProcesso.value = displayDate(processo.dataProcesso);
+  configureCommitmentFields(processo.numeroEmpenho || "");
   if (processForm.elements.dataEnvioFornecedor && !processForm.elements.dataEnvioFornecedor.value) {
     processForm.elements.dataEnvioFornecedor.value = processo.dataEnvioEmpenho || "";
   }
@@ -1832,6 +1905,7 @@ function clearForm({ preserveIdentity = false } = {}) {
   processForm.reset();
   processForm.elements.id.value = id;
   processForm.elements.versao.value = versao;
+  configureCommitmentFields("");
   formMessage.textContent = "";
   renderMaterialRows();
   if (id) formMessage.textContent = "Campos limpos. O salvamento continuara alterando o processo selecionado.";
@@ -3137,14 +3211,15 @@ function nextProcessStep(processo) {
       dateLabel: "Data do envio ao fornecedor"
     },
     "Empenho enviado ao fornecedor": {
-      button: "Confirmar aguardando entrega",
-      title: "Confirme que o empenho esta aguardando entrega.",
-      status: "Aguardando entrega"
+      button: "Registrar entrega",
+      title: "Informe a data e as quantidades recebidas.",
+      status: "Entrega parcial",
+      field: "dataEntrega"
     },
     "Aguardando entrega": {
       button: "Registrar entrega",
-      title: "Informe a data de entrega",
-      status: "Entregue",
+      title: "Informe a data e as quantidades recebidas.",
+      status: "Entrega parcial",
       field: "dataEntrega"
     },
     "Entrega parcial": {

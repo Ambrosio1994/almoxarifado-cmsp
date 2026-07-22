@@ -194,7 +194,15 @@
 
         <div class="split">
           <label>Numero do processo <input name="numeroProcesso" maxlength="20"></label>
-          <label>Numero do empenho <input name="numeroEmpenho" maxlength="20"></label>
+          <label>Numero do empenho
+            <span class="commitment-number-field">
+              <select id="commitmentYear" aria-label="Ano do empenho" required></select>
+              <span class="commitment-number-prefix" aria-hidden="true">NE000</span>
+              <input id="commitmentSequence" inputmode="numeric" pattern="[0-9]+" maxlength="11" placeholder="10" aria-label="Numero sequencial do empenho" required>
+              <input type="hidden" name="numeroEmpenho">
+            </span>
+            <small id="commitmentNumberPreview">Exemplo: 2026NE00010</small>
+          </label>
         </div>
         <label>Data do processo <input name="dataProcesso" type="text" inputmode="numeric" data-date-input placeholder="DDMMAAAA" pattern="\d{2}-\d{2}-\d{4}" maxlength="10"></label>
         <label>Fornecedor <input name="fornecedor" maxlength="100"></label>

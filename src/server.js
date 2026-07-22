@@ -695,7 +695,7 @@ async function handleApi(req, res, url) {
 
   if (req.method === "GET" && url.pathname === "/api/meta") {
     sendJson(res, 200, {
-      status: STATUS.filter((status) => status !== "Aguardando envio para liquidacao"),
+      status: STATUS.filter((status) => !["Aguardando entrega", "Aguardando envio para liquidacao"].includes(status)),
       filtrosRapidos: QUICK_FILTERS,
       transicoes: PROCESS_TRANSITIONS
     });
@@ -1145,6 +1145,12 @@ async function handleApi(req, res, url) {
       sendJson(res, 400, { error: validationError });
       return;
     }
+    const standardizedCommitmentNumber = normalizeNewProcessCommitmentNumber(body.numeroEmpenho);
+    if (!standardizedCommitmentNumber) {
+      sendJson(res, 400, { error: "Selecione o ano e informe o numero sequencial do empenho no formato AAAANE000NUMERO." });
+      return;
+    }
+    body.numeroEmpenho = standardizedCommitmentNumber;
     if (body.status && body.status !== STATUS[0]) {
       sendJson(res, 400, { error: `Um processo novo deve iniciar em ${STATUS[0]}.` });
       return;
@@ -3894,6 +3900,11 @@ function normalizeProcessIdentifier(value = "") {
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/[^a-zA-Z0-9]/g, "")
     .toUpperCase();
+}
+
+function normalizeNewProcessCommitmentNumber(value = "") {
+  const match = String(value || "").trim().toUpperCase().match(/^(\d{4})NE000([1-9]\d{0,10})$/);
+  return match ? `${match[1]}NE000${match[2]}` : "";
 }
 
 function legacyMaterials(input = {}) {
