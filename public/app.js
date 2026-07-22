@@ -284,27 +284,25 @@ function bindAuthEvents() {
   logoutButton.addEventListener("click", async () => {
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 8000);
-    const logoutRequest = fetch("/auth/logout", {
-      method: "POST",
-      credentials: "same-origin",
-      signal: controller.signal
-    });
-    clearClientSession();
-    showAuth();
-    authMessage.textContent = "Encerrando sessao...";
-    setFormBusy(loginForm, true, "Encerrando...");
+    setButtonBusy(logoutButton, true, "Saindo...");
     try {
-      const response = await logoutRequest;
+      const response = await fetch("/auth/logout", {
+        method: "POST",
+        credentials: "same-origin",
+        signal: controller.signal
+      });
       if (!response.ok && response.status !== 401) throw new Error("Nao foi possivel encerrar a sessao.");
-      authMessage.textContent = "Sessao encerrada.";
+      clearClientSession();
+      showAuth();
+      authMessage.textContent = "";
     } catch (error) {
       const message = error.name === "AbortError"
         ? "O servidor demorou para confirmar o encerramento."
         : error.message || "Nao foi possivel confirmar o encerramento no servidor.";
-      authMessage.textContent = `${message} A sessao visual foi limpa; tente novamente se ela reaparecer.`;
+      showAppError(`${message} Tente novamente.`);
     } finally {
       window.clearTimeout(timeout);
-      setFormBusy(loginForm, false);
+      setButtonBusy(logoutButton, false);
     }
   });
 
@@ -4039,15 +4037,15 @@ function timelineEvents(processo) {
 
   const auditEvents = visibleAuditEntries(processo)
     .map((entry) => {
-      const usesProcessDate = entry.acao === "Criacao de processo" && Boolean(processo.dataProcesso);
+      const businessDate = timelineAuditBusinessDate(processo, entry);
       return {
         label: auditLabel(entry),
-        date: usesProcessDate ? processo.dataProcesso : entry.criadoEm,
+        date: businessDate || entry.criadoEm,
         meta: entry.usuario || "Usuário",
         details: timelineAuditDetails(entry),
         documento: currentDocumentFromAuditEntry(processo, entry),
         kind: entry.acao === "Remocao de documento" ? "danger" : "",
-        showTime: !usesProcessDate,
+        showTime: !businessDate,
         sourceType: "auditoria",
         sourceId: entry.id
       };
@@ -4368,6 +4366,29 @@ function deadlineDate(processo) {
   return processo.dataEnvioFornecedor || processo.dataEnvioEmpenho || "";
 }
 
+function timelineAuditBusinessDate(processo, entry = {}) {
+  if (entry.acao === "Criacao de processo") return processo.dataProcesso || "";
+  if (entry.acao === "Registro de entrega") {
+    const deliveryId = entry.alteracoes?.entregaId?.novo || entry.alteracoes?.entregaId;
+    return (processo.entregas || []).find((entrega) => entrega.id === deliveryId)?.data || "";
+  }
+
+  const status = entry.alteracoes?.status?.novo;
+  const dateFieldsByStatus = {
+    "Empenho enviado ao fornecedor": ["dataEnvioFornecedor", "dataEnvioEmpenho"],
+    "Entrega parcial": ["dataEntrega"],
+    Entregue: ["dataEntrega"],
+    "Enviado para liquidacao": ["dataEnvioLiquidacao"],
+    Liquidado: ["dataLiquidacao"],
+    Pago: ["dataPagamento"]
+  };
+  for (const field of dateFieldsByStatus[status] || []) {
+    const date = entry.alteracoes?.[field]?.novo;
+    if (date) return date;
+  }
+  return "";
+}
+
 function auditLabel(entry) {
   if (entry.acao === "Criacao de processo") return "Processo criado";
   if (entry.acao === "Anulacao de empenho") return "Empenho anulado";
@@ -4383,8 +4404,8 @@ function auditLabel(entry) {
       return `${documentLabel} ${suffix}`;
     }
   }
-  const statusMatch = String(entry.detalhes || "").match(/Status atual: (.+)\.$/);
-  if (statusMatch) return humanizeCamelCase(statusMatch[1]);
+  const changedStatus = entry.alteracoes?.status?.novo;
+  if (changedStatus) return humanizeCamelCase(changedStatus);
   return humanizeCamelCase(entry.acao || "Alteracao");
 }
 

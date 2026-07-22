@@ -190,6 +190,12 @@ describe("Documentos no DOM", () => {
       assert.ok(processCreation);
       assert.match(processCreation.textContent, /15-06-2026/);
       assert.doesNotMatch(processCreation.textContent, /17-07-2026/);
+      const supplierSent = timelineItems.find((item) => item.querySelector("strong")?.textContent === "Empenho enviado ao fornecedor");
+      const delivered = timelineItems.find((item) => item.querySelector("strong")?.textContent === "Entregue");
+      assert.match(supplierSent?.textContent || "", /20-06-2026/);
+      assert.doesNotMatch(supplierSent?.textContent || "", /18-07-2026/);
+      assert.match(delivered?.textContent || "", /25-06-2026/);
+      assert.ok(timelineItems.indexOf(supplierSent) < timelineItems.indexOf(delivered));
       assert.doesNotMatch(dom.window.document.querySelector("#detailPanel").textContent, /Inclus[aã]o de observa[cç][aã]o/i);
       assert.match(dom.window.document.querySelector("#detailPanel").textContent, /Nota de empenho anexada/);
       assert.match(dom.window.document.querySelector("#detailPanel").textContent, /Nota fiscal anexada/);
@@ -318,6 +324,30 @@ function secondProcessFixture() {
 
 function auditFixture(process) {
   return [
+    {
+      id: "audit-delivered",
+      processoId: process.id,
+      acao: "Alteracao de processo",
+      detalhes: "Status atual: Entregue.",
+      usuario: "Teste",
+      criadoEm: "2026-07-18T13:00:00.000Z",
+      alteracoes: {
+        status: { anterior: "Aguardando entrega", novo: "Entregue" },
+        dataEntrega: { anterior: null, novo: "2026-06-25" }
+      }
+    },
+    {
+      id: "audit-supplier-sent",
+      processoId: process.id,
+      acao: "Alteracao de processo",
+      detalhes: "Status atual: Empenho enviado ao fornecedor.",
+      usuario: "Teste",
+      criadoEm: "2026-07-18T12:00:00.000Z",
+      alteracoes: {
+        status: { anterior: "Enviado para SALC", novo: "Empenho enviado ao fornecedor" },
+        dataEnvioFornecedor: { anterior: null, novo: "2026-06-20" }
+      }
+    },
     {
       id: "audit-creation",
       processoId: process.id,
