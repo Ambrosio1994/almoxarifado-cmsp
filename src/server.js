@@ -1490,8 +1490,8 @@ async function handleApi(req, res, url) {
     const type = String(body.tipo || "").trim();
     const itemId = String(body.id || "").trim();
     const reason = String(body.motivo || "").trim();
-    if (!reason || reason.length > 1000) {
-      sendJson(res, 400, { error: "Informe o motivo da exclusao com ate 1000 caracteres." });
+    if (reason.length > 1000) {
+      sendJson(res, 400, { error: "O motivo da exclusao deve ter ate 1000 caracteres." });
       return;
     }
     const timelineKey = `${type}:${itemId}`;
@@ -1528,10 +1528,10 @@ async function handleApi(req, res, url) {
       processoId: processo.id,
       ...auditActor,
       acao: "Exclusao de dado da linha do tempo",
-      detalhes: `Dado ${timelineKey} ocultado da linha do tempo. Motivo: ${reason}`,
+      detalhes: `Dado ${timelineKey} ocultado da linha do tempo.${reason ? ` Motivo: ${reason}` : ""}`,
       alteracoes: {
         linhaDoTempo: { anterior: null, novo: timelineKey },
-        motivo: { anterior: null, novo: reason }
+        motivo: { anterior: null, novo: reason || null }
       }
     }));
     await writeStore(store);

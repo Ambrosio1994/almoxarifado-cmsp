@@ -101,13 +101,20 @@ describe("contrato visual e de navegacao", () => {
     assert.match(app, /return state\.detailAudit/);
   });
 
-  it("permite ao admin excluir itens da linha do tempo com motivo e sem apagar auditoria", () => {
+  it("permite ao admin excluir itens da linha do tempo com motivo opcional e sem travar o formulario", () => {
     assert.match(html, /id="deleteTimelineDialog"/);
     assert.match(html, /id="deleteTimelineForm"/);
-    assert.match(html, /id="deleteTimelineForm"[\s\S]*?name="motivo"[^>]*maxlength="1000"[^>]*required/);
+    const deleteTimelineForm = html.match(/<form id="deleteTimelineForm"[\s\S]*?<\/form>/)?.[0] || "";
+    assert.match(deleteTimelineForm, /Motivo \(opcional\)/);
+    assert.match(deleteTimelineForm, /name="motivo"[^>]*maxlength="1000"/);
+    assert.doesNotMatch(deleteTimelineForm, /name="motivo"[^>]*required/);
     assert.match(app, /isCurrentUserAdmin\(\).*event\.sourceType.*event\.sourceId/s);
     assert.match(app, /\/timeline-items/);
     assert.match(app, /method: "DELETE"/);
+    const saveDeletion = app.slice(app.indexOf("async function saveTimelineDeletion"), app.indexOf("function renderDeliveriesModule"));
+    assert.match(saveDeletion, /const form = event\.currentTarget/);
+    assert.match(saveDeletion, /finally[\s\S]*?setFormBusy\(form, false\)/);
+    assert.doesNotMatch(saveDeletion, /setFormBusy\(event\.currentTarget/);
     assert.match(app, /Exclusao de dado da linha do tempo/);
     assert.match(app, /hiddenTimelineKeys\(processo\)/);
   });
