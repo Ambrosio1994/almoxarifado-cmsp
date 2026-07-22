@@ -10,6 +10,7 @@ describe("Navegacao principal no DOM", () => {
     const restoreGlobals = installDomGlobals(dom.window);
     const storageKey = "almoxActiveSection:teste@example.com";
     dom.window.sessionStorage.setItem(storageKey, "suppliers");
+    let finishLogout;
 
     globalThis.fetch = async (input) => {
       const path = String(input);
@@ -17,6 +18,7 @@ describe("Navegacao principal no DOM", () => {
       if (path === "/api/meta") return jsonResponse({ status: [], filtrosRapidos: [] });
       if (path === "/api/dashboard") return jsonResponse(dashboardPayload());
       if (path === "/api/suppliers" || path === "/api/processes") return jsonResponse([]);
+      if (path === "/auth/logout") return new Promise((resolve) => { finishLogout = () => resolve(jsonResponse({ ok: true })); });
       throw new Error(`Requisicao inesperada no teste: ${path}`);
     };
 
@@ -33,6 +35,17 @@ describe("Navegacao principal no DOM", () => {
 
       assert.equal(dom.window.document.querySelector("#sectionTitle").textContent, "Empenhos");
       assert.equal(dom.window.sessionStorage.getItem(storageKey), "processes");
+
+      const logoutButton = dom.window.document.querySelector("#logoutButton");
+      logoutButton.click();
+      await waitFor(() => logoutButton.textContent === "Saindo...");
+      assert.equal(dom.window.document.querySelector("#appShell").classList.contains("hidden"), false);
+      assert.equal(dom.window.document.querySelector("#authScreen").classList.contains("hidden"), true);
+
+      finishLogout();
+      await waitFor(() => !dom.window.document.querySelector("#authScreen").classList.contains("hidden"));
+      assert.equal(dom.window.document.querySelector("#authMessage").textContent, "");
+      assert.equal(logoutButton.textContent, "Sair");
     } finally {
       restoreGlobals();
       dom.window.close();
