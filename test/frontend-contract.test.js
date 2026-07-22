@@ -33,6 +33,23 @@ describe("contrato visual e de navegacao", () => {
     assert.match(html, /id="dashboardView"/);
   });
 
+  it("oferece o Quadro como secao persistente, acessivel e responsiva", () => {
+    assert.match(html, /data-section="board"[\s\S]*?Quadro<\/a>/);
+    assert.match(html, /<section class="module-view hidden board-view" id="boardView"/);
+    assert.match(html, /id="boardMessage"[^>]*aria-live="polite"/);
+    assert.match(html, /id="kanbanBoard"[^>]*aria-label="Quadro de processos"/);
+    assert.match(html, /id="boardHideEmptyColumns"/);
+    assert.match(app, /const APP_SECTIONS = new Set\(\[[\s\S]*?"board"/);
+    assert.match(app, /board:\s*\(\) => renderBoardView\(\)/);
+    assert.match(app, /openProcessDetail\(process, "board"\)/);
+    assert.match(app, /state\.detailReturnSection = returnSection/);
+    assert.match(styles, /\.kanban-board\s*\{[\s\S]*?overflow-x:\s*auto/);
+    assert.match(styles, /\.kanban-column\s*\{[\s\S]*?width:\s*clamp\(280px, 28vw, 360px\)/);
+    assert.match(styles, /\[data-theme="dark"\] \.kanban-card/);
+    const mobileRules = styles.slice(styles.indexOf("@media (max-width: 640px)"));
+    assert.match(mobileRules, /\.kanban-column\s*\{[\s\S]*?width:\s*calc\(100vw - 42px\)/);
+  });
+
   it("mantem Usuarios e permissoes separado de Templates", () => {
     assert.match(html, /data-section="users"[^>]*>[^<]*<span[^>]*>[\s\S]*?Usuarios e permissoes<\/a>/);
     assert.match(html, /data-section="settings"[^>]*>[^<]*<span[^>]*>[\s\S]*?Templates<\/a>/);
@@ -72,6 +89,12 @@ describe("contrato visual e de navegacao", () => {
     assert.doesNotMatch(app, /button: "Confirmar aguardando envio para liquidação"/);
     assert.match(app, /dateLabel: "Data do envio para liquidação"/);
     assert.doesNotMatch(app, /newDataPanel/);
+  });
+
+  it("distingue a criacao do processo do envio para SALC", () => {
+    assert.match(app, /Criado:\s*\{[\s\S]*?button: "Registrar envio para SALC"[\s\S]*?status: "Enviado para SALC"[\s\S]*?field: "dataEnvioSalc"/);
+    assert.match(app, /status: processo\.status \|\| "Criado"/);
+    assert.match(app, /"Enviado para SALC": \["dataEnvioSalc"\]/);
   });
 
   it("oferece retrocesso de status somente pelo fluxo administrativo dedicado", () => {

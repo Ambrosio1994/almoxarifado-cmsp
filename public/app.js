@@ -4,6 +4,18 @@ import {
   PASSWORD_POLICY_MESSAGE,
   resetPasswordVisibility
 } from "./password-fields.js";
+import {
+  allowedBoardTransitions,
+  boardDeadlineDate,
+  boardFilterOptions,
+  boardResponsible,
+  countProcessDocuments,
+  filterBoardProcesses,
+  getProcessDeadlineState,
+  groupProcessesByStatus,
+  processObservationCount,
+  safeBoardStatusId
+} from "./kanban-board.js";
 
 const state = {
   meta: { status: [], filtrosRapidos: [], transicoes: {} },
@@ -40,14 +52,21 @@ const state = {
   settingsLoading: null,
   settingsPanel: "templates",
   activeSection: "dashboard",
-  detailObservationsError: ""
+  detailObservationsError: "",
+  boardFilters: { search: "", status: "", supplier: "", responsible: "", deadline: "" },
+  boardHideEmptyColumns: false,
+  boardUpdatingProcesses: new Set(),
+  boardDraggingProcessId: "",
+  boardScrollLeft: 0,
+  boardColumnScrollPositions: {},
+  boardPreferencesUser: ""
 };
 
 const MAX_DOCUMENT_FILE_BYTES = 15 * 1024 * 1024;
 const DOCUMENT_FETCH_TIMEOUT_MS = 30_000;
 const DOCUMENT_MEDIA_RENDER_TIMEOUT_MS = 10_000;
 const DOCUMENT_TEXT_PREVIEW_BYTES = 200_000;
-const APP_SECTIONS = new Set(["dashboard", "processes", "suppliers", "audit", "users", "settings"]);
+const APP_SECTIONS = new Set(["dashboard", "processes", "board", "suppliers", "audit", "users", "settings"]);
 const ACTIVE_SECTION_STORAGE_PREFIX = "almoxActiveSection";
 const ALLOWED_DOCUMENT_RESPONSE_MIME_TYPES = new Set([
   "application/pdf",
@@ -177,6 +196,17 @@ const supplierInfoForm = document.querySelector("#supplierInfoForm");
 const supplierInfoMessage = document.querySelector("#supplierInfoMessage");
 const cancelSupplierInfo = document.querySelector("#cancelSupplierInfo");
 const dashboardView = document.querySelector("#dashboardView");
+const boardView = document.querySelector("#boardView");
+const kanbanBoard = document.querySelector("#kanbanBoard");
+const boardMessage = document.querySelector("#boardMessage");
+const boardSearchInput = document.querySelector("#boardSearchInput");
+const boardResponsibleFilter = document.querySelector("#boardResponsibleFilter");
+const boardSupplierFilter = document.querySelector("#boardSupplierFilter");
+const boardDeadlineFilter = document.querySelector("#boardDeadlineFilter");
+const boardStatusFilter = document.querySelector("#boardStatusFilter");
+const boardHideEmptyColumns = document.querySelector("#boardHideEmptyColumns");
+const clearBoardFilters = document.querySelector("#clearBoardFilters");
+const refreshBoardButton = document.querySelector("#refreshBoardButton");
 const suppliersView = document.querySelector("#suppliersView");
 const auditView = document.querySelector("#auditView");
 const usersView = document.querySelector("#usersView");
@@ -478,9 +508,18 @@ function resetApplicationData() {
   state.settingsPanel = "templates";
   state.activeSection = "dashboard";
   state.detailObservationsError = "";
+  state.boardFilters = { search: "", status: "", supplier: "", responsible: "", deadline: "" };
+  state.boardHideEmptyColumns = false;
+  state.boardUpdatingProcesses = new Set();
+  state.boardDraggingProcessId = "";
+  state.boardScrollLeft = 0;
+  state.boardColumnScrollPositions = {};
+  state.boardPreferencesUser = "";
   table?.replaceChildren();
   detailPanel?.replaceChildren();
   dashboardView?.replaceChildren();
+  if (kanbanBoard) kanbanBoard.replaceChildren();
+  if (boardMessage) boardMessage.textContent = "";
   suppliersView?.replaceChildren();
   auditView?.replaceChildren();
   usersView?.replaceChildren();
@@ -718,6 +757,295 @@ async function renderProcessesView() {
   renderProcessData();
 }
 
+async function renderBoardView({ force = false } = {}) {
+  ensureBoardPreferences();
+  if (!state.processesLoaded || force) {
+    setBoardMessage("Carregando processos...");
+    await ensureProcessesLoaded({ force });
+  }
+  syncBoardControls();
+  renderKanbanBoard();
+}
+
+function renderKanbanBoard() {
+  if (!kanbanBoard) return;
+  if (kanbanBoard.childElementCount) captureBoardScrollPositions();
+  const statuses = [...(state.meta.status || [])];
+  const filtered = filterBoardProcesses(state.allProcesses, state.boardFilters);
+  const groups = groupProcessesByStatus(filtered, statuses);
+  const visibleStatuses = state.boardHideEmptyColumns
+    ? statuses.filter((status) => groups.get(status)?.length)
+    : statuses;
+
+  if (!statuses.length) {
+    kanbanBoard.innerHTML = '<p class="empty-state" role="status">Nenhum status disponível para montar o quadro.</p>';
+    return;
+  }
+  if (!visibleStatuses.length) {
+    kanbanBoard.innerHTML = '<p class="empty-state board-empty-state" role="status">Nenhum processo corresponde aos filtros atuais.</p>';
+    return;
+  }
+
+  kanbanBoard.innerHTML = visibleStatuses
+    .map((status) => createKanbanColumn(status, groups.get(status) || []))
+    .join("");
+  setBoardMessage(`${filtered.length} processo(s) visível(is) no quadro.`);
+  restoreBoardScrollPositions();
+}
+
+function createKanbanColumn(status, processes) {
+  const total = processes.reduce((sum, process) => sum + Number(process.valorTotal || 0), 0);
+  return `
+    <section class="kanban-column" data-status="${escapeAttribute(safeBoardStatusId(status))}" data-board-status="${escapeAttribute(status)}" aria-labelledby="board-column-${escapeAttribute(safeBoardStatusId(status))}">
+      <header class="kanban-column-header">
+        <div>
+          <h2 id="board-column-${escapeAttribute(safeBoardStatusId(status))}">${escapeHtml(status)}</h2>
+          <span>${escapeHtml(money(total))}</span>
+        </div>
+        <strong aria-label="${processes.length} processos">${processes.length}</strong>
+      </header>
+      <div class="kanban-column-cards" data-board-column-scroll="${escapeAttribute(status)}">
+        ${processes.length
+          ? processes.map((process) => createKanbanCard(process)).join("")
+          : '<p class="kanban-column-empty">Nenhum processo neste status.</p>'}
+      </div>
+    </section>
+  `;
+}
+
+function createKanbanCard(process) {
+  const material = (process.materiais || []).find((item) => item?.descricao)?.descricao || "";
+  const responsible = boardResponsible(process);
+  const documents = countProcessDocuments(process);
+  const observations = processObservationCount(process);
+  const deadlineState = getProcessDeadlineState(process);
+  const deadline = boardDeadlineDate(process);
+  const targets = boardMoveTargets(process);
+  const updating = state.boardUpdatingProcesses.has(process.id);
+  const movable = targets.length > 0 && !updating;
+  const accessibleName = processAccessibleName(process);
+  return `
+    <article class="kanban-card deadline-${escapeAttribute(deadlineState)}${updating ? " is-updating" : ""}"
+      data-board-card="true" data-process-id="${escapeAttribute(process.id)}" draggable="${movable}"
+      tabindex="0" role="button" aria-label="Abrir ${escapeAttribute(accessibleName)}" aria-busy="${updating}">
+      <div class="kanban-card-heading">
+        <strong>${escapeHtml(process.numeroProcesso || "Processo não informado")}</strong>
+        ${isOverdue(process) ? '<span class="kanban-overdue-label">Em atraso</span>' : ""}
+      </div>
+      ${process.numeroEmpenho ? `<span class="kanban-card-empenho">NE ${escapeHtml(process.numeroEmpenho)}</span>` : ""}
+      ${process.fornecedor ? `<span class="kanban-card-line"><b>Fornecedor</b>${escapeHtml(process.fornecedor)}</span>` : ""}
+      ${material ? `<span class="kanban-card-line"><b>Material</b>${escapeHtml(material)}</span>` : ""}
+      <strong class="kanban-card-value">${escapeHtml(money(process.valorTotal))}</strong>
+      <div class="kanban-card-meta">
+        ${Number.isFinite(Number(process.diasDecorridos)) ? `<span>${escapeHtml(String(Number(process.diasDecorridos)))} dias</span>` : ""}
+        ${deadline ? `<span>Prazo: ${escapeHtml(formatDate(deadline))}</span>` : '<span>Sem prazo</span>'}
+        ${responsible ? `<span>Responsável: ${escapeHtml(responsible)}</span>` : ""}
+      </div>
+      ${(documents || observations) ? `<div class="kanban-card-indicators">
+        ${documents ? `<span aria-label="${documents} documentos">▤ ${documents}</span>` : ""}
+        ${observations ? `<span aria-label="${observations} observações">◫ ${observations}</span>` : ""}
+      </div>` : ""}
+      ${movable ? `<label class="kanban-move-control"><span>Mover para…</span><select data-board-move="${escapeAttribute(process.id)}" aria-label="Mover ${escapeAttribute(accessibleName)} para outro status">
+        <option value="">Selecione o destino</option>
+        ${targets.map((status) => `<option value="${escapeAttribute(status)}">${escapeHtml(status)}</option>`).join("")}
+      </select></label>` : ""}
+      ${updating ? '<span class="kanban-updating-label">Atualizando…</span>' : ""}
+    </article>
+  `;
+}
+
+function boardMoveTargets(process) {
+  if (!canEditGeneralInUi(process)) return [];
+  return allowedBoardTransitions(process.status, state.meta.transicoes, state.meta.status);
+}
+
+function isAllowedBoardTransition(process, targetStatus) {
+  return Boolean(process && boardMoveTargets(process).includes(targetStatus));
+}
+
+function updateBoardFiltersFromControls() {
+  captureBoardScrollPositions();
+  state.boardFilters = {
+    search: boardSearchInput?.value || "",
+    responsible: boardResponsibleFilter?.value || "",
+    supplier: boardSupplierFilter?.value || "",
+    deadline: boardDeadlineFilter?.value || "",
+    status: boardStatusFilter?.value || ""
+  };
+  saveBoardPreferences();
+  renderKanbanBoard();
+}
+
+function syncBoardControls() {
+  const options = boardFilterOptions(state.allProcesses);
+  if (!options.responsibles.includes(state.boardFilters.responsible)) state.boardFilters.responsible = "";
+  if (!options.suppliers.includes(state.boardFilters.supplier)) state.boardFilters.supplier = "";
+  if (!(state.meta.status || []).includes(state.boardFilters.status)) state.boardFilters.status = "";
+  fillBoardSelect(boardResponsibleFilter, options.responsibles, "Todos os responsáveis", state.boardFilters.responsible);
+  fillBoardSelect(boardSupplierFilter, options.suppliers, "Todos os fornecedores", state.boardFilters.supplier);
+  fillBoardSelect(boardStatusFilter, state.meta.status || [], "Todos os status", state.boardFilters.status);
+  if (boardSearchInput) boardSearchInput.value = state.boardFilters.search;
+  if (boardDeadlineFilter) boardDeadlineFilter.value = state.boardFilters.deadline;
+  if (boardHideEmptyColumns) boardHideEmptyColumns.checked = state.boardHideEmptyColumns;
+}
+
+function fillBoardSelect(select, values, placeholder, selected) {
+  if (!select) return;
+  select.innerHTML = `<option value="">${escapeHtml(placeholder)}</option>${values
+    .map((value) => `<option value="${escapeAttribute(value)}">${escapeHtml(value)}</option>`)
+    .join("")}`;
+  select.value = values.includes(selected) ? selected : "";
+}
+
+function boardPreferencesKey() {
+  const userKey = String(currentUser?.id || currentUser?.email || "usuario").trim().toLowerCase();
+  return `almoxBoardPreferences:${userKey}`;
+}
+
+function ensureBoardPreferences() {
+  const key = boardPreferencesKey();
+  if (state.boardPreferencesUser === key) return;
+  state.boardPreferencesUser = key;
+  try {
+    const saved = JSON.parse(localStorage.getItem(key) || "{}");
+    const filters = saved.filters && typeof saved.filters === "object" ? saved.filters : {};
+    state.boardFilters = {
+      search: String(filters.search || ""),
+      status: String(filters.status || ""),
+      supplier: String(filters.supplier || ""),
+      responsible: String(filters.responsible || ""),
+      deadline: String(filters.deadline || "")
+    };
+    state.boardHideEmptyColumns = Boolean(saved.hideEmptyColumns);
+    state.boardScrollLeft = Math.max(0, Number(saved.scrollLeft || 0));
+    state.boardColumnScrollPositions = saved.columnScrollPositions && typeof saved.columnScrollPositions === "object"
+      ? saved.columnScrollPositions
+      : {};
+  } catch {
+    state.boardFilters = { search: "", status: "", supplier: "", responsible: "", deadline: "" };
+  }
+}
+
+function saveBoardPreferences() {
+  try {
+    localStorage.setItem(boardPreferencesKey(), JSON.stringify({
+      filters: state.boardFilters,
+      hideEmptyColumns: state.boardHideEmptyColumns,
+      scrollLeft: state.boardScrollLeft,
+      columnScrollPositions: state.boardColumnScrollPositions
+    }));
+  } catch {
+    // O quadro continua funcional se o armazenamento local estiver indisponível.
+  }
+}
+
+function captureBoardScrollPositions() {
+  if (!kanbanBoard || kanbanBoard.classList.contains("hidden")) return;
+  state.boardScrollLeft = kanbanBoard.scrollLeft;
+  kanbanBoard.querySelectorAll("[data-board-column-scroll]").forEach((column) => {
+    state.boardColumnScrollPositions[column.dataset.boardColumnScroll] = column.scrollTop;
+  });
+}
+
+function restoreBoardScrollPositions() {
+  window.requestAnimationFrame(() => {
+    if (!kanbanBoard) return;
+    kanbanBoard.scrollLeft = state.boardScrollLeft;
+    kanbanBoard.querySelectorAll("[data-board-column-scroll]").forEach((column) => {
+      column.scrollTop = Number(state.boardColumnScrollPositions[column.dataset.boardColumnScroll] || 0);
+    });
+  });
+}
+
+function setBoardMessage(message = "", tone = "") {
+  if (!boardMessage) return;
+  boardMessage.textContent = message;
+  boardMessage.classList.toggle("error", tone === "error");
+}
+
+function openBoardProcess(processId) {
+  const process = processById(processId);
+  if (!process) return;
+  captureBoardScrollPositions();
+  saveBoardPreferences();
+  void openProcessDetail(process, "board");
+}
+
+async function requestBoardTransition(processId, targetStatus) {
+  const process = processById(processId);
+  if (!process) {
+    setBoardMessage("O processo não está mais disponível. Atualize o quadro.", "error");
+    return;
+  }
+  if (state.boardUpdatingProcesses.has(processId)) return;
+  if (!isAllowedBoardTransition(process, targetStatus)) {
+    renderKanbanBoard();
+    setBoardMessage(`Não é possível mover este processo de “${process.status}” para “${targetStatus}”.`, "error");
+    return;
+  }
+  const deliveryTransition = (process.status === "Aguardando entrega" && targetStatus === "Entrega parcial")
+    || (process.status === "Entrega parcial" && targetStatus === "Entregue");
+  if (deliveryTransition) {
+    state.boardUpdatingProcesses.add(processId);
+    state.selectedProcess = process;
+    renderKanbanBoard();
+    openDeliveryDialog("", targetStatus === "Entregue", "board");
+    return;
+  }
+  const step = nextProcessStep(process);
+  if (!step || step.status !== targetStatus) {
+    setBoardMessage("A próxima etapa mudou. Atualize o quadro e tente novamente.", "error");
+    return;
+  }
+
+  if (step.field) {
+    state.boardUpdatingProcesses.add(processId);
+    state.selectedProcess = process;
+    renderKanbanBoard();
+    openProcessStepDialog(step, "board");
+    return;
+  }
+  await updateBoardProcess(process, targetStatus);
+}
+
+async function updateBoardProcess(process, targetStatus) {
+  state.boardUpdatingProcesses.add(process.id);
+  setBoardMessage(`Atualizando ${processAccessibleName(process)}…`);
+  renderKanbanBoard();
+  let finalMessage = "";
+  let finalTone = "";
+  try {
+    const updated = await api(`/api/processes/${process.id}`, {
+      method: "PUT",
+      body: JSON.stringify(processUpdatePayloadFor(process, { status: targetStatus }))
+    });
+    replaceProcessInState(updated);
+    applyProcessFilters();
+    finalMessage = `Processo movido para “${targetStatus}”.`;
+    await loadDashboardData(state.dashboardYear).catch(() => null);
+  } catch (error) {
+    finalMessage = `Não foi possível atualizar o status. O processo permaneceu em “${process.status}”. ${error.message || ""}`.trim();
+    finalTone = "error";
+  } finally {
+    state.boardUpdatingProcesses.delete(process.id);
+    renderKanbanBoard();
+    setBoardMessage(finalMessage, finalTone);
+  }
+}
+
+function replaceProcessInState(updated) {
+  state.allProcesses = state.allProcesses.map((process) => process.id === updated.id ? updated : process);
+  state.processos = state.processos.map((process) => process.id === updated.id ? updated : process);
+  if (state.selectedProcess?.id === updated.id) state.selectedProcess = updated;
+}
+
+function cleanupBoardDragState() {
+  state.boardDraggingProcessId = "";
+  kanbanBoard?.querySelectorAll(".is-dragging, .is-drag-over").forEach((item) => {
+    item.classList.remove("is-dragging", "is-drag-over");
+  });
+}
+
 async function refresh({ reload = true, updateDashboard = reload } = {}) {
   if (reload) {
     const [processResult, dashboardResult] = await Promise.allSettled([
@@ -949,6 +1277,87 @@ table.addEventListener("click", async (event) => {
 
 backToProcesses.addEventListener("click", closeProcessDetail);
 
+boardSearchInput?.addEventListener("input", debounce(() => updateBoardFiltersFromControls(), 180));
+[boardResponsibleFilter, boardSupplierFilter, boardDeadlineFilter, boardStatusFilter].forEach((control) => {
+  control?.addEventListener("change", updateBoardFiltersFromControls);
+});
+boardHideEmptyColumns?.addEventListener("change", () => {
+  captureBoardScrollPositions();
+  state.boardHideEmptyColumns = boardHideEmptyColumns.checked;
+  saveBoardPreferences();
+  renderKanbanBoard();
+});
+clearBoardFilters?.addEventListener("click", () => {
+  state.boardFilters = { search: "", status: "", supplier: "", responsible: "", deadline: "" };
+  syncBoardControls();
+  saveBoardPreferences();
+  renderKanbanBoard();
+  boardSearchInput?.focus();
+});
+refreshBoardButton?.addEventListener("click", async () => {
+  setButtonBusy(refreshBoardButton, true, "Atualizando...");
+  try {
+    await renderBoardView({ force: true });
+    setBoardMessage("Quadro atualizado.");
+  } catch (error) {
+    setBoardMessage(error.message || "Não foi possível atualizar o quadro.", "error");
+  } finally {
+    setButtonBusy(refreshBoardButton, false);
+  }
+});
+kanbanBoard?.addEventListener("scroll", debounce(() => {
+  state.boardScrollLeft = kanbanBoard.scrollLeft;
+  saveBoardPreferences();
+}, 160));
+kanbanBoard?.addEventListener("click", (event) => {
+  if (event.target.closest("select, button, input, a, label")) return;
+  const card = event.target.closest("[data-board-card]");
+  if (card) openBoardProcess(card.dataset.processId);
+});
+kanbanBoard?.addEventListener("keydown", (event) => {
+  const card = event.target.closest("[data-board-card]");
+  if (!card || event.target !== card || !["Enter", " "].includes(event.key)) return;
+  event.preventDefault();
+  openBoardProcess(card.dataset.processId);
+});
+kanbanBoard?.addEventListener("change", (event) => {
+  const select = event.target.closest("[data-board-move]");
+  if (!select || !select.value) return;
+  void requestBoardTransition(select.dataset.boardMove, select.value);
+});
+kanbanBoard?.addEventListener("dragstart", (event) => {
+  const card = event.target.closest("[data-board-card]");
+  if (!card?.draggable || state.boardUpdatingProcesses.has(card.dataset.processId)) {
+    event.preventDefault();
+    return;
+  }
+  state.boardDraggingProcessId = card.dataset.processId;
+  card.classList.add("is-dragging");
+  event.dataTransfer?.setData("text/plain", card.dataset.processId);
+  if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+});
+kanbanBoard?.addEventListener("dragover", (event) => {
+  const column = event.target.closest("[data-board-status]");
+  const process = processById(state.boardDraggingProcessId);
+  if (!column || !process || !isAllowedBoardTransition(process, column.dataset.boardStatus)) return;
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+  kanbanBoard.querySelectorAll(".kanban-column.is-drag-over").forEach((item) => item.classList.remove("is-drag-over"));
+  column.classList.add("is-drag-over");
+});
+kanbanBoard?.addEventListener("dragleave", (event) => {
+  const column = event.target.closest("[data-board-status]");
+  if (column && !column.contains(event.relatedTarget)) column.classList.remove("is-drag-over");
+});
+kanbanBoard?.addEventListener("drop", (event) => {
+  event.preventDefault();
+  const column = event.target.closest("[data-board-status]");
+  const processId = state.boardDraggingProcessId || event.dataTransfer?.getData("text/plain");
+  cleanupBoardDragState();
+  if (column && processId) void requestBoardTransition(processId, column.dataset.boardStatus);
+});
+kanbanBoard?.addEventListener("dragend", cleanupBoardDragState);
+
 detailTabs.forEach((tab) => {
   tab.addEventListener("click", async () => {
     state.detailTab = tab.dataset.detailTab;
@@ -1061,7 +1470,7 @@ function setMobileMenu(open) {
   mobileMenuToggle?.setAttribute("aria-expanded", String(open));
   mobileMenuToggle?.setAttribute("aria-label", open ? "Fechar menu" : "Abrir menu");
   sidebarBackdrop?.classList.toggle("hidden", !open);
-  if (open) requestAnimationFrame(() => sidebar.querySelector(".nav-item:not(.hidden)")?.focus());
+  if (open) window.requestAnimationFrame(() => sidebar.querySelector(".nav-item:not(.hidden)")?.focus());
 }
 
 function closeMobileMenu() {
@@ -1451,6 +1860,7 @@ async function openProcessDetail(processo, returnSection = "processes") {
   state.detailObservationsError = "";
   processListView.classList.add("hidden");
   dashboardView.classList.add("hidden");
+  boardView.classList.add("hidden");
   suppliersView.classList.add("hidden");
   usersView.classList.add("hidden");
   settingsView.classList.add("hidden");
@@ -1543,6 +1953,7 @@ function renderGeneralModule(processo) {
     <div class="detail-grid">
       ${detailField("Fornecedor", processo.fornecedor)}
       ${detailField("Data do processo", dateCell(processo.dataProcesso))}
+      ${detailField("Data de envio para SALC", dateCell(processo.dataEnvioSalc))}
       ${detailField("CNPJ", fornecedor?.cnpj)}
       ${detailField("Materiais", processo.materiais.map((material) => material.descricao).join(", "))}
       ${detailField("Valor unitario medio", money(unitAverage))}
@@ -2021,7 +2432,7 @@ async function deleteObservation(observationId) {
   }
 }
 
-function openProcessStepDialog(step) {
+function openProcessStepDialog(step, source = "detail") {
   const processo = state.selectedProcess;
   if (!processo || !step || !processStepDialog || !processStepForm) return;
 
@@ -2030,7 +2441,8 @@ function openProcessStepDialog(step) {
     processId: processo.id,
     fromStatus: processo.status,
     status: step.status,
-    field: step.field || ""
+    field: step.field || "",
+    source
   };
   processStepDialogTitle.textContent = step.button;
   processStepDialogDescription.textContent = step.title;
@@ -2043,7 +2455,7 @@ function openProcessStepDialog(step) {
     dateInput.value = step.field ? displayDate(processo[step.field]) : "";
   }
   processStepDialog.showModal();
-  requestAnimationFrame(() => (step.field ? dateInput : processStepForm.querySelector('button[type="submit"]'))?.focus());
+  window.requestAnimationFrame(() => (step.field ? dateInput : processStepForm.querySelector('button[type="submit"]'))?.focus());
 }
 
 async function saveProcessStep(event) {
@@ -2076,6 +2488,17 @@ async function saveProcessStep(event) {
   const overrides = { status: step.status };
   if (step.field) overrides[step.field] = date;
 
+  if (step.status === "Pago") {
+    if (!confirm("Deseja realmente alterar este processo para Pago?")) {
+      processStepMessage.textContent = "O pagamento não foi confirmado.";
+      return;
+    }
+    if (!confirm("Após confirmar o pagamento, o processo será bloqueado para edição. Esta ação exige confirmação adicional. Deseja continuar?")) {
+      processStepMessage.textContent = "A confirmação adicional do pagamento foi cancelada.";
+      return;
+    }
+  }
+
   setFormBusy(processStepForm, true, "Salvando...");
   try {
     const updatedProcess = await api(`/api/processes/${processo.id}`, {
@@ -2094,7 +2517,13 @@ async function saveProcessStep(event) {
 }
 
 function resetProcessStepDialog() {
+  const boardProcessId = state.processStepDraft?.source === "board" ? state.processStepDraft.processId : "";
   state.processStepDraft = null;
+  if (boardProcessId) {
+    state.boardUpdatingProcesses.delete(boardProcessId);
+    if (processDetailView.classList.contains("hidden")) state.selectedProcess = null;
+    if (state.activeSection === "board") renderKanbanBoard();
+  }
   processStepForm?.reset();
   processStepForm?.querySelectorAll("[aria-invalid]").forEach((input) => input.removeAttribute("aria-invalid"));
   processStepDateGroup?.classList.remove("hidden");
@@ -2154,12 +2583,12 @@ function registerPartialDelivery() {
   openDeliveryDialog(state.selectedProcess?.dataEntrega || "", false);
 }
 
-function openDeliveryDialog(date = "", complete = false) {
+function openDeliveryDialog(date = "", complete = false, source = "detail") {
   const processo = state.selectedProcess;
   if (!processo || !deliveryDialog || !deliveryForm) return;
   resetDeliveryDialog();
   const balances = deliveryBalanceRows(processo);
-  state.deliveryDraft = { processId: processo.id, complete };
+  state.deliveryDraft = { processId: processo.id, complete, source };
   deliveryDialogTitle.textContent = complete ? "Registrar entrega final" : "Registrar entrega parcial";
   deliveryForm.elements.data.value = displayDate(date);
   deliveryMaterials.innerHTML = balances.length ? balances.map(({ materialIndex, material, remaining }) => {
@@ -2180,7 +2609,7 @@ function openDeliveryDialog(date = "", complete = false) {
   deliveryForm.querySelector('button[type="submit"]').disabled = !balances.length;
   if (!balances.length) deliveryMessage.textContent = "Todos os materiais ja foram recebidos.";
   deliveryDialog.showModal();
-  requestAnimationFrame(() => deliveryForm.elements.data.focus());
+  window.requestAnimationFrame(() => deliveryForm.elements.data.focus());
 }
 
 function deliveryBalanceRows(processo) {
@@ -2280,13 +2709,20 @@ async function saveDeliveryFromDialog(event) {
     await refreshAudit();
     await refreshDetailAudit();
     renderProcessDetail();
+    if (state.activeSection === "board") renderKanbanBoard();
   } catch (error) {
     showAppError(`A entrega foi registrada, mas a lista nao foi atualizada: ${error.message}`);
   }
 }
 
 function resetDeliveryDialog() {
+  const boardProcessId = state.deliveryDraft?.source === "board" ? state.deliveryDraft.processId : "";
   state.deliveryDraft = null;
+  if (boardProcessId) {
+    state.boardUpdatingProcesses.delete(boardProcessId);
+    if (processDetailView.classList.contains("hidden")) state.selectedProcess = null;
+    if (state.activeSection === "board") renderKanbanBoard();
+  }
   deliveryForm?.reset();
   deliveryMaterials?.replaceChildren();
   if (deliveryMessage) deliveryMessage.textContent = "";
@@ -2299,19 +2735,23 @@ function formatQuantity(value) {
 }
 
 function processUpdatePayload(overrides = {}) {
-  const processo = state.selectedProcess;
+  return processUpdatePayloadFor(state.selectedProcess, overrides);
+}
+
+function processUpdatePayloadFor(processo, overrides = {}) {
   return {
     numeroProcesso: processo.numeroProcesso || "",
     numeroEmpenho: processo.numeroEmpenho || "",
     fornecedor: processo.fornecedor || "",
     dataProcesso: processo.dataProcesso || "",
+    dataEnvioSalc: processo.dataEnvioSalc || "",
     materiais: processo.materiais || [],
     dataEnvioFornecedor: processo.dataEnvioFornecedor || deadlineDate(processo),
     dataEntrega: processo.dataEntrega || "",
     dataEnvioLiquidacao: processo.dataEnvioLiquidacao || "",
     dataLiquidacao: processo.dataLiquidacao || "",
     dataPagamento: processo.dataPagamento || "",
-    status: processo.status || "Enviado para SALC",
+    status: processo.status || "Criado",
     versao: processo.versao,
     ...overrides
   };
@@ -2379,6 +2819,10 @@ function escapeHtml(value = "") {
 }
 
 async function openSection(section) {
+  if (state.activeSection === "board" && section !== "board") {
+    captureBoardScrollPositions();
+    saveBoardPreferences();
+  }
   if (!APP_SECTIONS.has(section)) section = "dashboard";
   if (["users", "settings"].includes(section) && currentUser?.role !== "admin") section = "dashboard";
   if (section === "audit" && !["admin", "auditor"].includes(currentUser?.role)) section = "dashboard";
@@ -2391,6 +2835,7 @@ async function openSection(section) {
   const renderers = {
     dashboard: () => renderDashboardView(),
     processes: () => renderProcessesView(),
+    board: () => renderBoardView(),
     suppliers: () => renderSuppliersView(),
     audit: () => renderAuditView(),
     users: () => renderUsersView(),
@@ -2403,6 +2848,12 @@ async function openSection(section) {
     if (error.name === "AbortError") return;
     if (section === "processes") {
       table.innerHTML = `<tr class="empty-table-row"><td colspan="10" role="alert">${escapeHtml(error.message || "Nao foi possivel carregar os processos.")}</td></tr>`;
+      return;
+    }
+    if (section === "board") {
+      const message = error.message || "Não foi possível carregar os processos no quadro.";
+      setBoardMessage(message, "error");
+      renderSectionError(kanbanBoard, message, section, () => renderBoardView({ force: true }));
       return;
     }
     const target = { dashboard: dashboardView, suppliers: suppliersView, audit: auditView, users: usersView, settings: settingsView }[section];
@@ -2441,10 +2892,11 @@ function activateSectionShell(section) {
     if (active) item.setAttribute("aria-current", "page");
     else item.removeAttribute("aria-current");
   });
-  const titles = { dashboard: "Painel", processes: "Empenhos", suppliers: "Fornecedores", audit: "Auditoria", users: "Usuarios e permissoes", settings: "Templates" };
+  const titles = { dashboard: "Painel", processes: "Empenhos", board: "Quadro de processos", suppliers: "Fornecedores", audit: "Auditoria", users: "Usuarios e permissoes", settings: "Templates" };
   if (sectionTitle) sectionTitle.textContent = titles[section] || "";
   processListView.classList.toggle("hidden", section !== "processes");
   dashboardView.classList.toggle("hidden", section !== "dashboard");
+  boardView.classList.toggle("hidden", section !== "board");
   suppliersView.classList.toggle("hidden", section !== "suppliers");
   auditView.classList.toggle("hidden", section !== "audit");
   usersView.classList.toggle("hidden", section !== "users");
@@ -2670,6 +3122,13 @@ function newDataButton(processo) {
 function nextProcessStep(processo) {
   if (!processo || ["Pago", "Anulado"].includes(processo.status)) return null;
   const steps = {
+    Criado: {
+      button: "Registrar envio para SALC",
+      title: "Informe a data do envio para SALC.",
+      status: "Enviado para SALC",
+      field: "dataEnvioSalc",
+      dateLabel: "Data do envio para SALC"
+    },
     "Enviado para SALC": {
       button: "Registrar envio ao fornecedor",
       title: "Informe a data do envio ao fornecedor.",
@@ -2770,6 +3229,7 @@ async function refreshAfterMutation(successPrefix = "A alteracao foi salva") {
     showAppError(`${successPrefix} e a lista foi atualizada, mas a auditoria nao: ${error.message}`);
   }
   if (state.selectedProcess) renderProcessDetail();
+  if (state.activeSection === "board") renderKanbanBoard();
 }
 
 async function refreshDetailAudit() {
@@ -4375,6 +4835,7 @@ function timelineAuditBusinessDate(processo, entry = {}) {
 
   const status = entry.alteracoes?.status?.novo;
   const dateFieldsByStatus = {
+    "Enviado para SALC": ["dataEnvioSalc"],
     "Empenho enviado ao fornecedor": ["dataEnvioFornecedor", "dataEnvioEmpenho"],
     "Entrega parcial": ["dataEntrega"],
     Entregue: ["dataEntrega"],
