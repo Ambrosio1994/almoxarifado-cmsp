@@ -469,15 +469,16 @@ describe("rotas http", () => {
     assert.equal((await requestDeletion(warehouseToken, "Correcao visual")).statusCode, 403);
 
     const { token: adminToken } = await authenticatedAs("admin");
-    assert.equal((await requestDeletion(adminToken, " ")).statusCode, 400);
-    assert.equal((await requestDeletion(adminToken, "Registro exibido indevidamente")).statusCode, 200);
+    assert.equal((await requestDeletion(adminToken, "x".repeat(1001))).statusCode, 400);
+    assert.equal((await requestDeletion(adminToken, " ")).statusCode, 200);
 
     const persisted = await readStore();
     assert.ok(persisted.auditoria.some((entry) => entry.id === target.id), "o evento original deve permanecer imutavel");
     const deletion = persisted.auditoria.find((entry) => entry.processoId === created.json().id
       && entry.acao === "Exclusao de dado da linha do tempo");
     assert.equal(deletion.alteracoes.linhaDoTempo.novo, `auditoria:${target.id}`);
-    assert.equal(deletion.alteracoes.motivo.novo, "Registro exibido indevidamente");
+    assert.equal(deletion.alteracoes.motivo.novo, null);
+    assert.doesNotMatch(deletion.detalhes, /Motivo:/);
     assert.equal((await requestDeletion(adminToken, "Repeticao")).statusCode, 409);
   });
 

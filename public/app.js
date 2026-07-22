@@ -1651,13 +1651,15 @@ function openDeleteTimelineDialog(item = {}) {
 
 async function saveTimelineDeletion(event) {
   event.preventDefault();
+  const form = event.currentTarget;
   const draft = state.timelineDeleteDraft;
-  const motivo = String(new FormData(event.currentTarget).get("motivo") || "").trim();
-  if (!draft || draft.processId !== state.selectedProcess?.id || !motivo || motivo.length > 1000) {
-    deleteTimelineMessage.textContent = "Informe o motivo da exclusao com ate 1000 caracteres.";
+  const motivo = String(new FormData(form).get("motivo") || "").trim();
+  if (!draft || draft.processId !== state.selectedProcess?.id) return;
+  if (motivo.length > 1000) {
+    deleteTimelineMessage.textContent = "O motivo deve ter ate 1000 caracteres.";
     return;
   }
-  setFormBusy(event.currentTarget, true, "Excluindo...");
+  setFormBusy(form, true, "Excluindo...");
   try {
     await api(`/api/processes/${draft.processId}/timeline-items`, {
       method: "DELETE",
@@ -1668,7 +1670,7 @@ async function saveTimelineDeletion(event) {
   } catch (error) {
     deleteTimelineMessage.textContent = error.message || "Nao foi possivel excluir o dado da linha do tempo.";
   } finally {
-    setFormBusy(event.currentTarget, false);
+    setFormBusy(form, false);
   }
 }
 
