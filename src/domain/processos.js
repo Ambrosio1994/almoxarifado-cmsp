@@ -1,4 +1,5 @@
 export const STATUS = [
+  "Criado",
   "Enviado para SALC",
   "Empenho enviado ao fornecedor",
   "Aguardando entrega",
@@ -11,10 +12,15 @@ export const STATUS = [
   "Anulado"
 ];
 
-export const PROCESS_WORKFLOW = STATUS.filter((status) => !["Aguardando envio para liquidacao", "Anulado"].includes(status));
+export const PROCESS_WORKFLOW = STATUS.filter((status) => ![
+  "Aguardando entrega",
+  "Aguardando envio para liquidacao",
+  "Anulado"
+].includes(status));
 
 export const PROCESS_TRANSITIONS = Object.fromEntries([
   ...PROCESS_WORKFLOW.map((status, index) => [status, PROCESS_WORKFLOW[index + 1] || ""]),
+  ["Aguardando entrega", "Entrega parcial"],
   ["Aguardando envio para liquidacao", "Enviado para liquidacao"]
 ]);
 
@@ -100,6 +106,7 @@ export function rollbackProcessStatus(processo = {}, targetStatus = "") {
   const targetIndex = PROCESS_WORKFLOW.indexOf(targetStatus);
   const updated = { ...processo, status: targetStatus };
   const milestones = [
+    ["dataEnvioSalc", "Enviado para SALC"],
     ["dataEnvioFornecedor", "Empenho enviado ao fornecedor"],
     ["dataEnvioEmpenho", "Empenho enviado ao fornecedor"],
     ["dataEntrega", "Entrega parcial"],

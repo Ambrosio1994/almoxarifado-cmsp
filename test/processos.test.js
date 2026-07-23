@@ -21,6 +21,8 @@ import {
   isProcessOverdue,
   isValidStatusRollback,
   isValidStatusTransition,
+  PROCESS_TRANSITIONS,
+  PROCESS_WORKFLOW,
   normalizeMaterials,
   processHasRequiredDocuments,
   previousProcessStatuses,
@@ -33,6 +35,17 @@ import { closePool } from "../src/db/postgres.js";
 import { createSession, resolveSession, revokeSession } from "../src/repositories/sessions.js";
 
 describe("regras de processo", () => {
+  it("inicia o fluxo em Criado antes do envio para SALC", () => {
+    assert.equal(isValidStatusTransition("Criado", "Enviado para SALC"), true);
+    assert.equal(isValidStatusTransition("Criado", "Empenho enviado ao fornecedor"), false);
+    const rolledBack = rollbackProcessStatus({
+      status: "Enviado para SALC",
+      dataEnvioSalc: "2026-07-01"
+    }, "Criado");
+    assert.equal(rolledBack.status, "Criado");
+    assert.equal(rolledBack.dataEnvioSalc, "");
+  });
+
   it("bloqueia processo pago permanentemente para edicao", () => {
     assert.equal(canEditProcess({ status: "Pago" }, "admin"), false);
     assert.equal(canEditProcess({ status: "Pago" }, "almoxarifado"), false);
@@ -231,7 +244,10 @@ describe("regras de processo", () => {
     assert.equal(isValidStatusTransition("Entregue", "Aguardando envio para liquidacao"), false);
     assert.equal(isValidStatusTransition("Entregue", "Enviado para liquidacao"), true);
     assert.equal(isValidStatusTransition("Aguardando envio para liquidacao", "Enviado para liquidacao"), true);
-    assert.equal(isValidStatusTransition("Empenho enviado ao fornecedor", "Aguardando entrega"), true);
+    assert.equal(PROCESS_WORKFLOW.includes("Aguardando entrega"), false);
+    assert.equal(PROCESS_TRANSITIONS["Empenho enviado ao fornecedor"], "Entrega parcial");
+    assert.equal(PROCESS_TRANSITIONS["Aguardando entrega"], "Entrega parcial");
+    assert.equal(isValidStatusTransition("Empenho enviado ao fornecedor", "Aguardando entrega"), false);
   });
 
   it("calcula totais monetarios sem propagar valores nao finitos", () => {

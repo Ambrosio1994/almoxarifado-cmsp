@@ -186,6 +186,17 @@ describe("Documentos no DOM", () => {
       await waitFor(() => dom.window.document.querySelector("#detailPanel").textContent.includes("Observação: Material conferido"));
       const timelineItems = [...dom.window.document.querySelectorAll(".timeline > li")];
       assert.equal(timelineItems.filter((item) => item.textContent.includes("Material conferido")).length, 1);
+      const processCreation = timelineItems.find((item) => item.querySelector("strong")?.textContent === "Processo criado");
+      assert.ok(processCreation);
+      assert.match(processCreation.textContent, /15-06-2026/);
+      assert.doesNotMatch(processCreation.textContent, /17-07-2026/);
+      const supplierSent = timelineItems.find((item) => item.querySelector("strong")?.textContent === "Empenho enviado ao fornecedor");
+      const delivered = timelineItems.find((item) => item.querySelector("strong")?.textContent === "Entregue");
+      assert.match(supplierSent?.textContent || "", /20-06-2026/);
+      assert.doesNotMatch(supplierSent?.textContent || "", /18-07-2026/);
+      assert.match(delivered?.textContent || "", /25-06-2026/);
+      assert.ok(timelineItems.indexOf(supplierSent) < timelineItems.indexOf(delivered));
+      assert.doesNotMatch(dom.window.document.querySelector("#detailPanel").textContent, /Altera[cç][aã]o de processo|Status atual:/i);
       assert.doesNotMatch(dom.window.document.querySelector("#detailPanel").textContent, /Inclus[aã]o de observa[cç][aã]o/i);
       assert.match(dom.window.document.querySelector("#detailPanel").textContent, /Nota de empenho anexada/);
       assert.match(dom.window.document.querySelector("#detailPanel").textContent, /Nota fiscal anexada/);
@@ -282,6 +293,7 @@ function processFixture() {
     numeroProcesso: "PROC-1",
     numeroEmpenho: "EMP-1",
     fornecedor: "Fornecedor",
+    dataProcesso: "2026-06-15",
     status: "Enviado para SALC",
     materiais: [],
     valorTotal: 0,
@@ -313,6 +325,49 @@ function secondProcessFixture() {
 
 function auditFixture(process) {
   return [
+    {
+      id: "audit-generic-update",
+      processoId: process.id,
+      acao: "Alteracao de processo",
+      detalhes: "Alteracao de processo.",
+      usuario: "Teste",
+      criadoEm: "2026-07-18T13:30:00.000Z",
+      alteracoes: {
+        fornecedor: { anterior: "Fornecedor anterior", novo: "Fornecedor atual" }
+      }
+    },
+    {
+      id: "audit-delivered",
+      processoId: process.id,
+      acao: "Alteracao de processo",
+      detalhes: "Status atual: Entregue.",
+      usuario: "Teste",
+      criadoEm: "2026-07-18T13:00:00.000Z",
+      alteracoes: {
+        status: { anterior: "Aguardando entrega", novo: "Entregue" },
+        dataEntrega: { anterior: null, novo: "2026-06-25" }
+      }
+    },
+    {
+      id: "audit-supplier-sent",
+      processoId: process.id,
+      acao: "Alteracao de processo",
+      detalhes: "Status atual: Empenho enviado ao fornecedor.",
+      usuario: "Teste",
+      criadoEm: "2026-07-18T12:00:00.000Z",
+      alteracoes: {
+        status: { anterior: "Enviado para SALC", novo: "Empenho enviado ao fornecedor" },
+        dataEnvioFornecedor: { anterior: null, novo: "2026-06-20" }
+      }
+    },
+    {
+      id: "audit-creation",
+      processoId: process.id,
+      acao: "Criacao de processo",
+      detalhes: "Processo PROC-1 criado.",
+      usuario: "Teste",
+      criadoEm: "2026-07-17T12:00:00.000Z"
+    },
     {
       id: "audit-observation",
       processoId: process.id,

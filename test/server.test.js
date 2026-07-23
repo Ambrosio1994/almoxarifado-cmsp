@@ -195,6 +195,13 @@ describe("rotas http", () => {
     assert.ok(index.headers.etag);
   });
 
+  it("serve o modulo JavaScript do quadro", async () => {
+    const response = await invokeRequest({ method: "GET", path: "/kanban-board.js" });
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.headers["content-type"], "text/javascript; charset=utf-8");
+    assert.match(response.text(), /export function groupProcessesByStatus/);
+  });
+
   it("expoe readiness e telemetria sanitizada do scheduler sem ler o store completo", async () => {
     const response = await invokeRequest({ method: "GET", path: "/health/ready" });
     const payload = response.json();
@@ -291,11 +298,14 @@ describe("rotas http", () => {
     };
     const created = await postJson("/api/processes", token, {
       numeroProcesso: dangerousValues.numeroProcesso,
-      numeroEmpenho: dangerousValues.numeroEmpenho,
+      numeroEmpenho: testCommitmentNumber(),
       fornecedor: dangerousValues.fornecedor,
       materiais: [{ descricao: dangerousValues.material, valorUnitario: 1, quantidade: 1 }]
     });
     assert.equal(created.statusCode, 201);
+    const dangerousStore = await readStore();
+    dangerousStore.processos.find((processo) => processo.id === created.json().id).numeroEmpenho = dangerousValues.numeroEmpenho;
+    await writeStore(dangerousStore);
 
     const headers = { authorization: `Bearer ${token}` };
     const csv = await invokeRequest({ method: "GET", path: "/api/processes/download", headers });
@@ -365,6 +375,7 @@ describe("rotas http", () => {
 
     const created = await postJson("/api/processes", token, {
       numeroProcesso: `CACHE-${crypto.randomUUID().slice(0, 12)}`,
+      numeroEmpenho: testCommitmentNumber(),
       dataEnvioEmpenho: `${selectedYear}-01-10`
     });
     assert.equal(created.statusCode, 201);
@@ -429,7 +440,8 @@ describe("rotas http", () => {
   it("permite Almoxarifado consultar a auditoria do processo para a linha do tempo", async () => {
     const { token } = await authenticatedAs("almoxarifado");
     const created = await postJson("/api/processes", token, {
-      numeroProcesso: `AT-${crypto.randomUUID().slice(0, 8)}`
+      numeroProcesso: `AT-${crypto.randomUUID().slice(0, 8)}`,
+      numeroEmpenho: testCommitmentNumber()
     });
     assert.equal(created.statusCode, 201);
 
@@ -452,7 +464,8 @@ describe("rotas http", () => {
   it("permite somente ao admin excluir um dado da linha do tempo sem apagar a auditoria", async () => {
     const { token: warehouseToken } = await authenticatedAs("almoxarifado");
     const created = await postJson("/api/processes", warehouseToken, {
-      numeroProcesso: `TIMELINE-${crypto.randomUUID().slice(0, 8)}`
+      numeroProcesso: `TIMELINE-${crypto.randomUUID().slice(0, 8)}`,
+      numeroEmpenho: testCommitmentNumber()
     });
     assert.equal(created.statusCode, 201);
 
@@ -469,39 +482,50 @@ describe("rotas http", () => {
     assert.equal((await requestDeletion(warehouseToken, "Correcao visual")).statusCode, 403);
 
     const { token: adminToken } = await authenticatedAs("admin");
-    assert.equal((await requestDeletion(adminToken, " ")).statusCode, 400);
-    assert.equal((await requestDeletion(adminToken, "Registro exibido indevidamente")).statusCode, 200);
+    assert.equal((await requestDeletion(adminToken, "x".repeat(1001))).statusCode, 400);
+    assert.equal((await requestDeletion(adminToken, " ")).statusCode, 200);
 
     const persisted = await readStore();
     assert.ok(persisted.auditoria.some((entry) => entry.id === target.id), "o evento original deve permanecer imutavel");
     const deletion = persisted.auditoria.find((entry) => entry.processoId === created.json().id
       && entry.acao === "Exclusao de dado da linha do tempo");
     assert.equal(deletion.alteracoes.linhaDoTempo.novo, `auditoria:${target.id}`);
-    assert.equal(deletion.alteracoes.motivo.novo, "Registro exibido indevidamente");
+    assert.equal(deletion.alteracoes.motivo.novo, null);
+    assert.doesNotMatch(deletion.detalhes, /Motivo:/);
     assert.equal((await requestDeletion(adminToken, "Repeticao")).statusCode, 409);
   });
 
-  it("cria processo somente com processo, somente com empenho ou com ambos", async () => {
+  it("exige empenho padronizado e mantem o numero do processo opcional", async () => {
     const { token } = await authenticatedAs("almoxarifado");
     const suffix = crypto.randomUUID().slice(0, 8);
+    const withoutCommitment = await postJson("/api/processes", token, { numeroProcesso: `P-${suffix}` });
+    assert.equal(withoutCommitment.statusCode, 400);
+    assert.match(withoutCommitment.json().error, /ano.*numero sequencial do empenho/i);
+
+    const invalidFormat = await postJson("/api/processes", token, {
+      numeroProcesso: `PI-${suffix}`,
+      numeroEmpenho: "2026NE0010"
+    });
+    assert.equal(invalidFormat.statusCode, 400);
+    assert.match(invalidFormat.json().error, /formato AAAANE000NUMERO/i);
+
     const cases = [
-      { numeroProcesso: `P-${suffix}` },
-      { numeroEmpenho: `E-${suffix}` },
-      { numeroProcesso: `PB-${suffix}`, numeroEmpenho: `EB-${suffix}` }
+      { numeroEmpenho: "2026ne00010", expectedCommitment: "2026NE00010" },
+      { numeroProcesso: `PB-${suffix}`, numeroEmpenho: testCommitmentNumber() }
     ];
 
     for (const body of cases) {
       const response = await postJson("/api/processes", token, body);
       assert.equal(response.statusCode, 201);
       assert.equal(response.json().numeroProcesso, body.numeroProcesso || "");
-      assert.equal(response.json().numeroEmpenho, body.numeroEmpenho || "");
+      assert.equal(response.json().numeroEmpenho, body.expectedCommitment || body.numeroEmpenho);
     }
 
     const persisted = await readStore();
     for (const body of cases) {
       assert.ok(persisted.processos.some((processo) => (
         processo.numeroProcesso === (body.numeroProcesso || "")
-          && processo.numeroEmpenho === (body.numeroEmpenho || "")
+          && processo.numeroEmpenho === (body.expectedCommitment || body.numeroEmpenho)
       )));
     }
   });
@@ -509,7 +533,8 @@ describe("rotas http", () => {
   it("protege anulacao liquidada, exige motivo e impede inativar pagamento", async () => {
     const { token } = await authenticatedAs("almoxarifado");
     const created = await postJson("/api/processes", token, {
-      numeroProcesso: `LOCK-${crypto.randomUUID().slice(0, 8)}`
+      numeroProcesso: `LOCK-${crypto.randomUUID().slice(0, 8)}`,
+      numeroEmpenho: testCommitmentNumber()
     });
     assert.equal(created.statusCode, 201);
 
@@ -666,6 +691,7 @@ describe("rotas http", () => {
     const processNumber = `DATA-OK-${crypto.randomUUID().slice(0, 5)}`;
     const valid = await postJson("/api/processes", token, {
       numeroProcesso: processNumber,
+      numeroEmpenho: testCommitmentNumber(),
       dataProcesso: "29-02-2024"
     });
     assert.equal(valid.statusCode, 201);
@@ -674,10 +700,68 @@ describe("rotas http", () => {
     assert.equal(persisted.processos.find((processo) => processo.numeroProcesso === processNumber)?.dataProcesso, "2024-02-29");
   });
 
+  it("cria o processo como Criado e exige a data para registrar o envio para SALC", async () => {
+    const { token } = await authenticatedAs("almoxarifado");
+    const meta = await invokeRequest({
+      method: "GET",
+      path: "/api/meta",
+      headers: { authorization: `Bearer ${token}` }
+    });
+    assert.equal(meta.statusCode, 200);
+    assert.equal(meta.json().status.includes("Aguardando entrega"), false);
+    assert.equal(meta.json().transicoes["Empenho enviado ao fornecedor"], "Entrega parcial");
+    assert.equal(meta.json().transicoes["Aguardando entrega"], "Entrega parcial");
+
+    const processNumber = `INICIAL-${crypto.randomUUID().slice(0, 6)}`;
+    const bypass = await postJson("/api/processes", token, {
+      numeroProcesso: `${processNumber}-B`,
+      numeroEmpenho: testCommitmentNumber(),
+      status: "Enviado para SALC"
+    });
+    assert.equal(bypass.statusCode, 400);
+    assert.match(bypass.json().error, /deve iniciar em Criado/i);
+
+    const commitmentNumber = testCommitmentNumber();
+    const created = await postJson("/api/processes", token, {
+      numeroProcesso: processNumber,
+      numeroEmpenho: commitmentNumber
+    });
+    assert.equal(created.statusCode, 201);
+    assert.equal(created.json().status, "Criado");
+
+    const payload = {
+      numeroProcesso: processNumber,
+      numeroEmpenho: commitmentNumber,
+      fornecedor: "",
+      materiais: [],
+      dataProcesso: "",
+      dataEnvioSalc: "",
+      dataEnvioFornecedor: "",
+      dataEntrega: "",
+      dataEnvioLiquidacao: "",
+      dataLiquidacao: "",
+      dataPagamento: "",
+      status: "Enviado para SALC",
+      versao: created.json().versao
+    };
+    const missingDate = await putJson(`/api/processes/${created.json().id}`, token, payload);
+    assert.equal(missingDate.statusCode, 400);
+    assert.match(missingDate.json().error, /data de envio para SALC/i);
+
+    const sent = await putJson(`/api/processes/${created.json().id}`, token, {
+      ...payload,
+      dataEnvioSalc: "2024-01-02"
+    });
+    assert.equal(sent.statusCode, 200);
+    assert.equal(sent.json().status, "Enviado para SALC");
+    assert.equal(sent.json().dataEnvioSalc, "2024-01-02");
+  });
+
   it("valida observacoes entre 1 e 350 caracteres", async () => {
     const { token } = await authenticatedAs("almoxarifado");
     const processResponse = await postJson("/api/processes", token, {
-      numeroProcesso: `OBS-${crypto.randomUUID().slice(0, 8)}`
+      numeroProcesso: `OBS-${crypto.randomUUID().slice(0, 8)}`,
+      numeroEmpenho: testCommitmentNumber()
     });
     assert.equal(processResponse.statusCode, 201);
     const processId = processResponse.json().id;
@@ -761,7 +845,8 @@ describe("rotas http", () => {
   it("rejeita tipo, metadados e Base64 invalidos em uploads", async () => {
     const { token } = await authenticatedAs("almoxarifado");
     const created = await postJson("/api/processes", token, {
-      numeroProcesso: `UP-${crypto.randomUUID().slice(0, 12)}`
+      numeroProcesso: `UP-${crypto.randomUUID().slice(0, 12)}`,
+      numeroEmpenho: testCommitmentNumber()
     });
     assert.equal(created.statusCode, 201);
     const processId = created.json().id;
@@ -816,7 +901,8 @@ describe("rotas http", () => {
   it("recusa o PDF e remove o arquivo quando o validador esta indisponivel", async () => {
     const { token } = await authenticatedAs("almoxarifado");
     const created = await postJson("/api/processes", token, {
-      numeroProcesso: `PDFV-${crypto.randomUUID().slice(0, 8)}`
+      numeroProcesso: `PDFV-${crypto.randomUUID().slice(0, 8)}`,
+      numeroEmpenho: testCommitmentNumber()
     });
     assert.equal(created.statusCode, 201);
     const processId = created.json().id;
@@ -844,7 +930,8 @@ describe("rotas http", () => {
   it("mantem PDF anexado protegido para a previa autenticada via Blob", async () => {
     const { token } = await authenticatedAs("almoxarifado");
     const created = await postJson("/api/processes", token, {
-      numeroProcesso: `PREVIEW-${crypto.randomUUID().slice(0, 8)}`
+      numeroProcesso: `PREVIEW-${crypto.randomUUID().slice(0, 8)}`,
+      numeroEmpenho: testCommitmentNumber()
     });
     assert.equal(created.statusCode, 201);
 
@@ -1097,7 +1184,8 @@ describe("rotas http", () => {
   it("preserva extensao e nome original de documentos com nome longo", async () => {
     const { token } = await authenticatedAs("almoxarifado");
     const created = await postJson("/api/processes", token, {
-      numeroProcesso: `LONG-${crypto.randomUUID().slice(0, 8)}`
+      numeroProcesso: `LONG-${crypto.randomUUID().slice(0, 8)}`,
+      numeroEmpenho: testCommitmentNumber()
     });
     const fileName = `${"arquivo-muito-longo-".repeat(11)}á.pdf`.slice(0, 250 - 4) + ".pdf";
     const pdf = validPdfBuffer();
@@ -1425,6 +1513,13 @@ function assertSensitiveCredentialsAbsent(payload, plainPassword) {
 
 function escapeRegExp(value = "") {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+let testCommitmentSequence = 1000;
+
+function testCommitmentNumber(year = 2026) {
+  testCommitmentSequence += 1;
+  return `${year}NE000${testCommitmentSequence}`;
 }
 
 function postJson(path, token, body) {
