@@ -4961,6 +4961,7 @@ function timelineDocumentLabel(documentKey = "") {
 
 function timelineAuditDetails(entry = {}) {
   if (["Anexo de documento", "Remocao de documento"].includes(entry.acao)) return "";
+  if (entry.acao === "Alteracao de processo" && entry.alteracoes?.status?.novo) return "";
   return accentTimelineText(entry.detalhes || "");
 }
 
@@ -4992,6 +4993,7 @@ function visibleAuditEntries(processo) {
   return state.detailAudit
     .filter((entry) => entry.processoId === processo.id)
     .filter((entry) => !["Carga inicial", "Inclusao de observacao", "Exclusao de dado da linha do tempo"].includes(entry.acao))
+    .filter((entry) => entry.acao !== "Alteracao de processo" || Boolean(entry.alteracoes?.status?.novo))
     .sort((a, b) => new Date(a.criadoEm) - new Date(b.criadoEm));
 }
 
