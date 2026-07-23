@@ -45,6 +45,7 @@
       <nav class="side-nav" aria-label="Navegacao principal">
         <a href="#" class="nav-item active" data-section="dashboard" aria-current="page"><span aria-hidden="true">▦</span>Painel</a>
         <a href="#" class="nav-item" data-section="processes"><span aria-hidden="true">▱</span>Empenhos</a>
+        <a href="#" class="nav-item" data-section="board"><span aria-hidden="true">▥</span>Quadro</a>
         <a href="#" class="nav-item" data-section="suppliers"><span aria-hidden="true">▤</span>Fornecedores</a>
         <a href="#" class="nav-item hidden" data-section="audit"><span aria-hidden="true">◫</span>Auditoria</a>
         <a href="#" class="nav-item hidden" data-section="users"><span aria-hidden="true">♙</span>Usuarios e permissoes</a>
@@ -122,6 +123,35 @@
         </section>
 
         <section class="module-view" id="dashboardView"><p class="empty-state">Carregando painel...</p></section>
+        <section class="module-view hidden board-view" id="boardView">
+          <div class="content-header board-heading">
+            <div>
+              <h1>Quadro de processos</h1>
+              <span>Visualize e avance os empenhos pelas etapas permitidas.</span>
+            </div>
+          </div>
+          <div class="board-toolbar" aria-label="Filtros do quadro">
+            <label class="search-box board-search" aria-label="Pesquisar no quadro">
+              <span aria-hidden="true">⌕</span>
+              <input id="boardSearchInput" placeholder="Buscar processo, empenho, fornecedor, material ou responsável">
+            </label>
+            <label><span class="sr-only">Filtrar por responsável</span><select id="boardResponsibleFilter" aria-label="Responsável"><option value="">Todos os responsáveis</option></select></label>
+            <label><span class="sr-only">Filtrar por fornecedor</span><select id="boardSupplierFilter" aria-label="Fornecedor"><option value="">Todos os fornecedores</option></select></label>
+            <label><span class="sr-only">Filtrar por prazo</span><select id="boardDeadlineFilter" aria-label="Situação do prazo">
+              <option value="">Todos os prazos</option>
+              <option value="overdue">Em atraso</option>
+              <option value="today">Vence hoje</option>
+              <option value="upcoming">Próximos 7 dias</option>
+              <option value="none">Sem prazo</option>
+            </select></label>
+            <label><span class="sr-only">Filtrar por status</span><select id="boardStatusFilter" aria-label="Status"><option value="">Todos os status</option></select></label>
+            <label class="board-empty-toggle"><input id="boardHideEmptyColumns" type="checkbox"> Ocultar colunas vazias</label>
+            <button type="button" class="secondary" id="clearBoardFilters">Limpar filtros</button>
+            <button type="button" class="secondary" id="refreshBoardButton">Atualizar</button>
+          </div>
+          <p class="board-message" id="boardMessage" role="status" aria-live="polite"></p>
+          <div id="kanbanBoard" class="kanban-board" aria-label="Quadro de processos"></div>
+        </section>
         <section class="module-view hidden" id="suppliersView"></section>
         <section class="module-view hidden" id="auditView"></section>
         <section class="module-view hidden" id="usersView"></section>
@@ -164,7 +194,15 @@
 
         <div class="split">
           <label>Numero do processo <input name="numeroProcesso" maxlength="20"></label>
-          <label>Numero do empenho <input name="numeroEmpenho" maxlength="20"></label>
+          <label>Numero do empenho
+            <span class="commitment-number-field">
+              <select id="commitmentYear" aria-label="Ano do empenho" required></select>
+              <span class="commitment-number-prefix" aria-hidden="true">NE000</span>
+              <input id="commitmentSequence" inputmode="numeric" pattern="[0-9]+" maxlength="11" placeholder="10" aria-label="Numero sequencial do empenho" required>
+              <input type="hidden" name="numeroEmpenho">
+            </span>
+            <small id="commitmentNumberPreview">Exemplo: 2026NE00010</small>
+          </label>
         </div>
         <label>Data do processo <input name="dataProcesso" type="text" inputmode="numeric" data-date-input placeholder="DDMMAAAA" pattern="\d{2}-\d{2}-\d{4}" maxlength="10"></label>
         <label>Fornecedor <input name="fornecedor" maxlength="100"></label>
@@ -264,8 +302,8 @@
       </form>
       <form id="deleteTimelineForm" class="process-form">
         <p class="selected-file" id="deleteTimelineDescription"></p>
-        <label>Motivo
-          <textarea name="motivo" maxlength="1000" required placeholder="Explique por que este dado deve ser removido da linha do tempo."></textarea>
+        <label>Motivo (opcional)
+          <textarea name="motivo" maxlength="1000" placeholder="Se necessario, explique por que este dado deve ser removido da linha do tempo."></textarea>
         </label>
         <div class="actions">
           <button type="button" class="secondary" id="cancelDeleteTimeline">Cancelar</button>

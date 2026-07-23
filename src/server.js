@@ -695,7 +695,7 @@ async function handleApi(req, res, url) {
 
   if (req.method === "GET" && url.pathname === "/api/meta") {
     sendJson(res, 200, {
-      status: STATUS.filter((status) => status !== "Aguardando envio para liquidacao"),
+      status: STATUS.filter((status) => !["Aguardando entrega", "Aguardando envio para liquidacao"].includes(status)),
       filtrosRapidos: QUICK_FILTERS,
       transicoes: PROCESS_TRANSITIONS
     });
@@ -1145,6 +1145,12 @@ async function handleApi(req, res, url) {
       sendJson(res, 400, { error: validationError });
       return;
     }
+    const standardizedCommitmentNumber = normalizeNewProcessCommitmentNumber(body.numeroEmpenho);
+    if (!standardizedCommitmentNumber) {
+      sendJson(res, 400, { error: "Selecione o ano e informe o numero sequencial do empenho no formato AAAANE000NUMERO." });
+      return;
+    }
+    body.numeroEmpenho = standardizedCommitmentNumber;
     if (body.status && body.status !== STATUS[0]) {
       sendJson(res, 400, { error: `Um processo novo deve iniciar em ${STATUS[0]}.` });
       return;
@@ -1293,6 +1299,11 @@ async function handleApi(req, res, url) {
       versao: current.versao + 1,
       atualizadoEm: new Date().toISOString()
     };
+
+    if (current.status === "Criado" && updated.status === "Enviado para SALC" && !updated.dataEnvioSalc) {
+      sendJson(res, 400, { error: "Informe a data de envio para SALC antes de avancar." });
+      return;
+    }
 
     const statusError = validateProcessForStatus(updated);
     if (statusError) {
@@ -1490,8 +1501,8 @@ async function handleApi(req, res, url) {
     const type = String(body.tipo || "").trim();
     const itemId = String(body.id || "").trim();
     const reason = String(body.motivo || "").trim();
-    if (!reason || reason.length > 1000) {
-      sendJson(res, 400, { error: "Informe o motivo da exclusao com ate 1000 caracteres." });
+    if (reason.length > 1000) {
+      sendJson(res, 400, { error: "O motivo da exclusao deve ter ate 1000 caracteres." });
       return;
     }
     const timelineKey = `${type}:${itemId}`;
@@ -1528,10 +1539,10 @@ async function handleApi(req, res, url) {
       processoId: processo.id,
       ...auditActor,
       acao: "Exclusao de dado da linha do tempo",
-      detalhes: `Dado ${timelineKey} ocultado da linha do tempo. Motivo: ${reason}`,
+      detalhes: `Dado ${timelineKey} ocultado da linha do tempo.${reason ? ` Motivo: ${reason}` : ""}`,
       alteracoes: {
         linhaDoTempo: { anterior: null, novo: timelineKey },
-        motivo: { anterior: null, novo: reason }
+        motivo: { anterior: null, novo: reason || null }
       }
     }));
     await writeStore(store);
@@ -3501,6 +3512,7 @@ function sanitizeProcessInput(input = {}, current = {}) {
     fornecedor: String(value("fornecedor") || "").trim().slice(0, 100),
     materiais: sanitizeMaterials(value("materiais") || input, current.materiais || []),
     dataProcesso: safeDate(value("dataProcesso")),
+    dataEnvioSalc: safeDate(value("dataEnvioSalc")),
     dataEnvioEmpenho: safeDate(value("dataEnvioEmpenho")),
     dataEnvioFornecedor: safeDate(value("dataEnvioFornecedor")),
     dataEntrega: safeDate(value("dataEntrega")),
@@ -3525,7 +3537,7 @@ export function validateProcessBody(input = {}) {
   if (Object.prototype.hasOwnProperty.call(input, "materiais") && !Array.isArray(input.materiais)) {
     return "Materiais deve ser uma lista.";
   }
-  const dateFields = ["dataProcesso", "dataEnvioEmpenho", "dataEnvioFornecedor", "dataEntrega", "dataEnvioLiquidacao", "dataLiquidacao", "dataPagamento"];
+  const dateFields = ["dataProcesso", "dataEnvioSalc", "dataEnvioEmpenho", "dataEnvioFornecedor", "dataEntrega", "dataEnvioLiquidacao", "dataLiquidacao", "dataPagamento"];
   for (const field of dateFields) {
     if (input[field] && !safeDate(input[field])) return `Data invalida no campo ${field}.`;
   }
@@ -3587,6 +3599,7 @@ function validateProcessForStatus(processo = {}) {
 function validateProcessChronology(processo = {}) {
   const datedEvents = [
     ["dataProcesso", safeDate(processo.dataProcesso), "data do processo"],
+    ["dataEnvioSalc", safeDate(processo.dataEnvioSalc), "envio para SALC"],
     ["dataEnvioFornecedor", processDeadlineDate(processo), "envio ao fornecedor"],
     ["dataEntrega", safeDate(processo.dataEntrega), "entrega"],
     ["dataEnvioLiquidacao", safeDate(processo.dataEnvioLiquidacao), "envio para liquidacao"],
@@ -3887,6 +3900,11 @@ function normalizeProcessIdentifier(value = "") {
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/[^a-zA-Z0-9]/g, "")
     .toUpperCase();
+}
+
+function normalizeNewProcessCommitmentNumber(value = "") {
+  const match = String(value || "").trim().toUpperCase().match(/^(\d{4})NE000([1-9]\d{0,10})$/);
+  return match ? `${match[1]}NE000${match[2]}` : "";
 }
 
 function legacyMaterials(input = {}) {

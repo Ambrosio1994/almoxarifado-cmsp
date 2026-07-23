@@ -20,15 +20,34 @@ describe("contrato visual e de navegacao", () => {
     assert.doesNotMatch(loginForm, /consultar empenhos/i);
   });
 
-  it("abre no Painel sem carregar a lista completa de processos no boot", () => {
+  it("restaura a ultima secao no boot sem carregar processos antecipadamente", () => {
     const boot = app.slice(app.indexOf("async function boot()"), app.indexOf("async function loadDashboardData"));
     assert.match(boot, /api\("\/api\/meta"\)/);
     assert.match(boot, /loadDashboardData\(\)/);
-    assert.match(boot, /openSection\("dashboard"\)/);
+    assert.match(boot, /openSection\(savedActiveSection\(\)\)/);
     assert.doesNotMatch(boot, /\/api\/processes/);
+    assert.match(app, /sessionStorage\.getItem\(activeSectionStorageKey\(\)\)/);
+    assert.match(app, /sessionStorage\.setItem\(activeSectionStorageKey\(\), section\)/);
     const processView = html.match(/<section[^>]*id="processListView"[^>]*>/)?.[0] || "";
     assert.match(processView, /class="[^"]*hidden[^"]*"/);
     assert.match(html, /id="dashboardView"/);
+  });
+
+  it("oferece o Quadro como secao persistente, acessivel e responsiva", () => {
+    assert.match(html, /data-section="board"[\s\S]*?Quadro<\/a>/);
+    assert.match(html, /<section class="module-view hidden board-view" id="boardView"/);
+    assert.match(html, /id="boardMessage"[^>]*aria-live="polite"/);
+    assert.match(html, /id="kanbanBoard"[^>]*aria-label="Quadro de processos"/);
+    assert.match(html, /id="boardHideEmptyColumns"/);
+    assert.match(app, /const APP_SECTIONS = new Set\(\[[\s\S]*?"board"/);
+    assert.match(app, /board:\s*\(\) => renderBoardView\(\)/);
+    assert.match(app, /openProcessDetail\(process, "board"\)/);
+    assert.match(app, /state\.detailReturnSection = returnSection/);
+    assert.match(styles, /\.kanban-board\s*\{[\s\S]*?overflow-x:\s*auto/);
+    assert.match(styles, /\.kanban-column\s*\{[\s\S]*?width:\s*clamp\(280px, 28vw, 360px\)/);
+    assert.match(styles, /\[data-theme="dark"\] \.kanban-card/);
+    const mobileRules = styles.slice(styles.indexOf("@media (max-width: 640px)"));
+    assert.match(mobileRules, /\.kanban-column\s*\{[\s\S]*?width:\s*calc\(100vw - 42px\)/);
   });
 
   it("mantem Usuarios e permissoes separado de Templates", () => {
@@ -42,7 +61,11 @@ describe("contrato visual e de navegacao", () => {
     assert.match(html, /id="newProcessButton">\+ Novo<\/button>/);
     assert.doesNotMatch(html, /id="newProcessButton">\+ Novo processo<\/button>/);
     assert.match(html, /name="numeroProcesso" maxlength="20"/);
-    assert.match(html, /name="numeroEmpenho" maxlength="20"/);
+    assert.match(html, /id="commitmentYear"[^>]*aria-label="Ano do empenho"[^>]*required/);
+    assert.match(html, /class="commitment-number-prefix"[^>]*>NE000<\/span>/);
+    assert.match(html, /id="commitmentSequence"[^>]*inputmode="numeric"[^>]*pattern="\[0-9\]\+"[^>]*required/);
+    assert.match(html, /type="hidden" name="numeroEmpenho"/);
+    assert.match(app, /formatCommitmentNumber\(commitmentYear\?\.value, commitmentSequence\?\.value\)/);
     assert.match(html, /name="fornecedor" maxlength="100"/);
     assert.match(html, /name="dataProcesso"[\s\S]*?data-date-input[\s\S]*?placeholder="DDMMAAAA"[\s\S]*?maxlength="10"/);
     assert.match(html, /name="conteudo"[^>]*minlength="1"[^>]*maxlength="350"/);
@@ -70,6 +93,18 @@ describe("contrato visual e de navegacao", () => {
     assert.doesNotMatch(app, /button: "Confirmar aguardando envio para liquidação"/);
     assert.match(app, /dateLabel: "Data do envio para liquidação"/);
     assert.doesNotMatch(app, /newDataPanel/);
+  });
+
+  it("distingue a criacao do processo do envio para SALC", () => {
+    assert.match(app, /Criado:\s*\{[\s\S]*?button: "Registrar envio para SALC"[\s\S]*?status: "Enviado para SALC"[\s\S]*?field: "dataEnvioSalc"/);
+    assert.match(app, /status: processo\.status \|\| "Criado"/);
+    assert.match(app, /"Enviado para SALC": \["dataEnvioSalc"\]/);
+  });
+
+  it("oferece registro de entrega logo apos o envio ao fornecedor", () => {
+    assert.match(app, /"Empenho enviado ao fornecedor": \{[\s\S]*?button: "Registrar entrega"[\s\S]*?status: "Entrega parcial"/);
+    assert.doesNotMatch(app, /button: "Confirmar aguardando entrega"/);
+    assert.match(app, /\["Empenho enviado ao fornecedor", "Aguardando entrega"\]\.includes\(process\.status\)/);
   });
 
   it("oferece retrocesso de status somente pelo fluxo administrativo dedicado", () => {
@@ -101,13 +136,20 @@ describe("contrato visual e de navegacao", () => {
     assert.match(app, /return state\.detailAudit/);
   });
 
-  it("permite ao admin excluir itens da linha do tempo com motivo e sem apagar auditoria", () => {
+  it("permite ao admin excluir itens da linha do tempo com motivo opcional e sem travar o formulario", () => {
     assert.match(html, /id="deleteTimelineDialog"/);
     assert.match(html, /id="deleteTimelineForm"/);
-    assert.match(html, /id="deleteTimelineForm"[\s\S]*?name="motivo"[^>]*maxlength="1000"[^>]*required/);
+    const deleteTimelineForm = html.match(/<form id="deleteTimelineForm"[\s\S]*?<\/form>/)?.[0] || "";
+    assert.match(deleteTimelineForm, /Motivo \(opcional\)/);
+    assert.match(deleteTimelineForm, /name="motivo"[^>]*maxlength="1000"/);
+    assert.doesNotMatch(deleteTimelineForm, /name="motivo"[^>]*required/);
     assert.match(app, /isCurrentUserAdmin\(\).*event\.sourceType.*event\.sourceId/s);
     assert.match(app, /\/timeline-items/);
     assert.match(app, /method: "DELETE"/);
+    const saveDeletion = app.slice(app.indexOf("async function saveTimelineDeletion"), app.indexOf("function renderDeliveriesModule"));
+    assert.match(saveDeletion, /const form = event\.currentTarget/);
+    assert.match(saveDeletion, /finally[\s\S]*?setFormBusy\(form, false\)/);
+    assert.doesNotMatch(saveDeletion, /setFormBusy\(event\.currentTarget/);
     assert.match(app, /Exclusao de dado da linha do tempo/);
     assert.match(app, /hiddenTimelineKeys\(processo\)/);
   });
