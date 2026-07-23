@@ -196,6 +196,7 @@ describe("Documentos no DOM", () => {
       assert.doesNotMatch(supplierSent?.textContent || "", /18-07-2026/);
       assert.match(delivered?.textContent || "", /25-06-2026/);
       assert.ok(timelineItems.indexOf(supplierSent) < timelineItems.indexOf(delivered));
+      assert.doesNotMatch(dom.window.document.querySelector("#detailPanel").textContent, /Altera[cç][aã]o de processo|Status atual:/i);
       assert.doesNotMatch(dom.window.document.querySelector("#detailPanel").textContent, /Inclus[aã]o de observa[cç][aã]o/i);
       assert.match(dom.window.document.querySelector("#detailPanel").textContent, /Nota de empenho anexada/);
       assert.match(dom.window.document.querySelector("#detailPanel").textContent, /Nota fiscal anexada/);
@@ -324,6 +325,17 @@ function secondProcessFixture() {
 
 function auditFixture(process) {
   return [
+    {
+      id: "audit-generic-update",
+      processoId: process.id,
+      acao: "Alteracao de processo",
+      detalhes: "Alteracao de processo.",
+      usuario: "Teste",
+      criadoEm: "2026-07-18T13:30:00.000Z",
+      alteracoes: {
+        fornecedor: { anterior: "Fornecedor anterior", novo: "Fornecedor atual" }
+      }
+    },
     {
       id: "audit-delivered",
       processoId: process.id,
