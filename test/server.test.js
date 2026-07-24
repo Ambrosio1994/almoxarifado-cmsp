@@ -609,6 +609,43 @@ describe("rotas http", () => {
     assert.equal(stale.statusCode, 409);
   });
 
+  it("registra todo o saldo pendente quando a entrega informa somente a data", async () => {
+    const store = await readStore();
+    const process = {
+      id: crypto.randomUUID(),
+      numeroProcesso: `ENTREGA-${crypto.randomUUID().slice(0, 8)}`,
+      status: "Entrega parcial",
+      dataEnvioFornecedor: "2024-01-10",
+      materiais: [
+        { id: "material-papel", descricao: "Papel", valorUnitario: 10, quantidade: 5 },
+        { id: "material-caneta", descricao: "Caneta", valorUnitario: 2, quantidade: 3 }
+      ],
+      entregas: [{
+        id: crypto.randomUUID(),
+        data: "2024-01-11",
+        itens: [{ materialId: "material-papel", materialIndex: 0, descricao: "Papel", quantidade: 2 }]
+      }],
+      documentos: {}, versao: 1, inativo: false
+    };
+    store.processos.push(process);
+    await writeStore(store);
+
+    const { token } = await authenticatedAs("almoxarifado");
+    const response = await postJson(`/api/processes/${process.id}/deliveries`, token, {
+      data: "2024-01-12"
+    });
+
+    assert.equal(response.statusCode, 201);
+    assert.equal(response.json().status, "Entregue");
+    assert.deepEqual(response.json().entregas.at(-1).itens.map((item) => ({
+      materialId: item.materialId,
+      quantidade: item.quantidade
+    })), [
+      { materialId: "material-papel", quantidade: 3 },
+      { materialId: "material-caneta", quantidade: 3 }
+    ]);
+  });
+
   it("envia o processo entregue diretamente para liquidacao e reconcilia saldo ao editar materiais", async () => {
     const { token } = await authenticatedAs("almoxarifado");
     const store = await readStore();

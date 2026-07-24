@@ -113,6 +113,7 @@
                     <th>Dias</th>
                     <th>Data entrega</th>
                     <th>Envio liquidacao</th>
+                    <th>Criado por</th>
                     <th>Status</th>
                   </tr>
                 </thead>
@@ -206,6 +207,7 @@
         </div>
         <label>Data do processo <input name="dataProcesso" type="text" inputmode="numeric" data-date-input placeholder="DDMMAAAA" pattern="\d{2}-\d{2}-\d{4}" maxlength="10"></label>
         <label>Fornecedor <input name="fornecedor" maxlength="100"></label>
+        <label>Nome de quem criou o processo <input id="processCreatorName" type="text" readonly></label>
 
         <section class="materials-section">
           <div class="section-title">
@@ -258,12 +260,12 @@
         <button type="submit" class="secondary">Fechar</button>
       </form>
       <form id="deliveryForm" class="process-form" novalidate>
-        <p class="selected-file" id="deliveryDialogDescription">Informe a data e as quantidades recebidas de cada material.</p>
+        <p class="selected-file" id="deliveryDialogDescription">Informe a data. Se nenhuma quantidade for preenchida, todo o saldo pendente será registrado como entregue.</p>
         <label>Data da entrega
           <input name="data" type="text" inputmode="numeric" autocomplete="off" data-date-input placeholder="DDMMAAAA" pattern="\d{2}-\d{2}-\d{4}" maxlength="10" required>
         </label>
         <fieldset class="delivery-fieldset">
-          <legend>Materiais recebidos</legend>
+          <legend>Quantidades recebidas (opcional)</legend>
           <div class="delivery-materials" id="deliveryMaterials"></div>
         </fieldset>
         <label>Observação
@@ -388,6 +390,7 @@
       </form>
       <form id="documentMetadataForm" class="process-form document-metadata-form">
         <p class="selected-file" id="documentSelectedFile"></p>
+        <progress class="document-upload-progress hidden" data-document-upload-progress aria-label="Carregando documento"></progress>
         <label>Nome <input name="titulo" maxlength="150" required></label>
         <label>Descricao <textarea name="descricao" rows="3" maxlength="1000" placeholder="Opcional"></textarea></label>
         <div class="actions">
