@@ -15,7 +15,7 @@ describe("contrato visual e de navegacao", () => {
   it("permite editar o criador do processo e exibe uma barra durante o upload de documentos", () => {
     assert.match(html, /id="processCreatorName"[^>]*name="criadoPor"[^>]*maxlength="100"[^>]*required/);
     assert.doesNotMatch(html, /id="processCreatorName"[^>]*readonly/);
-    assert.match(app, /detailField\("Criado por", processo\.criadoPor \|\| processo\.criadoPorEmail\)/);
+    assert.match(app, /detailField\("Requisitante", processo\.criadoPor \|\| processo\.criadoPorEmail\)/);
     assert.match(html, /data-document-upload-progress/);
     assert.match(app, /setDocumentUploadProgress\(true, detailPanel\)/);
     assert.match(styles, /\.document-upload-progress/);
@@ -121,7 +121,10 @@ describe("contrato visual e de navegacao", () => {
     assert.match(html, /id="processMaterialsTotal"[^>]*aria-live="polite"/);
     assert.match(app, /data-material-total/);
     assert.match(app, /function updateMaterialTotals\(\)/);
-    assert.match(app, /class="detail-material-list"/);
+    assert.match(app, /class="general-data-row general-data-identity"[\s\S]*?detailField\("Fornecedor"[\s\S]*?detailField\("CNPJ"/);
+    assert.match(app, /class="general-data-row general-data-process"[\s\S]*?detailField\("Processo"[\s\S]*?detailField\("Empenho"[\s\S]*?detailField\("Requisitante"[\s\S]*?detailField\("Data do processo"[\s\S]*?detailField\("Valor total"/);
+    assert.match(app, /class="general-data-row general-data-dates"[\s\S]*?Data de envio para fornecedor[\s\S]*?Data de entrega[\s\S]*?Data de envio para liquidação[\s\S]*?Data da liquidação[\s\S]*?Data do pagamento/);
+    assert.match(app, /class="detail-material-table"[\s\S]*?<th scope="col">Material[\s\S]*?Unidades[\s\S]*?Valor unitário[\s\S]*?Valor total/);
     assert.doesNotMatch(app, /Valor unitario medio/);
   });
 

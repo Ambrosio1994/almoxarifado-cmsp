@@ -1146,34 +1146,86 @@ tbody td:nth-child(2) {
   text-transform: uppercase;
 }
 
-.detail-materials-field {
-  grid-column: 1 / -1;
-}
-
-.detail-material-list {
+.general-data-layout {
   display: grid;
-  gap: 8px;
-  list-style: none;
-  margin: 0;
-  padding: 0;
+  gap: 22px;
+  margin-bottom: 22px;
 }
 
-.detail-material-list li {
-  align-items: baseline;
+.general-data-row {
+  display: grid;
+  gap: 20px 28px;
+}
+
+.general-data-identity {
+  grid-template-columns: minmax(260px, 2fr) minmax(180px, 1fr);
+}
+
+.general-data-process,
+.general-data-dates {
+  grid-template-columns: repeat(5, minmax(120px, 1fr));
+}
+
+.general-data-row + .general-data-row {
+  border-top: 1px solid var(--line);
+  padding-top: 20px;
+}
+
+.general-data-note {
+  grid-template-columns: 1fr;
+}
+
+.detail-materials-field {
+  border-top: 1px solid var(--line);
+  overflow-x: auto;
+  padding-top: 20px;
+}
+
+.detail-material-table {
+  border-collapse: collapse;
+  min-width: 650px;
+  table-layout: fixed;
+  width: 100%;
+}
+
+.detail-material-table caption {
+  color: #071832;
+  font-size: 14px;
+  font-weight: 800;
+  padding-bottom: 12px;
+  text-align: left;
+  text-transform: uppercase;
+}
+
+.detail-material-table th,
+.detail-material-table td {
+  border-bottom: 1px solid var(--line);
+  padding: 11px 12px;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.detail-material-table th {
   background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  display: flex;
-  gap: 12px;
-  justify-content: space-between;
-  padding: 10px 12px;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: .4px;
+  text-transform: uppercase;
 }
 
-.detail-material-list li > span {
-  font-size: 12px;
-  margin: 0;
+.detail-material-table th:first-child,
+.detail-material-table td:first-child {
+  padding-left: 0;
+  width: 46%;
+}
+
+.detail-material-table .detail-material-number {
   text-align: right;
-  text-transform: none;
+  white-space: nowrap;
+}
+
+.detail-material-total {
+  font-weight: 800;
 }
 
 .detail-primary-action {
@@ -2981,13 +3033,10 @@ dialog::backdrop {
     grid-template-columns: 1fr;
   }
 
-  .detail-material-list li {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .detail-material-list li > span {
-    text-align: left;
+  .general-data-identity,
+  .general-data-process,
+  .general-data-dates {
+    grid-template-columns: 1fr;
   }
 
   .commitment-number-field {
