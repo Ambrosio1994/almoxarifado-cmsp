@@ -15,10 +15,13 @@ describe("contrato visual e de navegacao", () => {
   it("permite editar o criador do processo e exibe uma barra durante o upload de documentos", () => {
     assert.match(html, /id="processCreatorName"[^>]*name="criadoPor"[^>]*maxlength="100"[^>]*required/);
     assert.doesNotMatch(html, /id="processCreatorName"[^>]*readonly/);
+    assert.doesNotMatch(app, /processCreatorName\.value = currentUser\?\.(?:nome|email)/);
+    assert.match(app, /if \(!String\(data\.criadoPor \|\| ""\)\.trim\(\)\)[\s\S]*?Informe o requisitante\.[\s\S]*?processCreatorName\?\.focus\(\)/);
     assert.match(app, /detailField\("Requisitante", processo\.criadoPor \|\| processo\.criadoPorEmail\)/);
     assert.match(html, /data-document-upload-progress/);
     assert.match(app, /setDocumentUploadProgress\(true, detailPanel\)/);
     assert.match(styles, /\.document-upload-progress/);
+    assert.match(styles, /\.detail-material-table caption\s*\{[\s\S]*?font-family:\s*inherit[\s\S]*?font-size:\s*10px/);
   });
 
   it("exibe e-mail e senha juntos no formulario inicial", () => {

@@ -1269,6 +1269,11 @@ processForm.addEventListener("submit", async (event) => {
     formMessage.textContent = "Informe o numero do processo, o numero do empenho ou ambos.";
     return;
   }
+  if (!String(data.criadoPor || "").trim()) {
+    formMessage.textContent = "Informe o requisitante.";
+    processCreatorName?.focus();
+    return;
+  }
   if (data.dataProcesso && !normalizeDateInput(data.dataProcesso)) {
     formMessage.textContent = "Informe uma data do processo valida no formato DD-MM-AAAA.";
     return;
@@ -1929,7 +1934,6 @@ function clearForm({ preserveIdentity = false } = {}) {
   const id = preserveIdentity ? processForm.elements.id.value : "";
   const versao = preserveIdentity ? processForm.elements.versao.value : "";
   processForm.reset();
-  if (processCreatorName) processCreatorName.value = currentUser?.nome || currentUser?.email || "";
   processForm.elements.id.value = id;
   processForm.elements.versao.value = versao;
   configureCommitmentFields("");
