@@ -12,8 +12,9 @@ const styles = readFileSync(new URL("../public/styles.css", import.meta.url), "u
 const passwordComponent = readFileSync(new URL("../public/password-fields.js", import.meta.url), "utf8");
 
 describe("contrato visual e de navegacao", () => {
-  it("exibe o criador do processo e uma barra durante o upload de documentos", () => {
-    assert.match(html, /id="processCreatorName"[^>]*readonly/);
+  it("permite editar o criador do processo e exibe uma barra durante o upload de documentos", () => {
+    assert.match(html, /id="processCreatorName"[^>]*name="criadoPor"[^>]*maxlength="100"[^>]*required/);
+    assert.doesNotMatch(html, /id="processCreatorName"[^>]*readonly/);
     assert.match(app, /detailField\("Criado por", processo\.criadoPor \|\| processo\.criadoPorEmail\)/);
     assert.match(html, /data-document-upload-progress/);
     assert.match(app, /setDocumentUploadProgress\(true, detailPanel\)/);

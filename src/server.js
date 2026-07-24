@@ -1171,7 +1171,7 @@ async function handleApi(req, res, url) {
       documentos: {},
       criadoEm: new Date().toISOString(),
       atualizadoEm: new Date().toISOString(),
-      criadoPor: usuario,
+      criadoPor: input.criadoPor || usuario,
       criadoPorEmail: user.email,
       criadoPorId: user.id,
       versao: 1,
@@ -3521,6 +3521,7 @@ function sanitizeProcessInput(input = {}, current = {}) {
     numeroProcesso: String(value("numeroProcesso") || "").trim().slice(0, 20),
     numeroEmpenho: String(value("numeroEmpenho") || "").trim().slice(0, 20),
     fornecedor: String(value("fornecedor") || "").trim().slice(0, 100),
+    criadoPor: String(value("criadoPor") || "").trim().slice(0, 100),
     materiais: sanitizeMaterials(value("materiais") || input, current.materiais || []),
     dataProcesso: safeDate(value("dataProcesso")),
     dataEnvioSalc: safeDate(value("dataEnvioSalc")),
@@ -3543,6 +3544,7 @@ export function validateProcessBody(input = {}) {
   if (String(input.numeroProcesso || "").trim().length > 20) return "O numero do processo deve ter no maximo 20 caracteres.";
   if (String(input.numeroEmpenho || "").trim().length > 20) return "O numero do empenho deve ter no maximo 20 caracteres.";
   if (String(input.fornecedor || "").trim().length > 100) return "O fornecedor deve ter no maximo 100 caracteres.";
+  if (String(input.criadoPor || "").trim().length > 100) return "O nome de quem criou o processo deve ter no maximo 100 caracteres.";
   if (input.numeroProcesso && !normalizeProcessIdentifier(input.numeroProcesso)) return "Informe uma numeracao de processo com letras ou numeros.";
   if (input.numeroEmpenho && !normalizeProcessIdentifier(input.numeroEmpenho)) return "Informe um numero de empenho com letras ou numeros.";
   if (Object.prototype.hasOwnProperty.call(input, "materiais") && !Array.isArray(input.materiais)) {
