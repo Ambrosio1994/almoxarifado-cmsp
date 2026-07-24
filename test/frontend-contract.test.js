@@ -12,6 +12,14 @@ const styles = readFileSync(new URL("../public/styles.css", import.meta.url), "u
 const passwordComponent = readFileSync(new URL("../public/password-fields.js", import.meta.url), "utf8");
 
 describe("contrato visual e de navegacao", () => {
+  it("exibe o criador do processo e uma barra durante o upload de documentos", () => {
+    assert.match(html, /id="processCreatorName"[^>]*readonly/);
+    assert.match(app, /detailField\("Criado por", processo\.criadoPor \|\| processo\.criadoPorEmail\)/);
+    assert.match(html, /data-document-upload-progress/);
+    assert.match(app, /setDocumentUploadProgress\(true, detailPanel\)/);
+    assert.match(styles, /\.document-upload-progress/);
+  });
+
   it("exibe e-mail e senha juntos no formulario inicial", () => {
     const loginForm = html.match(/<form id="loginForm"[\s\S]*?<\/form>/)?.[0] || "";
     assert.match(loginForm, /name="email"[^>]*type="email"/);
@@ -182,6 +190,8 @@ describe("contrato visual e de navegacao", () => {
   it("preserva IDs dos materiais e mostra o historico das entregas", () => {
     assert.match(app, /row\.dataset\.materialId = material\.id/);
     assert.match(app, /materialId: balance\.material\.id/);
+    assert.match(html, /Se nenhuma quantidade for preenchida, todo o saldo pendente será registrado como entregue/);
+    assert.match(app, /if \(!hasEnteredQuantity\)[\s\S]*?quantidade: remaining/);
     assert.match(app, /entrega\.recebidoPor/);
     assert.match(app, /entrega\.observacao/);
   });

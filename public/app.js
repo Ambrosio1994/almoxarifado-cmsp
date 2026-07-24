@@ -228,6 +228,7 @@ const sidebarBackdrop = document.querySelector("#sidebarBackdrop");
 const themeToggle = document.querySelector("#themeToggle");
 const documentMetadataDialog = document.querySelector("#documentMetadataDialog");
 const documentMetadataForm = document.querySelector("#documentMetadataForm");
+const processCreatorName = document.querySelector("#processCreatorName");
 const documentSelectedFile = document.querySelector("#documentSelectedFile");
 const cancelDocumentMetadata = document.querySelector("#cancelDocumentMetadata");
 const changePasswordDialog = document.querySelector("#changePasswordDialog");
@@ -1144,6 +1145,8 @@ function applyProcessFilters() {
         processo.fornecedor,
         processo.material,
         processo.status,
+        processo.criadoPor,
+        processo.criadoPorEmail,
         ...(processo.materiais || []).map((material) => material.descricao)
       ].some((value) => normalizeText(value).includes(query));
     })
@@ -1153,7 +1156,10 @@ function applyProcessFilters() {
 function matchesQuickFilter(processo, quickFilterValue) {
   if (!quickFilterValue) return true;
   if (["Em atraso", "Mais de 30 dias"].includes(quickFilterValue)) return isOverdue(processo);
-  if (quickFilterValue === "Pendentes de liquidacao") return ["Entregue", "Aguardando envio para liquidacao"].includes(processo.status);
+  if (quickFilterValue === "Pendentes de liquidacao") {
+    return ["Entregue", "Aguardando envio para liquidacao", "Enviado para liquidacao"].includes(processo.status)
+      && !processo.dataLiquidacao;
+  }
   return processo.status === quickFilterValue;
 }
 
@@ -1223,9 +1229,10 @@ function renderTable() {
       <td>${daysCell(processo)}</td>
       <td>${dateCell(processo.dataEntrega)}</td>
       <td>${dateCell(processo.dataEnvioLiquidacao)}</td>
+      <td>${empty(processo.criadoPor || processo.criadoPorEmail)}</td>
       <td>${statusBadges(processo)}</td>
     </tr>
-  `).join("") : '<tr class="empty-table-row"><td colspan="10">Nenhum processo encontrado.</td></tr>';
+  `).join("") : '<tr class="empty-table-row"><td colspan="11">Nenhum processo encontrado.</td></tr>';
 }
 
 function processAccessibleName(processo = {}) {
@@ -1891,6 +1898,7 @@ function fillForm(processo) {
     if (processForm.elements[key]) processForm.elements[key].value = value ?? "";
   }
   if (processForm.elements.dataProcesso) processForm.elements.dataProcesso.value = displayDate(processo.dataProcesso);
+  if (processCreatorName) processCreatorName.value = processo.criadoPor || processo.criadoPorEmail || "";
   configureCommitmentFields(processo.numeroEmpenho || "");
   if (processForm.elements.dataEnvioFornecedor && !processForm.elements.dataEnvioFornecedor.value) {
     processForm.elements.dataEnvioFornecedor.value = processo.dataEnvioEmpenho || "";
@@ -1903,6 +1911,7 @@ function clearForm({ preserveIdentity = false } = {}) {
   const id = preserveIdentity ? processForm.elements.id.value : "";
   const versao = preserveIdentity ? processForm.elements.versao.value : "";
   processForm.reset();
+  if (processCreatorName) processCreatorName.value = currentUser?.nome || currentUser?.email || "";
   processForm.elements.id.value = id;
   processForm.elements.versao.value = versao;
   configureCommitmentFields("");
@@ -2026,6 +2035,7 @@ function renderGeneralModule(processo) {
   return `
     <div class="detail-grid">
       ${detailField("Fornecedor", processo.fornecedor)}
+      ${detailField("Criado por", processo.criadoPor || processo.criadoPorEmail)}
       ${detailField("Data do processo", dateCell(processo.dataProcesso))}
       ${detailField("Data de envio para SALC", dateCell(processo.dataEnvioSalc))}
       ${detailField("CNPJ", fornecedor?.cnpj)}
@@ -2064,6 +2074,7 @@ function renderDocumentsModule(processo) {
       <div class="detail-actions">
         <button type="button" class="download-button" data-download-process="true">Baixar processo completo</button>
       </div>
+      <progress class="document-upload-progress hidden" data-document-upload-progress aria-label="Carregando documento"></progress>
       ${documents.map(([key, label, value]) => {
         const doc = documentInfo(value);
         return `
@@ -2302,7 +2313,8 @@ async function attachDocument(documentKey, triggerButton = null) {
   const controller = new AbortController();
   standardDocumentController?.abort();
   standardDocumentController = controller;
-  setButtonBusy(triggerButton, true, "Enviando...");
+  setControlBusy(triggerButton, true);
+  setDocumentUploadProgress(true, detailPanel);
   try {
     const contentBase64 = await fileToBase64(file, controller.signal);
     if (controller.signal.aborted || state.selectedProcess?.id !== processId) throw createAbortError();
@@ -2324,7 +2336,8 @@ async function attachDocument(documentKey, triggerButton = null) {
     if (error.name !== "AbortError") alert(error.message || "Nao foi possivel anexar o documento.");
   } finally {
     if (standardDocumentController === controller) standardDocumentController = null;
-    setButtonBusy(triggerButton, false);
+    setControlBusy(triggerButton, false);
+    setDocumentUploadProgress(false, detailPanel);
   }
 }
 
@@ -2353,7 +2366,8 @@ async function saveComplementaryDocument() {
   const controller = new AbortController();
   complementaryDocumentController?.abort();
   complementaryDocumentController = controller;
-  setFormBusy(documentMetadataForm, true, "Salvando...");
+  setControlBusy(documentMetadataForm.querySelector('button[type="submit"]'), true);
+  setDocumentUploadProgress(true, documentMetadataForm);
   try {
     const contentBase64 = await fileToBase64(file, controller.signal);
     if (controller.signal.aborted || state.selectedProcess?.id !== processId) return;
@@ -2379,8 +2393,15 @@ async function saveComplementaryDocument() {
     if (error.name !== "AbortError") alert(error.message || "Nao foi possivel anexar o documento.");
   } finally {
     if (complementaryDocumentController === controller) complementaryDocumentController = null;
-    setFormBusy(documentMetadataForm, false);
+    setControlBusy(documentMetadataForm.querySelector('button[type="submit"]'), false);
+    setDocumentUploadProgress(false, documentMetadataForm);
   }
+}
+
+function setDocumentUploadProgress(loading, root = document) {
+  root?.querySelectorAll("[data-document-upload-progress]").forEach((progress) => {
+    progress.classList.toggle("hidden", !loading);
+  });
 }
 
 async function removeDocument(documentKey) {
@@ -2663,7 +2684,7 @@ function openDeliveryDialog(date = "", complete = false, source = "detail") {
   resetDeliveryDialog();
   const balances = deliveryBalanceRows(processo);
   state.deliveryDraft = { processId: processo.id, complete, source };
-  deliveryDialogTitle.textContent = complete ? "Registrar entrega final" : "Registrar entrega parcial";
+  deliveryDialogTitle.textContent = complete ? "Registrar entrega final" : "Registrar entrega";
   deliveryForm.elements.data.value = displayDate(date);
   deliveryMaterials.innerHTML = balances.length ? balances.map(({ materialIndex, material, remaining }) => {
     const inputId = `deliveryQuantity-${materialIndex}`;
@@ -2674,8 +2695,8 @@ function openDeliveryDialog(date = "", complete = false, source = "detail") {
           <strong>${escapeHtml(material.descricao || `Material ${materialIndex + 1}`)}</strong>
           <span id="${balanceId}">Saldo disponivel: ${escapeHtml(formatQuantity(remaining))}</span>
         </div>
-        <label for="${inputId}">Quantidade recebida
-          <input id="${inputId}" name="quantidade-${materialIndex}" type="number" inputmode="decimal" min="0" max="${remaining}" step="any" value="${complete ? remaining : ""}" data-delivery-quantity="${materialIndex}" aria-describedby="${balanceId}">
+        <label for="${inputId}">Quantidade recebida (opcional)
+          <input id="${inputId}" name="quantidade-${materialIndex}" type="number" inputmode="decimal" min="0" max="${remaining}" step="any" placeholder="Saldo completo" data-delivery-quantity="${materialIndex}" aria-describedby="${balanceId}">
         </label>
       </div>
     `;
@@ -2732,6 +2753,7 @@ async function saveDeliveryFromDialog(event) {
   const balances = new Map(deliveryBalanceRows(processo).map((item) => [item.materialIndex, item]));
   const itens = [];
   let firstInvalidInput = null;
+  let hasEnteredQuantity = false;
   deliveryForm.querySelectorAll("[data-delivery-quantity]").forEach((input) => {
     const materialIndex = Number(input.dataset.deliveryQuantity);
     const balance = balances.get(materialIndex);
@@ -2742,6 +2764,7 @@ async function saveDeliveryFromDialog(event) {
       return;
     }
     if (!rawValue) return;
+    hasEnteredQuantity = true;
     const quantidade = Number(rawValue);
     if (!balance || !Number.isFinite(quantidade) || quantidade < 0 || quantidade > balance.remaining) {
       input.setAttribute("aria-invalid", "true");
@@ -2755,8 +2778,13 @@ async function saveDeliveryFromDialog(event) {
     firstInvalidInput.focus();
     return;
   }
+  if (!hasEnteredQuantity) {
+    for (const { materialIndex, material, remaining } of balances.values()) {
+      itens.push({ materialIndex, materialId: material.id, quantidade: remaining });
+    }
+  }
   if (!itens.length) {
-    deliveryMessage.textContent = "Informe ao menos uma quantidade recebida maior que zero.";
+    deliveryMessage.textContent = "Não há saldo pendente para registrar nesta entrega.";
     deliveryForm.querySelector("[data-delivery-quantity]")?.focus();
     return;
   }
@@ -3212,19 +3240,19 @@ function nextProcessStep(processo) {
     },
     "Empenho enviado ao fornecedor": {
       button: "Registrar entrega",
-      title: "Informe a data e as quantidades recebidas.",
+      title: "Informe a data da entrega. As quantidades são opcionais.",
       status: "Entrega parcial",
       field: "dataEntrega"
     },
     "Aguardando entrega": {
       button: "Registrar entrega",
-      title: "Informe a data e as quantidades recebidas.",
+      title: "Informe a data da entrega. As quantidades são opcionais.",
       status: "Entrega parcial",
       field: "dataEntrega"
     },
     "Entrega parcial": {
       button: "Registrar entrega final",
-      title: "Informe a data de entrega final",
+      title: "Informe a data da entrega final. As quantidades são opcionais.",
       status: "Entregue",
       field: "dataEntrega"
     },
