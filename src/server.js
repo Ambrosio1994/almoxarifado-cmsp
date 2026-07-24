@@ -1139,6 +1139,7 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === "POST" && url.pathname === "/api/processes") {
+    const initialStatus = "Enviado para SALC";
     const body = await readJson(req);
     const validationError = validateProcessBody(body);
     if (validationError) {
@@ -1151,8 +1152,8 @@ async function handleApi(req, res, url) {
       return;
     }
     body.numeroEmpenho = standardizedCommitmentNumber;
-    if (body.status && body.status !== STATUS[0]) {
-      sendJson(res, 400, { error: `Um processo novo deve iniciar em ${STATUS[0]}.` });
+    if (body.status && body.status !== initialStatus) {
+      sendJson(res, 400, { error: `Um processo novo deve iniciar em ${initialStatus}.` });
       return;
     }
     const duplicate = duplicateProcessFields(store.processos, body);
@@ -1166,7 +1167,7 @@ async function handleApi(req, res, url) {
     const processo = {
       id: crypto.randomUUID(),
       ...input,
-      status: STATUS[0],
+      status: initialStatus,
       documentos: {},
       criadoEm: new Date().toISOString(),
       atualizadoEm: new Date().toISOString(),
@@ -1186,7 +1187,10 @@ async function handleApi(req, res, url) {
       processoId: processo.id,
       ...auditActor,
       acao: "Criacao de processo",
-      detalhes: `Processo ${processo.numeroProcesso || "sem numero"} criado.`
+      detalhes: `Processo ${processo.numeroProcesso || "sem numero"} criado e enviado para SALC.`,
+      alteracoes: {
+        status: { anterior: null, novo: initialStatus }
+      }
     }));
     await writeStore(store);
     sendJson(res, 201, enrichProcess(processo));

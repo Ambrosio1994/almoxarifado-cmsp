@@ -103,10 +103,16 @@ describe("contrato visual e de navegacao", () => {
     assert.doesNotMatch(app, /newDataPanel/);
   });
 
-  it("distingue a criacao do processo do envio para SALC", () => {
-    assert.match(app, /Criado:\s*\{[\s\S]*?button: "Registrar envio para SALC"[\s\S]*?status: "Enviado para SALC"[\s\S]*?field: "dataEnvioSalc"/);
+  it("abre os dados gerais depois de criar um processo ja enviado para SALC", () => {
+    assert.match(app, /const isCreating = !id/);
+    assert.match(app, /if \(isCreating\)[\s\S]*?openProcessDetail\(createdProcess, "processes"\)/);
     assert.match(app, /status: processo\.status \|\| "Criado"/);
     assert.match(app, /"Enviado para SALC": \["dataEnvioSalc"\]/);
+  });
+
+  it("exibe quantidade antes de valor unitario nos materiais", () => {
+    const materialRow = app.slice(app.indexOf("function addMaterialRow"), app.indexOf("function ensureOneMaterialRow"));
+    assert.ok(materialRow.indexOf(">Quantidade <") < materialRow.indexOf(">Valor unitario <"));
   });
 
   it("oferece registro de entrega logo apos o envio ao fornecedor", () => {
