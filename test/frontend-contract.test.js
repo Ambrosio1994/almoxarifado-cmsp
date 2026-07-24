@@ -126,13 +126,17 @@ describe("contrato visual e de navegacao", () => {
   it("exibe quantidade antes de valor unitario nos materiais", () => {
     const materialRow = app.slice(app.indexOf("function addMaterialRow"), app.indexOf("function ensureOneMaterialRow"));
     assert.ok(materialRow.indexOf(">Quantidade <") < materialRow.indexOf(">Valor unitario <"));
+    assert.ok(materialRow.indexOf("data-material-total") < materialRow.indexOf("data-add-material"));
+    assert.ok(materialRow.indexOf("data-add-material") < materialRow.indexOf("data-remove-material"));
+    assert.match(app, /const row = addMaterialRow\(\)[\s\S]*?data-material-field="descricao"[\s\S]*?\.focus\(\)/);
   });
 
   it("calcula os totais dos materiais e organiza os dados gerais", () => {
     const materialsSection = html.slice(html.indexOf('<section class="materials-section">'), html.indexOf("</section>", html.indexOf('<section class="materials-section">')));
     const materialsTitle = materialsSection.slice(materialsSection.indexOf('<div class="section-title">'), materialsSection.indexOf("</div>"));
-    assert.doesNotMatch(materialsTitle, /id="addMaterialButton"/);
-    assert.match(materialsSection, /class="process-total-summary"[\s\S]*?id="processMaterialsTotal"[^>]*aria-live="polite"[\s\S]*?id="addMaterialButton"[^>]*aria-label="Adicionar material"[^>]*>\+<\/button>/);
+    assert.doesNotMatch(materialsTitle, /Adicionar material/);
+    assert.match(materialsSection, /class="process-total-summary"[\s\S]*?id="processMaterialsTotal"[^>]*aria-live="polite"/);
+    assert.doesNotMatch(materialsSection, /id="addMaterialButton"/);
     assert.match(app, /data-material-total/);
     assert.match(app, /function updateMaterialTotals\(\)/);
     assert.match(app, /class="general-data-row general-data-identity"[\s\S]*?detailField\("Fornecedor"[\s\S]*?detailField\("CNPJ"/);

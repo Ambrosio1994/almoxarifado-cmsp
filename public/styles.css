@@ -2838,7 +2838,7 @@ dialog::backdrop {
   align-items: end;
   display: grid;
   gap: 10px;
-  grid-template-columns: minmax(180px, 1fr) 110px 140px 140px 92px;
+  grid-template-columns: minmax(160px, 1fr) 100px 130px 130px 36px 82px;
 }
 
 .material-row + .material-row {
@@ -2893,6 +2893,10 @@ dialog::backdrop {
   line-height: 1;
   padding: 0;
   width: 36px;
+}
+
+.material-row > .add-material-button {
+  margin-bottom: 12px;
 }
 
 #observationsList {
