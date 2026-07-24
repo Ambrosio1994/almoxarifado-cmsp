@@ -207,6 +207,7 @@
         </div>
         <label>Data do processo <input name="dataProcesso" type="text" inputmode="numeric" data-date-input placeholder="DDMMAAAA" pattern="\d{2}-\d{2}-\d{4}" maxlength="10"></label>
         <label>Fornecedor <input name="fornecedor" maxlength="100"></label>
+        <label>CNPJ <input name="cnpj" inputmode="numeric" maxlength="18" placeholder="00.000.000/0000-00"></label>
         <label>Nome de quem criou o processo <input id="processCreatorName" name="criadoPor" type="text" maxlength="100" required></label>
 
         <section class="materials-section">
@@ -215,6 +216,10 @@
             <button type="button" id="addMaterialButton" class="secondary">Adicionar material</button>
           </div>
           <div id="materialsList"></div>
+          <div class="process-total-summary">
+            <span>Valor total do processo</span>
+            <output id="processMaterialsTotal" aria-live="polite">R$ 0,00</output>
+          </div>
         </section>
 
         <div class="actions">

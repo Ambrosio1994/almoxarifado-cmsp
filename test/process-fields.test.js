@@ -1,9 +1,11 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  formatCurrencyInput,
   formatCommitmentNumber,
   isStandardCommitmentNumber,
   normalizeCommitmentSequence,
+  parseCurrencyInput,
   parseCommitmentNumber
 } from "../public/process-fields.js";
 
@@ -28,5 +30,19 @@ describe("campos do numero de empenho", () => {
     assert.equal(formatCommitmentNumber("2026", "0"), "");
     assert.equal(isStandardCommitmentNumber("2026NE00010"), true);
     assert.equal(isStandardCommitmentNumber("2026NE0010"), false);
+  });
+});
+
+describe("campos monetarios do processo", () => {
+  it("aceita valores acima de mil nos formatos brasileiro e simples", () => {
+    assert.equal(parseCurrencyInput("1.234,56"), 1234.56);
+    assert.equal(parseCurrencyInput("1234,56"), 1234.56);
+    assert.equal(parseCurrencyInput("1234.56"), 1234.56);
+    assert.equal(parseCurrencyInput("1.000"), 1000);
+  });
+
+  it("formata valores para edicao em reais", () => {
+    assert.equal(formatCurrencyInput(1234.56), "1.234,56");
+    assert.ok(Number.isNaN(parseCurrencyInput("valor invalido")));
   });
 });

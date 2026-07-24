@@ -76,6 +76,7 @@ describe("contrato visual e de navegacao", () => {
     assert.match(html, /type="hidden" name="numeroEmpenho"/);
     assert.match(app, /formatCommitmentNumber\(commitmentYear\?\.value, commitmentSequence\?\.value\)/);
     assert.match(html, /name="fornecedor" maxlength="100"/);
+    assert.match(html, /name="cnpj"[^>]*maxlength="18"/);
     assert.match(html, /name="dataProcesso"[\s\S]*?data-date-input[\s\S]*?placeholder="DDMMAAAA"[\s\S]*?maxlength="10"/);
     assert.match(html, /name="conteudo"[^>]*minlength="1"[^>]*maxlength="350"/);
   });
@@ -114,6 +115,14 @@ describe("contrato visual e de navegacao", () => {
   it("exibe quantidade antes de valor unitario nos materiais", () => {
     const materialRow = app.slice(app.indexOf("function addMaterialRow"), app.indexOf("function ensureOneMaterialRow"));
     assert.ok(materialRow.indexOf(">Quantidade <") < materialRow.indexOf(">Valor unitario <"));
+  });
+
+  it("calcula os totais dos materiais e organiza os dados gerais", () => {
+    assert.match(html, /id="processMaterialsTotal"[^>]*aria-live="polite"/);
+    assert.match(app, /data-material-total/);
+    assert.match(app, /function updateMaterialTotals\(\)/);
+    assert.match(app, /class="detail-material-list"/);
+    assert.doesNotMatch(app, /Valor unitario medio/);
   });
 
   it("oferece registro de entrega logo apos o envio ao fornecedor", () => {

@@ -1146,6 +1146,36 @@ tbody td:nth-child(2) {
   text-transform: uppercase;
 }
 
+.detail-materials-field {
+  grid-column: 1 / -1;
+}
+
+.detail-material-list {
+  display: grid;
+  gap: 8px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.detail-material-list li {
+  align-items: baseline;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  padding: 10px 12px;
+}
+
+.detail-material-list li > span {
+  font-size: 12px;
+  margin: 0;
+  text-align: right;
+  text-transform: none;
+}
+
 .detail-primary-action {
   margin-top: 2px;
 }
@@ -2738,7 +2768,7 @@ dialog::backdrop {
   align-items: end;
   display: grid;
   gap: 10px;
-  grid-template-columns: minmax(220px, 1fr) 150px 120px 92px;
+  grid-template-columns: minmax(180px, 1fr) 110px 140px 140px 92px;
 }
 
 .material-row + .material-row {
@@ -2751,6 +2781,35 @@ dialog::backdrop {
   margin-bottom: 12px;
   min-width: 92px;
   padding-inline: 10px;
+}
+
+.material-line-total {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.material-line-total span,
+.process-total-summary span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.material-line-total output,
+.process-total-summary output {
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.process-total-summary {
+  align-items: center;
+  border-top: 2px solid var(--line);
+  display: flex;
+  justify-content: flex-end;
+  gap: 18px;
+  margin-top: 14px;
+  padding-top: 14px;
 }
 
 #observationsList {
@@ -2920,6 +2979,15 @@ dialog::backdrop {
   .charts-grid,
   .split {
     grid-template-columns: 1fr;
+  }
+
+  .detail-material-list li {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .detail-material-list li > span {
+    text-align: left;
   }
 
   .commitment-number-field {
