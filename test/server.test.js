@@ -762,11 +762,15 @@ describe("rotas http", () => {
     const created = await postJson("/api/processes", token, {
       numeroProcesso: processNumber,
       numeroEmpenho: commitmentNumber,
-      criadoPor: "Responsavel informado"
+      criadoPor: "Responsavel informado",
+      cnpj: "12.345.678/0001-90",
+      materiais: [{ descricao: "Equipamento", quantidade: 2, valorUnitario: 1234.56 }]
     });
     assert.equal(created.statusCode, 201);
     assert.equal(created.json().status, "Enviado para SALC");
     assert.equal(created.json().criadoPor, "Responsavel informado");
+    assert.equal(created.json().cnpj, "12.345.678/0001-90");
+    assert.equal(created.json().valorTotal, 2469.12);
 
     const renamedCreator = await putJson(`/api/processes/${created.json().id}`, token, {
       numeroProcesso: processNumber,

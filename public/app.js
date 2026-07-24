@@ -17,8 +17,10 @@ import {
   safeBoardStatusId
 } from "./kanban-board.js";
 import {
+  formatCurrencyInput,
   formatCommitmentNumber,
   normalizeCommitmentSequence,
+  parseCurrencyInput,
   parseCommitmentNumber
 } from "./process-fields.js";
 
@@ -1255,6 +1257,10 @@ processForm.addEventListener("submit", async (event) => {
   }
   const data = Object.fromEntries(new FormData(processForm));
   data.materiais = readMaterials();
+  if (data.materiais.some((material) => !Number.isFinite(material.valorUnitario))) {
+    formMessage.textContent = "Informe os valores unitarios no formato 1.234,56.";
+    return;
+  }
   const id = data.id;
   const isCreating = !id;
   delete data.id;
@@ -1342,6 +1348,13 @@ materialsList.addEventListener("click", (event) => {
   if (!event.target.dataset.removeMaterial) return;
   event.target.closest(".material-row").remove();
   ensureOneMaterialRow();
+  updateMaterialTotals();
+});
+materialsList.addEventListener("input", updateMaterialTotals);
+materialsList.addEventListener("focusout", (event) => {
+  if (event.target.dataset.materialField !== "valorUnitario" || !event.target.value.trim()) return;
+  const amount = parseCurrencyInput(event.target.value);
+  if (Number.isFinite(amount)) event.target.value = formatCurrencyInput(amount);
 });
 
 table.addEventListener("click", async (event) => {
@@ -2035,7 +2048,6 @@ function renderDetailPanel() {
 function renderGeneralModule(processo) {
   const fornecedor = supplierFor(processo);
   const totalQuantity = processo.materiais.reduce((sum, material) => sum + Number(material.quantidade || 0), 0);
-  const unitAverage = totalQuantity ? processo.valorTotal / totalQuantity : 0;
 
   return `
     <div class="detail-grid">
@@ -2043,9 +2055,8 @@ function renderGeneralModule(processo) {
       ${detailField("Criado por", processo.criadoPor || processo.criadoPorEmail)}
       ${detailField("Data do processo", dateCell(processo.dataProcesso))}
       ${detailField("Data de envio para SALC", dateCell(processo.dataEnvioSalc))}
-      ${detailField("CNPJ", fornecedor?.cnpj)}
-      ${detailField("Materiais", processo.materiais.map((material) => material.descricao).join(", "))}
-      ${detailField("Valor unitario medio", money(unitAverage))}
+      ${detailField("CNPJ", processo.cnpj || fornecedor?.cnpj)}
+      ${detailMaterialsField(processo.materiais)}
       ${detailField("Quantidade", totalQuantity || "-")}
       ${detailField("Valor total", money(processo.valorTotal))}
       ${detailField("Data de envio para fornecedor", dateCell(deadlineDate(processo)))}
@@ -2268,6 +2279,25 @@ function detailField(label, value) {
     <div class="detail-field">
       <span>${escapeHtml(label)}</span>
       <strong>${escapeHtml(value || "-")}</strong>
+    </div>
+  `;
+}
+
+function detailMaterialsField(materiais = []) {
+  const rows = materiais.filter((material) => material.descricao).map((material) => {
+    const quantity = Number(material.quantidade || 0);
+    const unitValue = Number(material.valorUnitario || 0);
+    return `
+      <li>
+        <strong>${escapeHtml(material.descricao)}</strong>
+        <span>Quantidade: ${escapeHtml(formatQuantity(quantity))} · Valor unitário: ${escapeHtml(money(unitValue))} · Total: ${escapeHtml(money(quantity * unitValue))}</span>
+      </li>
+    `;
+  }).join("");
+  return `
+    <div class="detail-field detail-materials-field">
+      <span>Materiais</span>
+      ${rows ? `<ul class="detail-material-list">${rows}</ul>` : "<strong>-</strong>"}
     </div>
   `;
 }
@@ -4398,10 +4428,12 @@ function addMaterialRow(material = { descricao: "", valorUnitario: "", quantidad
   row.innerHTML = `
     <label>Descricao <input data-material-field="descricao" maxlength="100" value="${escapeAttribute(material.descricao || "")}"></label>
     <label>Quantidade <input data-material-field="quantidade" type="number" min="0" step="any" value="${Number(material.quantidade || 0) || ""}"></label>
-    <label>Valor unitario <input data-material-field="valorUnitario" type="number" min="0" step="0.01" value="${Number(material.valorUnitario || 0) || ""}"></label>
+    <label>Valor unitario <input data-material-field="valorUnitario" type="text" inputmode="decimal" placeholder="0,00" value="${material.valorUnitario ? escapeAttribute(formatCurrencyInput(Number(material.valorUnitario))) : ""}"></label>
+    <div class="material-line-total"><span>Valor total</span><output data-material-total>R$ 0,00</output></div>
     <button type="button" class="secondary remove-material" data-remove-material="true">Remover</button>
   `;
   materialsList.append(row);
+  updateMaterialTotals();
 }
 
 function ensureOneMaterialRow() {
@@ -4413,10 +4445,26 @@ function readMaterials() {
     .map((row) => ({
       ...(row.dataset.materialId ? { id: row.dataset.materialId } : {}),
       descricao: row.querySelector('[data-material-field="descricao"]').value.trim(),
-      valorUnitario: Number(row.querySelector('[data-material-field="valorUnitario"]').value || 0),
+      valorUnitario: parseCurrencyInput(row.querySelector('[data-material-field="valorUnitario"]').value),
       quantidade: Number(row.querySelector('[data-material-field="quantidade"]').value || 0)
     }))
     .filter((material) => material.descricao);
+}
+
+function updateMaterialTotals() {
+  let processTotalCents = 0;
+  materialsList.querySelectorAll(".material-row").forEach((row) => {
+    const quantity = Number(row.querySelector('[data-material-field="quantidade"]')?.value || 0);
+    const unitValue = parseCurrencyInput(row.querySelector('[data-material-field="valorUnitario"]')?.value || "");
+    const lineCents = Number.isFinite(quantity) && quantity >= 0 && Number.isFinite(unitValue)
+      ? Math.round((quantity * unitValue + Number.EPSILON) * 100)
+      : 0;
+    processTotalCents += lineCents;
+    const output = row.querySelector("[data-material-total]");
+    if (output) output.textContent = money(lineCents / 100);
+  });
+  const processTotal = document.querySelector("#processMaterialsTotal");
+  if (processTotal) processTotal.textContent = money(processTotalCents / 100);
 }
 
 function fillSelect(select, items, placeholder) {
