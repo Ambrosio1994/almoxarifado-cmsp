@@ -1409,12 +1409,19 @@ async function handleApi(req, res, url) {
     }
     processo.materiais = enrichProcess(processo).materiais;
     const data = safeDate(body.data);
-    const items = sanitizeDeliveryItems(body.itens, processo.materiais || []);
-    if (!data || !items.length) {
-      sendJson(res, 400, { error: "Informe data valida e ao menos uma quantidade entregue." });
+    if (Object.prototype.hasOwnProperty.call(body, "itens") && !Array.isArray(body.itens)) {
+      sendJson(res, 400, { error: "As quantidades entregues devem ser informadas em uma lista valida." });
       return;
     }
     const previousDeliveries = Array.isArray(processo.entregas) ? processo.entregas : [];
+    const providedItems = Array.isArray(body.itens) ? body.itens : [];
+    const items = providedItems.length
+      ? sanitizeDeliveryItems(providedItems, processo.materiais || [])
+      : remainingDeliveryItems(previousDeliveries, processo.materiais || []);
+    if (!data || !items.length) {
+      sendJson(res, 400, { error: "Informe uma data valida para uma entrega com saldo pendente." });
+      return;
+    }
     const deliveryDateError = validateDeliveryDate(processo, data, previousDeliveries);
     if (deliveryDateError) {
       sendJson(res, 400, { error: deliveryDateError });
@@ -3689,6 +3696,16 @@ function deliveredTotals(deliveries = [], materials = []) {
     }
   }
   return totals;
+}
+
+function remainingDeliveryItems(deliveries = [], materials = []) {
+  const totals = deliveredTotals(deliveries, materials);
+  return materials.map((material, materialIndex) => ({
+    materialIndex,
+    materialId: String(material.id || ""),
+    descricao: String(material.descricao || "").trim(),
+    quantidade: Math.max(0, Number(material.quantidade || 0) - (totals.get(String(material.id || "")) || 0))
+  })).filter((item) => item.materialId && item.descricao && item.quantidade > 0);
 }
 
 function deliveryExceedsOrdered(previous, nextItems, materials) {

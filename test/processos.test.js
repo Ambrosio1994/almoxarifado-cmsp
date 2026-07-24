@@ -15,9 +15,11 @@ import {
   detectDocumentMime,
   enrichProcess,
   filterProcesses,
+  applyQuickFilter,
   isAllowedDocument,
   isPdfDocument,
   isMutationRequest,
+  isProcessPendingLiquidation,
   isProcessOverdue,
   isValidStatusRollback,
   isValidStatusTransition,
@@ -35,6 +37,17 @@ import { closePool } from "../src/db/postgres.js";
 import { createSession, resolveSession, revokeSession } from "../src/repositories/sessions.js";
 
 describe("regras de processo", () => {
+  it("considera enviados ainda nao liquidados como pendentes de liquidacao", () => {
+    const processos = [
+      { id: "entregue", status: "Entregue" },
+      { id: "enviado", status: "Enviado para liquidacao", dataEnvioLiquidacao: "2026-07-20" },
+      { id: "liquidado", status: "Liquidado", dataLiquidacao: "2026-07-21" }
+    ];
+
+    assert.equal(isProcessPendingLiquidation(processos[1]), true);
+    assert.deepEqual(applyQuickFilter(processos, "Pendentes de liquidacao").map(({ id }) => id), ["entregue", "enviado"]);
+  });
+
   it("inicia o fluxo em Criado antes do envio para SALC", () => {
     assert.equal(isValidStatusTransition("Criado", "Enviado para SALC"), true);
     assert.equal(isValidStatusTransition("Criado", "Empenho enviado ao fornecedor"), false);
@@ -133,6 +146,7 @@ describe("regras de processo", () => {
       numeroEmpenho: "2026NE000145",
       fornecedor: "Suprimentos Alfa Ltda",
       status: "Aguardando entrega",
+      criadoPor: "Maria Almoxarifado",
       materiais: [
         { descricao: "Papel A4", valorUnitario: 20, quantidade: 2 },
         { descricao: "Toner preto", valorUnitario: 300, quantidade: 1 }
@@ -140,6 +154,7 @@ describe("regras de processo", () => {
     }];
 
     assert.equal(filterProcesses(processos, { q: "toner" }).length, 1);
+    assert.equal(filterProcesses(processos, { q: "maria" }).length, 1);
   });
 
   it("resume materiais na tabela", () => {

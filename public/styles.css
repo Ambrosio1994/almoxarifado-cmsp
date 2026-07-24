@@ -2656,6 +2656,16 @@ dialog::backdrop {
   max-height: none;
 }
 
+.document-upload-progress {
+  display: block;
+  height: 6px;
+  width: 100%;
+}
+
+.document-upload-progress.hidden {
+  display: none;
+}
+
 .selected-file {
   color: var(--muted);
   font-size: 13px;

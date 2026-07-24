@@ -364,9 +364,16 @@ export function filterProcesses(processos, query = {}) {
         processo.fornecedor,
         processo.material,
         processo.status,
+        processo.criadoPor,
+        processo.criadoPorEmail,
         ...normalizeMaterials(processo).map((material) => material.descricao)
       ].some((value) => normalize(value).includes(termo));
     });
+}
+
+export function isProcessPendingLiquidation(processo = {}) {
+  return ["Entregue", "Aguardando envio para liquidacao", "Enviado para liquidacao"].includes(processo.status)
+    && !processo.dataLiquidacao;
 }
 
 export function applyQuickFilter(processos, quickFilter) {
@@ -376,7 +383,7 @@ export function applyQuickFilter(processos, quickFilter) {
     if (quickFilter === "Em atraso") return isProcessOverdue(processo);
     if (quickFilter === "Aguardando entrega") return isProcessAwaitingDelivery(processo);
     if (quickFilter === "Entrega parcial") return processo.status === "Entrega parcial";
-    if (quickFilter === "Pendentes de liquidacao") return ["Entregue", "Aguardando envio para liquidacao"].includes(processo.status);
+    if (quickFilter === "Pendentes de liquidacao") return isProcessPendingLiquidation(processo);
     if (quickFilter === "Liquidado") return processo.status === "Liquidado";
     if (quickFilter === "Pago") return processo.status === "Pago";
     if (quickFilter === "Anulado") return processo.status === "Anulado";
@@ -400,7 +407,7 @@ export function dashboardMetrics(processos, year) {
     aguardandoEntrega: ativos.filter((processo) => isProcessAwaitingDelivery(processo)).length,
     atrasados: ativos.filter((processo) => isProcessOverdue(processo)).length,
     enviadosLiquidacao: ativos.filter((processo) => processo.status === "Enviado para liquidacao").length,
-    pendentesLiquidacao: ativos.filter((processo) => ["Entregue", "Aguardando envio para liquidacao"].includes(processo.status)).length,
+    pendentesLiquidacao: ativos.filter(isProcessPendingLiquidation).length,
     valorEmpenhado: ativos.reduce((total, processo) => total + processo.valorTotal, 0),
     valorLiquidado: liquidated.reduce((total, processo) => total + processo.valorTotal, 0),
     valorPago: paid.reduce((total, processo) => total + processo.valorTotal, 0),
