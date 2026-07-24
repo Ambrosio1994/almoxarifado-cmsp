@@ -1189,9 +1189,11 @@ tbody td:nth-child(2) {
 }
 
 .detail-material-table caption {
-  color: #071832;
-  font-size: 14px;
-  font-weight: 800;
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: .7px;
   padding-bottom: 12px;
   text-align: left;
   text-transform: uppercase;
