@@ -108,6 +108,14 @@ describe("contrato visual e de navegacao", () => {
     assert.doesNotMatch(app, /newDataPanel/);
   });
 
+  it("posiciona salvar antes de cancelar nos formularios", () => {
+    for (const formId of ["deliveryForm", "processStepForm", "documentMetadataForm", "supplierInfoForm"]) {
+      const start = html.indexOf(`<form id="${formId}"`);
+      const form = html.slice(start, html.indexOf("</form>", start));
+      assert.ok(form.indexOf('type="submit"') < form.indexOf(">Cancelar</button>"), formId);
+    }
+  });
+
   it("abre os dados gerais depois de criar um processo ja enviado para SALC", () => {
     assert.match(app, /const isCreating = !id/);
     assert.match(app, /if \(isCreating\)[\s\S]*?openProcessDetail\(createdProcess, "processes"\)/);
@@ -121,7 +129,10 @@ describe("contrato visual e de navegacao", () => {
   });
 
   it("calcula os totais dos materiais e organiza os dados gerais", () => {
-    assert.match(html, /id="processMaterialsTotal"[^>]*aria-live="polite"/);
+    const materialsSection = html.slice(html.indexOf('<section class="materials-section">'), html.indexOf("</section>", html.indexOf('<section class="materials-section">')));
+    const materialsTitle = materialsSection.slice(materialsSection.indexOf('<div class="section-title">'), materialsSection.indexOf("</div>"));
+    assert.doesNotMatch(materialsTitle, /id="addMaterialButton"/);
+    assert.match(materialsSection, /class="process-total-summary"[\s\S]*?id="processMaterialsTotal"[^>]*aria-live="polite"[\s\S]*?id="addMaterialButton"[^>]*aria-label="Adicionar material"[^>]*>\+<\/button>/);
     assert.match(app, /data-material-total/);
     assert.match(app, /function updateMaterialTotals\(\)/);
     assert.match(app, /class="general-data-row general-data-identity"[\s\S]*?detailField\("Fornecedor"[\s\S]*?detailField\("CNPJ"/);
@@ -129,6 +140,11 @@ describe("contrato visual e de navegacao", () => {
     assert.match(app, /class="general-data-row general-data-dates"[\s\S]*?Data de envio para fornecedor[\s\S]*?Data de entrega[\s\S]*?Data de envio para liquidação[\s\S]*?Data da liquidação[\s\S]*?Data do pagamento/);
     assert.match(app, /class="detail-material-table"[\s\S]*?<th scope="col">Material[\s\S]*?Unidades[\s\S]*?Valor unitário[\s\S]*?Valor total/);
     assert.doesNotMatch(app, /Valor unitario medio/);
+  });
+
+  it("permite redimensionar a tela de criacao do processo", () => {
+    assert.match(styles, /#processDialog\s*\{[\s\S]*?max-height:\s*calc\(100vh - 28px\)[\s\S]*?max-width:\s*calc\(100vw - 28px\)[\s\S]*?overflow:\s*hidden[\s\S]*?resize:\s*both/);
+    assert.match(styles, /#processDialog \.process-form\s*\{[\s\S]*?height:\s*calc\(100% - 58px\)[\s\S]*?overflow:\s*auto/);
   });
 
   it("oferece registro de entrega logo apos o envio ao fornecedor", () => {

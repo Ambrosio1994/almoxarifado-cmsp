@@ -2638,6 +2638,22 @@ dialog.small-dialog {
   width: min(520px, calc(100vw - 28px));
 }
 
+#processDialog {
+  max-height: calc(100vh - 28px);
+  max-width: calc(100vw - 28px);
+  min-height: min(520px, calc(100vh - 28px));
+  min-width: min(560px, calc(100vw - 28px));
+  overflow: hidden;
+  resize: both;
+}
+
+#processDialog .process-form {
+  box-sizing: border-box;
+  height: calc(100% - 58px);
+  max-height: none;
+  overflow: auto;
+}
+
 dialog.document-preview-dialog {
   max-width: 980px;
   width: min(980px, calc(100vw - 28px));
@@ -2864,6 +2880,19 @@ dialog::backdrop {
   gap: 18px;
   margin-top: 14px;
   padding-top: 14px;
+}
+
+.add-material-button {
+  align-items: center;
+  border-radius: 50%;
+  display: inline-flex;
+  flex: 0 0 36px;
+  font-size: 22px;
+  height: 36px;
+  justify-content: center;
+  line-height: 1;
+  padding: 0;
+  width: 36px;
 }
 
 #observationsList {
@@ -3303,6 +3332,10 @@ dialog::backdrop {
     border-radius: 12px;
     max-height: calc(100dvh - 16px);
     width: calc(100vw - 16px);
+  }
+
+  #processDialog {
+    min-width: calc(100vw - 28px);
   }
 
   .dialog-header,
