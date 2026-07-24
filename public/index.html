@@ -207,7 +207,7 @@
         </div>
         <label>Data do processo <input name="dataProcesso" type="text" inputmode="numeric" data-date-input placeholder="DDMMAAAA" pattern="\d{2}-\d{2}-\d{4}" maxlength="10"></label>
         <label>Fornecedor <input name="fornecedor" maxlength="100"></label>
-        <label>Nome de quem criou o processo <input id="processCreatorName" type="text" readonly></label>
+        <label>Nome de quem criou o processo <input id="processCreatorName" name="criadoPor" type="text" maxlength="100" required></label>
 
         <section class="materials-section">
           <div class="section-title">

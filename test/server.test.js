@@ -761,10 +761,22 @@ describe("rotas http", () => {
     const commitmentNumber = testCommitmentNumber();
     const created = await postJson("/api/processes", token, {
       numeroProcesso: processNumber,
-      numeroEmpenho: commitmentNumber
+      numeroEmpenho: commitmentNumber,
+      criadoPor: "Responsavel informado"
     });
     assert.equal(created.statusCode, 201);
     assert.equal(created.json().status, "Enviado para SALC");
+    assert.equal(created.json().criadoPor, "Responsavel informado");
+
+    const renamedCreator = await putJson(`/api/processes/${created.json().id}`, token, {
+      numeroProcesso: processNumber,
+      numeroEmpenho: commitmentNumber,
+      criadoPor: "Responsavel corrigido",
+      status: "Enviado para SALC",
+      versao: created.json().versao
+    });
+    assert.equal(renamedCreator.statusCode, 200);
+    assert.equal(renamedCreator.json().criadoPor, "Responsavel corrigido");
 
     const persisted = await readStore();
     const creationAudit = persisted.auditoria.find((entry) => (
