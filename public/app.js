@@ -2047,25 +2047,29 @@ function renderDetailPanel() {
 
 function renderGeneralModule(processo) {
   const fornecedor = supplierFor(processo);
-  const totalQuantity = processo.materiais.reduce((sum, material) => sum + Number(material.quantidade || 0), 0);
 
   return `
-    <div class="detail-grid">
-      ${detailField("Fornecedor", processo.fornecedor)}
-      ${detailField("Criado por", processo.criadoPor || processo.criadoPorEmail)}
-      ${detailField("Data do processo", dateCell(processo.dataProcesso))}
-      ${detailField("Data de envio para SALC", dateCell(processo.dataEnvioSalc))}
-      ${detailField("CNPJ", processo.cnpj || fornecedor?.cnpj)}
+    <div class="general-data-layout">
+      <div class="general-data-row general-data-identity">
+        ${detailField("Fornecedor", processo.fornecedor)}
+        ${detailField("CNPJ", processo.cnpj || fornecedor?.cnpj)}
+      </div>
+      <div class="general-data-row general-data-process">
+        ${detailField("Processo", processo.numeroProcesso)}
+        ${detailField("Empenho", processo.numeroEmpenho)}
+        ${detailField("Requisitante", processo.criadoPor || processo.criadoPorEmail)}
+        ${detailField("Data do processo", dateCell(processo.dataProcesso))}
+        ${detailField("Valor total", money(processo.valorTotal))}
+      </div>
+      <div class="general-data-row general-data-dates">
+        ${detailField("Data de envio para fornecedor", dateCell(deadlineDate(processo)))}
+        ${detailField("Data de entrega", dateCell(processo.dataEntrega))}
+        ${detailField("Data de envio para liquidação", dateCell(processo.dataEnvioLiquidacao))}
+        ${detailField("Data da liquidação", dateCell(processo.dataLiquidacao))}
+        ${detailField("Data do pagamento", dateCell(processo.dataPagamento))}
+      </div>
       ${detailMaterialsField(processo.materiais)}
-      ${detailField("Quantidade", totalQuantity || "-")}
-      ${detailField("Valor total", money(processo.valorTotal))}
-      ${detailField("Data de envio para fornecedor", dateCell(deadlineDate(processo)))}
-      ${detailField("Data de entrega", dateCell(processo.dataEntrega))}
-      ${detailField("Data de envio para liquidacao", dateCell(processo.dataEnvioLiquidacao))}
-      ${detailField("Data de liquidacao", dateCell(processo.dataLiquidacao))}
-      ${detailField("Data de pagamento", dateCell(processo.dataPagamento))}
-      ${detailField("Dias decorridos", deadlineDate(processo) && !hasReachedDeliveryInUi(processo) && processo.status !== "Anulado" ? `${processo.diasDecorridos} dias` : "-")}
-      ${processo.status === "Anulado" ? detailField("Motivo da anulacao", processo.motivoAnulacao) : ""}
+      ${processo.status === "Anulado" ? `<div class="general-data-row general-data-note">${detailField("Motivo da anulação", processo.motivoAnulacao)}</div>` : ""}
     </div>
     <div class="detail-actions">
       ${canEditGeneralInUi(processo) ? '<button type="button" class="detail-primary-action" data-open-edit="true">Editar dados do processo</button>' : ""}
@@ -2288,16 +2292,28 @@ function detailMaterialsField(materiais = []) {
     const quantity = Number(material.quantidade || 0);
     const unitValue = Number(material.valorUnitario || 0);
     return `
-      <li>
-        <strong>${escapeHtml(material.descricao)}</strong>
-        <span>Quantidade: ${escapeHtml(formatQuantity(quantity))} · Valor unitário: ${escapeHtml(money(unitValue))} · Total: ${escapeHtml(money(quantity * unitValue))}</span>
-      </li>
+      <tr>
+        <td>${escapeHtml(material.descricao)}</td>
+        <td class="detail-material-number">${escapeHtml(formatQuantity(quantity))}</td>
+        <td class="detail-material-number">${escapeHtml(money(unitValue))}</td>
+        <td class="detail-material-number detail-material-total">${escapeHtml(money(quantity * unitValue))}</td>
+      </tr>
     `;
   }).join("");
   return `
-    <div class="detail-field detail-materials-field">
-      <span>Materiais</span>
-      ${rows ? `<ul class="detail-material-list">${rows}</ul>` : "<strong>-</strong>"}
+    <div class="detail-materials-field">
+      <table class="detail-material-table">
+        <caption>Materiais</caption>
+        <thead>
+          <tr>
+            <th scope="col">Material</th>
+            <th scope="col" class="detail-material-number">Unidades</th>
+            <th scope="col" class="detail-material-number">Valor unitário</th>
+            <th scope="col" class="detail-material-number">Valor total</th>
+          </tr>
+        </thead>
+        <tbody>${rows || '<tr><td colspan="4">Nenhum material informado.</td></tr>'}</tbody>
+      </table>
     </div>
   `;
 }
