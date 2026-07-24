@@ -737,7 +737,7 @@ describe("rotas http", () => {
     assert.equal(persisted.processos.find((processo) => processo.numeroProcesso === processNumber)?.dataProcesso, "2024-02-29");
   });
 
-  it("cria o processo como Criado e exige a data para registrar o envio para SALC", async () => {
+  it("considera o processo enviado para SALC no momento da criacao", async () => {
     const { token } = await authenticatedAs("almoxarifado");
     const meta = await invokeRequest({
       method: "GET",
@@ -753,10 +753,10 @@ describe("rotas http", () => {
     const bypass = await postJson("/api/processes", token, {
       numeroProcesso: `${processNumber}-B`,
       numeroEmpenho: testCommitmentNumber(),
-      status: "Enviado para SALC"
+      status: "Criado"
     });
     assert.equal(bypass.statusCode, 400);
-    assert.match(bypass.json().error, /deve iniciar em Criado/i);
+    assert.match(bypass.json().error, /deve iniciar em Enviado para SALC/i);
 
     const commitmentNumber = testCommitmentNumber();
     const created = await postJson("/api/processes", token, {
@@ -764,34 +764,14 @@ describe("rotas http", () => {
       numeroEmpenho: commitmentNumber
     });
     assert.equal(created.statusCode, 201);
-    assert.equal(created.json().status, "Criado");
+    assert.equal(created.json().status, "Enviado para SALC");
 
-    const payload = {
-      numeroProcesso: processNumber,
-      numeroEmpenho: commitmentNumber,
-      fornecedor: "",
-      materiais: [],
-      dataProcesso: "",
-      dataEnvioSalc: "",
-      dataEnvioFornecedor: "",
-      dataEntrega: "",
-      dataEnvioLiquidacao: "",
-      dataLiquidacao: "",
-      dataPagamento: "",
-      status: "Enviado para SALC",
-      versao: created.json().versao
-    };
-    const missingDate = await putJson(`/api/processes/${created.json().id}`, token, payload);
-    assert.equal(missingDate.statusCode, 400);
-    assert.match(missingDate.json().error, /data de envio para SALC/i);
-
-    const sent = await putJson(`/api/processes/${created.json().id}`, token, {
-      ...payload,
-      dataEnvioSalc: "2024-01-02"
-    });
-    assert.equal(sent.statusCode, 200);
-    assert.equal(sent.json().status, "Enviado para SALC");
-    assert.equal(sent.json().dataEnvioSalc, "2024-01-02");
+    const persisted = await readStore();
+    const creationAudit = persisted.auditoria.find((entry) => (
+      entry.processoId === created.json().id && entry.acao === "Criacao de processo"
+    ));
+    assert.equal(creationAudit?.alteracoes?.status?.novo, "Enviado para SALC");
+    assert.match(creationAudit?.detalhes || "", /criado e enviado para SALC/i);
   });
 
   it("valida observacoes entre 1 e 350 caracteres", async () => {

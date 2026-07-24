@@ -1256,6 +1256,7 @@ processForm.addEventListener("submit", async (event) => {
   const data = Object.fromEntries(new FormData(processForm));
   data.materiais = readMaterials();
   const id = data.id;
+  const isCreating = !id;
   delete data.id;
   formMessage.textContent = "";
   if (!String(data.numeroProcesso || "").trim() && !String(data.numeroEmpenho || "").trim()) {
@@ -1288,7 +1289,10 @@ processForm.addEventListener("submit", async (event) => {
   try {
     await refresh();
     await refreshAudit();
-    if (wasSelected) {
+    if (isCreating) {
+      const createdProcess = state.allProcesses.find((processo) => processo.id === savedProcess.id) || savedProcess;
+      await openProcessDetail(createdProcess, "processes");
+    } else if (wasSelected) {
       [state.detailObservations, state.detailAudit] = await Promise.all([
         loadDetailObservations(savedProcess.id),
         loadDetailAudit(savedProcess.id)
@@ -1298,6 +1302,7 @@ processForm.addEventListener("submit", async (event) => {
     }
   } catch (error) {
     showAppError(`O processo foi salvo, mas a lista nao foi atualizada: ${error.message}`);
+    if (isCreating) await openProcessDetail(savedProcess, "processes");
   }
 });
 
@@ -4392,8 +4397,8 @@ function addMaterialRow(material = { descricao: "", valorUnitario: "", quantidad
   row.dataset.materialId = material.id || "";
   row.innerHTML = `
     <label>Descricao <input data-material-field="descricao" maxlength="100" value="${escapeAttribute(material.descricao || "")}"></label>
-    <label>Valor unitario <input data-material-field="valorUnitario" type="number" min="0" step="0.01" value="${Number(material.valorUnitario || 0) || ""}"></label>
     <label>Quantidade <input data-material-field="quantidade" type="number" min="0" step="any" value="${Number(material.quantidade || 0) || ""}"></label>
+    <label>Valor unitario <input data-material-field="valorUnitario" type="number" min="0" step="0.01" value="${Number(material.valorUnitario || 0) || ""}"></label>
     <button type="button" class="secondary remove-material" data-remove-material="true">Remover</button>
   `;
   materialsList.append(row);
