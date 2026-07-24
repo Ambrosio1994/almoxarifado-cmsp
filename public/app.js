@@ -145,7 +145,6 @@ const newProcessButton = document.querySelector("#newProcessButton");
 const downloadProcessesButton = document.querySelector("#downloadProcessesButton");
 const refreshProcessesButton = document.querySelector("#refreshProcessesButton");
 const processExportFormat = document.querySelector("#processExportFormat");
-const addMaterialButton = document.querySelector("#addMaterialButton");
 const materialsList = document.querySelector("#materialsList");
 const formMessage = document.querySelector("#formMessage");
 const table = document.querySelector("#processTable");
@@ -1330,7 +1329,6 @@ refreshProcessesButton?.addEventListener("click", async () => {
     setButtonBusy(refreshProcessesButton, false);
   }
 });
-addMaterialButton.addEventListener("click", () => addMaterialRow());
 searchInput.addEventListener("input", debounce(() => refresh({ reload: false }), 180));
 statusFilter.addEventListener("change", () => refresh({ reload: false }));
 quickFilter.addEventListener("change", () => refresh({ reload: false }));
@@ -1350,10 +1348,16 @@ documentMetadataDialog?.addEventListener("close", () => {
   if (documentSelectedFile) documentSelectedFile.textContent = "";
 });
 materialsList.addEventListener("click", (event) => {
-  if (!event.target.dataset.removeMaterial) return;
-  event.target.closest(".material-row").remove();
-  ensureOneMaterialRow();
-  updateMaterialTotals();
+  if (event.target.closest("[data-add-material]")) {
+    const row = addMaterialRow();
+    row.querySelector('[data-material-field="descricao"]')?.focus();
+    return;
+  }
+  if (event.target.closest("[data-remove-material]")) {
+    event.target.closest(".material-row")?.remove();
+    ensureOneMaterialRow();
+    updateMaterialTotals();
+  }
 });
 materialsList.addEventListener("input", updateMaterialTotals);
 materialsList.addEventListener("focusout", (event) => {
@@ -4450,10 +4454,12 @@ function addMaterialRow(material = { descricao: "", valorUnitario: "", quantidad
     <label>Quantidade <input data-material-field="quantidade" type="number" min="0" step="any" value="${Number(material.quantidade || 0) || ""}"></label>
     <label>Valor unitario <input data-material-field="valorUnitario" type="text" inputmode="decimal" placeholder="0,00" value="${material.valorUnitario ? escapeAttribute(formatCurrencyInput(Number(material.valorUnitario))) : ""}"></label>
     <div class="material-line-total"><span>Valor total</span><output data-material-total>R$ 0,00</output></div>
+    <button type="button" class="add-material-button" data-add-material="true" aria-label="Adicionar material" title="Adicionar material">+</button>
     <button type="button" class="secondary remove-material" data-remove-material="true">Remover</button>
   `;
   materialsList.append(row);
   updateMaterialTotals();
+  return row;
 }
 
 function ensureOneMaterialRow() {
