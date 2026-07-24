@@ -213,12 +213,12 @@
         <section class="materials-section">
           <div class="section-title">
             <strong>Materiais</strong>
-            <button type="button" id="addMaterialButton" class="secondary">Adicionar material</button>
           </div>
           <div id="materialsList"></div>
           <div class="process-total-summary">
             <span>Valor total do processo</span>
             <output id="processMaterialsTotal" aria-live="polite">R$ 0,00</output>
+            <button type="button" id="addMaterialButton" class="add-material-button" aria-label="Adicionar material" title="Adicionar material">+</button>
           </div>
         </section>
 
@@ -277,8 +277,8 @@
           <textarea name="observacao" rows="3" maxlength="1000" placeholder="Opcional"></textarea>
         </label>
         <div class="actions">
-          <button type="button" class="secondary" id="cancelDelivery">Cancelar</button>
           <button type="submit">Salvar</button>
+          <button type="button" class="secondary" id="cancelDelivery">Cancelar</button>
         </div>
         <p class="form-message" id="deliveryMessage" role="alert" aria-live="assertive"></p>
       </form>
@@ -295,8 +295,8 @@
           <input name="data" type="text" inputmode="numeric" autocomplete="off" data-date-input placeholder="DDMMAAAA" pattern="\d{2}-\d{2}-\d{4}" maxlength="10">
         </label>
         <div class="actions">
-          <button type="button" class="secondary" id="cancelProcessStep">Cancelar</button>
           <button type="submit">Salvar</button>
+          <button type="button" class="secondary" id="cancelProcessStep">Cancelar</button>
         </div>
         <p class="form-message" id="processStepMessage" role="alert" aria-live="assertive"></p>
       </form>
