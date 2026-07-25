@@ -334,6 +334,10 @@ function applyTheme(theme) {
     themeToggle.querySelector("strong").textContent = isDark ? "Claro" : "Escuro";
   }
   if (accountThemeToggle) accountThemeToggle.checked = isDark;
+  const settingsThemeToggle = settingsView?.querySelector("#settingsThemeToggle");
+  if (settingsThemeToggle) settingsThemeToggle.checked = isDark;
+  const settingsThemeLabel = settingsView?.querySelector("#settingsThemeLabel");
+  if (settingsThemeLabel) settingsThemeLabel.textContent = isDark ? "Escuro" : "Claro";
 }
 
 async function initAuth() {
@@ -411,12 +415,12 @@ function bindAuthEvents() {
   });
 
   sidebarProfile?.addEventListener("click", () => {
-    if (changePasswordDialog && !changePasswordDialog.open) changePasswordDialog.showModal();
+    void openSection("settings");
   });
   sidebarProfile?.addEventListener("keydown", (event) => {
     if (["Enter", " "].includes(event.key)) {
       event.preventDefault();
-      if (changePasswordDialog && !changePasswordDialog.open) changePasswordDialog.showModal();
+      void openSection("settings");
     }
   });
   changePasswordForm?.addEventListener("submit", changePassword);
@@ -720,7 +724,7 @@ function renderSidebarProfile() {
 
 function applyRoleVisibility() {
   const role = currentUser?.role || "";
-  document.querySelector('[data-section="settings"]')?.classList.toggle("hidden", role !== "admin");
+  document.querySelector('[data-section="settings"]')?.classList.remove("hidden");
   document.querySelector('[data-section="users"]')?.classList.toggle("hidden", role !== "admin");
   document.querySelector('[data-section="audit"]')?.classList.toggle("hidden", !["admin", "auditor"].includes(role));
   document.querySelector('[data-detail-tab="emails"]')?.classList.toggle("hidden", !["admin", "auditor"].includes(role));
@@ -3001,7 +3005,7 @@ async function openSection(section) {
     saveBoardPreferences();
   }
   if (!APP_SECTIONS.has(section)) section = "dashboard";
-  if (["users", "settings"].includes(section) && currentUser?.role !== "admin") section = "dashboard";
+  if (section === "users" && currentUser?.role !== "admin") section = "dashboard";
   if (section === "audit" && !["admin", "auditor"].includes(currentUser?.role)) section = "dashboard";
   state.activeSection = section;
   rememberActiveSection(section);
@@ -3070,7 +3074,7 @@ function activateSectionShell(section) {
     if (active) item.setAttribute("aria-current", "page");
     else item.removeAttribute("aria-current");
   });
-  const titles = { dashboard: "Painel", processes: "Empenhos", board: "Quadro de processos", suppliers: "Fornecedores", audit: "Auditoria", users: "Usuarios e permissoes", settings: "Templates" };
+  const titles = { dashboard: "Painel", processes: "Empenhos", board: "Quadro de processos", suppliers: "Fornecedores", audit: "Auditoria", users: "Usuarios e permissoes", settings: "Configurações" };
   if (sectionTitle) sectionTitle.textContent = titles[section] || "";
   processListView.classList.toggle("hidden", section !== "processes");
   dashboardView.classList.toggle("hidden", section !== "dashboard");
@@ -3697,35 +3701,84 @@ async function loadAuditData(force = false) {
 }
 
 async function renderSettingsView(message = "", messageType = "success") {
-  if (!state.settings) {
+  const isAdmin = currentUser?.role === "admin";
+  if (isAdmin && !state.settings) {
     settingsView.innerHTML = `
-      <div class="content-header">
-        <div>
-          <h1>Templates</h1>
-        </div>
-      </div>
-      <p class="empty-state">Carregando templates...</p>
+      ${renderAccountSettings()}
+      <p class="empty-state settings-admin-loading">Carregando configurações administrativas...</p>
     `;
     await ensureSettingsLoaded();
   }
 
   settingsView.innerHTML = `
-    <div class="content-header">
-      <div>
-        <h1>Templates</h1>
-      </div>
-    </div>
-    <p class="form-message settings-message ${message ? messageType : ""}" id="settingsMessage" role="status" aria-live="polite">${escapeHtml(message)}</p>
-    <div class="settings-grid">
-      ${settingsCard("templates", "Templates de e-mail", "Modelos usados nas notificacoes automaticas e reenvios manuais.")}
-      ${settingsCard("notifications", "Prazos para notificacoes", `${state.settings.notificationRules.diasAvisoInterno.join(", ")} dias; oficio no dia ${state.settings.notificationRules.diaOficioFornecedor}.`)}
-    </div>
-    <section class="settings-panel">
-      ${state.settings.localFallback ? `<p class="settings-note">Servidor atual nao possui a rota de configuracoes; exibindo valores padrao. Reinicie o servidor atualizado para salvar alteracoes.</p>` : ""}
-      ${renderSettingsPanel()}
-    </section>
+    ${renderAccountSettings()}
+    ${isAdmin ? `
+      <details class="settings-admin-section" open>
+        <summary>
+          <span>
+            <strong>Configurações administrativas</strong>
+            <small>Templates de e-mail e prazos de notificação</small>
+          </span>
+        </summary>
+        <div class="settings-admin-content">
+          <p class="form-message settings-message ${message ? messageType : ""}" id="settingsMessage" role="status" aria-live="polite">${escapeHtml(message)}</p>
+          <div class="settings-grid">
+            ${settingsCard("templates", "Templates de e-mail", "Modelos usados nas notificacoes automaticas e reenvios manuais.")}
+            ${settingsCard("notifications", "Prazos para notificacoes", `${state.settings.notificationRules.diasAvisoInterno.join(", ")} dias; oficio no dia ${state.settings.notificationRules.diaOficioFornecedor}.`)}
+          </div>
+          <section class="settings-panel">
+            ${state.settings.localFallback ? `<p class="settings-note">Servidor atual nao possui a rota de configuracoes; exibindo valores padrao. Reinicie o servidor atualizado para salvar alteracoes.</p>` : ""}
+            ${renderSettingsPanel()}
+          </section>
+        </div>
+      </details>
+    ` : ""}
   `;
   bindSettingsHandlers();
+}
+
+function renderAccountSettings() {
+  const profileName = currentUser?.name || currentUser?.email || "";
+  const profileImage = currentUser?.foto || "/assets/figma/settings-avatar.png";
+  const darkTheme = document.documentElement.dataset.theme === "dark";
+  return `
+    <section class="settings-account-screen" aria-labelledby="settingsAccountTitle">
+      <header class="settings-account-header">
+        <button type="button" class="settings-back-button" id="settingsBackButton" aria-label="Voltar ao painel">
+          <img src="/assets/figma/arrow-left.svg" alt="">
+        </button>
+        <h1 id="settingsAccountTitle">Configurações</h1>
+        <span aria-hidden="true"></span>
+      </header>
+      <div class="settings-profile-section">
+        <div class="settings-profile-avatar">
+          <img src="${escapeAttribute(profileImage)}" alt="${escapeAttribute(profileName ? `Foto de ${profileName}` : "Foto do perfil")}">
+          <span class="settings-camera-badge" aria-hidden="true"></span>
+        </div>
+        <span>Foto de perfil</span>
+      </div>
+      <form class="settings-account-form" id="settingsAccountForm">
+        <label>Nome
+          <input type="text" value="${escapeAttribute(profileName)}" readonly>
+        </label>
+        <div class="settings-account-field">
+          <span>Senha</span>
+          <button type="button" class="settings-password-button" id="settingsPasswordButton" aria-label="Alterar senha">
+            <span aria-hidden="true">••••••••••••</span>
+            <img src="/assets/figma/eye.svg" alt="">
+          </button>
+        </div>
+        <label>Tema
+          <span class="settings-theme-row">
+            <strong id="settingsThemeLabel">${darkTheme ? "Escuro" : "Claro"}</strong>
+            <input id="settingsThemeToggle" type="checkbox" role="switch" aria-label="Usar tema escuro" ${darkTheme ? "checked" : ""}>
+          </span>
+        </label>
+        <button type="submit" class="settings-save-button">Salvar Alterações</button>
+        <p class="form-message" id="settingsAccountMessage" role="status" aria-live="polite"></p>
+      </form>
+    </section>
+  `;
 }
 
 async function loadSettings() {
@@ -3887,6 +3940,14 @@ function renderNotificationSettings() {
 
 function bindSettingsHandlers() {
   enhancePasswordFields(settingsView);
+  settingsView.querySelector("#settingsBackButton")?.addEventListener("click", () => {
+    void openSection("dashboard");
+  });
+  settingsView.querySelector("#settingsPasswordButton")?.addEventListener("click", () => {
+    if (!changePasswordDialog?.open) changePasswordDialog?.showModal();
+    changePasswordForm?.elements.senhaAtual?.focus();
+  });
+  settingsView.querySelector("#settingsAccountForm")?.addEventListener("submit", saveAccountSettings);
   settingsView.querySelectorAll("[data-settings-panel]").forEach((button) => {
     button.addEventListener("click", () => {
       state.settingsPanel = button.dataset.settingsPanel;
@@ -3906,6 +3967,21 @@ function bindSettingsHandlers() {
   settingsView.querySelectorAll("[data-attach-template]").forEach((button) => {
     button.addEventListener("click", () => attachTemplateDocument(button.dataset.attachTemplate));
   });
+}
+
+function saveAccountSettings(event) {
+  event.preventDefault();
+  const themeToggle = event.currentTarget.querySelector("#settingsThemeToggle");
+  const nextTheme = themeToggle?.checked ? "dark" : "light";
+  applyTheme(nextTheme);
+  localStorage.setItem("almoxTheme", nextTheme);
+  const themeLabel = event.currentTarget.querySelector("#settingsThemeLabel");
+  if (themeLabel) themeLabel.textContent = nextTheme === "dark" ? "Escuro" : "Claro";
+  const message = event.currentTarget.querySelector("#settingsAccountMessage");
+  if (message) {
+    message.className = "form-message success";
+    message.textContent = "Preferências salvas com sucesso.";
+  }
 }
 
 function bindUserHandlers(root) {
