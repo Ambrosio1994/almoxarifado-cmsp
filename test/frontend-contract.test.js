@@ -43,7 +43,8 @@ describe("contrato visual e de navegacao", () => {
     assert.match(figmaTheme, /body\[data-app-section="suppliers"\][\s\S]*?suppliers-background\.png/);
     assert.match(figmaTheme, /body\[data-app-section="processes"\] \.table-wrap,[\s\S]*?background:\s*var\(--theme-table-bg\)/);
     assert.match(figmaTheme, /\.board-view\s*\{[\s\S]*?background:\s*var\(--theme-content-glass\)/);
-    assert.match(figmaTheme, /\.module-view#suppliersView\s*\{[\s\S]*?background:\s*var\(--theme-content-glass-faint\)/);
+    assert.match(figmaTheme, /\.module-view#suppliersView\s*\{[\s\S]*?background:\s*var\(--theme-suppliers-container\)/);
+    assert.match(figmaTheme, /\.module-row\s*\{[\s\S]*?background:\s*var\(--theme-surface-faint\)/);
     assert.match(figmaTheme, /\.supplier-filters\s*\{[\s\S]*?justify-content:\s*center[\s\S]*?width:\s*100%/);
     assert.match(figmaTheme, /\.supplier-search\s*\{[\s\S]*?margin-inline:\s*auto[\s\S]*?max-width:\s*620px/);
     assert.match(app, /document\.body\.dataset\.appSection = section/);
@@ -96,6 +97,7 @@ describe("contrato visual e de navegacao", () => {
       "theme-surface-faint",
       "theme-content-glass",
       "theme-content-glass-faint",
+      "theme-suppliers-container",
       "theme-control-bg",
       "theme-control-hover",
       "theme-input-bg",
@@ -338,10 +340,23 @@ describe("contrato visual e de navegacao", () => {
     assert.match(app, /function placeThemeToggle\(section\)/);
     assert.match(figmaTheme, /\.process-search-row\s*\{[\s\S]*?margin:[^;]*auto[\s\S]*?max-width:\s*680px/);
     assert.match(figmaTheme, /\.topbar\s*\{[\s\S]*?background:\s*transparent[\s\S]*?height:\s*0[\s\S]*?min-height:\s*0/);
-    assert.match(figmaTheme, /\.theme-toggle\s*\{[\s\S]*?background:\s*var\(--theme-control-bg\)/);
-    assert.match(figmaTheme, /body\[data-app-section="processes"\] \.process-header-actions button,[\s\S]*?background:\s*transparent[\s\S]*?border-color:\s*#fbbf24[\s\S]*?min-height:\s*38px[\s\S]*?padding:\s*8px 14px/);
+    const themeToggleRules = figmaTheme.slice(
+      figmaTheme.indexOf(".theme-toggle,"),
+      figmaTheme.indexOf(".topbar > .theme-toggle")
+    );
+    assert.match(themeToggleRules, /background:\s*var\(--theme-control-bg\)/);
+    assert.match(themeToggleRules, /border:\s*1px solid var\(--theme-border\)/);
+    assert.match(themeToggleRules, /border-radius:\s*8px/);
+    assert.match(themeToggleRules, /box-shadow:\s*none/);
+    assert.match(themeToggleRules, /height:\s*38px/);
+    assert.match(themeToggleRules, /padding:\s*8px 14px/);
+    assert.match(themeToggleRules, /\.theme-toggle > span\s*\{[\s\S]*?display:\s*inline-flex[\s\S]*?justify-content:\s*center[\s\S]*?width:\s*18px/);
+    assert.match(themeToggleRules, /\.theme-toggle:focus-visible\s*\{[\s\S]*?outline:\s*2px solid var\(--theme-focus\)/);
+    assert.match(figmaTheme, /body\[data-app-section="processes"\] \.process-header-actions button,[\s\S]*?background:\s*transparent[\s\S]*?border:\s*1px solid #fbbf24[\s\S]*?box-shadow:\s*none[\s\S]*?height:\s*38px[\s\S]*?padding:\s*8px 14px/);
     assert.match(figmaTheme, /\.topbar > \.theme-toggle\s*\{[\s\S]*?position:\s*fixed[\s\S]*?right:\s*18px[\s\S]*?top:\s*12px/);
     assert.match(figmaTheme, /body\[data-app-section="processes"\] \.process-table th\s*\{[\s\S]*?background:\s*var\(--theme-table-head\)/);
+    assert.match(figmaTheme, /@media \(min-width:\s*641px\)\s*\{[\s\S]*?body\[data-app-section="processes"\] \.process-table\s*\{[\s\S]*?border-spacing:\s*0 12px/);
+    assert.match(figmaTheme, /body\[data-app-section="processes"\] \.process-table tbody td\s*\{[\s\S]*?background:\s*var\(--theme-surface-faint\)[\s\S]*?border-bottom:\s*1px solid var\(--theme-border-soft\)/);
     const processTableTheme = figmaTheme.slice(
       figmaTheme.indexOf('body[data-app-section="processes"] .table-wrap'),
       figmaTheme.indexOf(".dashboard-grid")
