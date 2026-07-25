@@ -75,6 +75,8 @@ const DOCUMENT_MEDIA_RENDER_TIMEOUT_MS = 10_000;
 const DOCUMENT_TEXT_PREVIEW_BYTES = 200_000;
 const APP_SECTIONS = new Set(["dashboard", "processes", "board", "suppliers", "audit", "users", "settings"]);
 const ACTIVE_SECTION_STORAGE_PREFIX = "almoxActiveSection";
+const DASHBOARD_YEAR_STORAGE_PREFIX = "almoxDashboardYear";
+const PROCESS_EXPORT_FORMATS = new Set(["excel", "pdf", "csv"]);
 const ALLOWED_DOCUMENT_RESPONSE_MIME_TYPES = new Set([
   "application/pdf",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -143,7 +145,9 @@ const processDialog = document.querySelector("#processDialog");
 const processDialogTitle = document.querySelector("#processDialogTitle");
 const newProcessButton = document.querySelector("#newProcessButton");
 const downloadProcessesButton = document.querySelector("#downloadProcessesButton");
-const processExportFormat = document.querySelector("#processExportFormat");
+const processExportDialog = document.querySelector("#processExportDialog");
+const processExportChoices = document.querySelectorAll("[data-process-export-format]");
+const processThemeSlot = document.querySelector("#processThemeSlot");
 const materialsList = document.querySelector("#materialsList");
 const formMessage = document.querySelector("#formMessage");
 const table = document.querySelector("#processTable");
@@ -221,6 +225,7 @@ const usersView = document.querySelector("#usersView");
 const settingsView = document.querySelector("#settingsView");
 const navItems = document.querySelectorAll(".nav-item");
 const sectionTitle = document.querySelector("#sectionTitle");
+const topbar = document.querySelector(".topbar");
 const sidebarToggle = document.querySelector("#sidebarToggle");
 const sidebarResizer = document.querySelector("#sidebarResizer");
 const mobileMenuToggle = document.querySelector("#mobileMenuToggle");
@@ -526,6 +531,7 @@ function clearClientSession() {
     deleteTimelineDialog,
     rollbackStatusDialog,
     cancelProcessDialog,
+    processExportDialog,
     downloadDialog,
     documentPreviewDialog,
     documentMetadataDialog,
@@ -683,7 +689,7 @@ function showApp() {
   appShell.classList.remove("hidden");
   sidebar.classList.remove("hidden");
   activateSectionShell("dashboard");
-  dashboardView.innerHTML = '<p class="empty-state" role="status">Carregando painel...</p>';
+  dashboardView.innerHTML = '<p class="empty-state" role="status">Carregando gráficos...</p>';
   renderSidebarProfile();
 }
 
@@ -745,7 +751,7 @@ function showAuthPanel(panel) {
 async function boot() {
   const [meta] = await Promise.all([
     api("/api/meta"),
-    loadDashboardData()
+    loadDashboardData(savedDashboardYear())
   ]);
   state.meta = meta;
   fillSelect(statusFilter, state.meta.status, "Todos os status");
@@ -1122,7 +1128,7 @@ async function refresh({ reload = true, updateDashboard = reload } = {}) {
       throw processResult.reason;
     }
     if (dashboardResult.status === "rejected" && dashboardResult.reason?.name !== "AbortError") {
-      showAppError(`A lista foi atualizada, mas o painel nao: ${dashboardResult.reason?.message || "falha ao carregar os indicadores"}`);
+      showAppError(`A lista foi atualizada, mas os gráficos nao: ${dashboardResult.reason?.message || "falha ao carregar os indicadores"}`);
     } else if (dashboardResult.value && state.activeSection === "dashboard") {
       renderDashboardView();
     }
@@ -1177,9 +1183,9 @@ function processFilterParams() {
   return params;
 }
 
-async function downloadProcesses() {
+async function downloadProcesses(format = "excel") {
+  if (!PROCESS_EXPORT_FORMATS.has(format)) return;
   const params = processFilterParams();
-  const format = processExportFormat?.value || "excel";
   params.set("format", format);
   setButtonBusy(downloadProcessesButton, true, "Gerando...");
   try {
@@ -1319,7 +1325,16 @@ processForm.addEventListener("submit", async (event) => {
 
 document.querySelector("#clearForm").addEventListener("click", () => clearForm({ preserveIdentity: true }));
 newProcessButton.addEventListener("click", () => openProcessDialog());
-downloadProcessesButton?.addEventListener("click", downloadProcesses);
+downloadProcessesButton?.addEventListener("click", () => {
+  if (!processExportDialog?.open) processExportDialog?.showModal();
+});
+processExportChoices.forEach((button) => {
+  button.addEventListener("click", () => {
+    const format = button.dataset.processExportFormat;
+    processExportDialog?.close();
+    void downloadProcesses(format);
+  });
+});
 searchInput.addEventListener("input", debounce(() => refresh({ reload: false }), 180));
 statusFilter.addEventListener("change", () => refresh({ reload: false }));
 quickFilter.addEventListener("change", () => refresh({ reload: false }));
@@ -3035,17 +3050,44 @@ function rememberActiveSection(section) {
   }
 }
 
+function dashboardYearStorageKey() {
+  const userKey = String(currentUser?.email || currentUser?.id || "usuario").trim().toLowerCase();
+  return `${DASHBOARD_YEAR_STORAGE_PREFIX}:${userKey}`;
+}
+
+function savedDashboardYear() {
+  try {
+    return window.localStorage.getItem(dashboardYearStorageKey()) || state.dashboardYear;
+  } catch {
+    return state.dashboardYear;
+  }
+}
+
+function rememberDashboardYear(year) {
+  try {
+    window.localStorage.setItem(dashboardYearStorageKey(), String(year));
+  } catch {
+    // O ano continua valido durante a sessao mesmo sem acesso ao armazenamento.
+  }
+}
+
+function placeThemeToggle(section) {
+  const target = section === "processes" ? processThemeSlot : topbar;
+  if (target && themeToggle && themeToggle.parentElement !== target) target.append(themeToggle);
+}
+
 function activateSectionShell(section) {
   cancelStandardDocumentUpload();
   state.activeSection = section;
   document.body.dataset.appSection = section;
+  placeThemeToggle(section);
   navItems.forEach((item) => {
     const active = item.dataset.section === section;
     item.classList.toggle("active", active);
     if (active) item.setAttribute("aria-current", "page");
     else item.removeAttribute("aria-current");
   });
-  const titles = { dashboard: "Painel", processes: "Empenhos", board: "Quadro de processos", suppliers: "Fornecedores", audit: "Auditoria", users: "Usuarios e permissoes", settings: "Configurações" };
+  const titles = { dashboard: "Gráficos", processes: "Empenhos", board: "Quadro de processos", suppliers: "Fornecedores", audit: "Auditoria", users: "Usuarios e permissoes", settings: "Configurações" };
   if (sectionTitle) sectionTitle.textContent = titles[section] || "";
   processListView.classList.toggle("hidden", section !== "processes");
   dashboardView.classList.toggle("hidden", section !== "dashboard");
@@ -3059,17 +3101,13 @@ function activateSectionShell(section) {
 }
 
 function renderDashboardView() {
-  const year = Number(state.dashboardYear) || state.dashboardYears[0] || new Date().getFullYear();
   const charts = state.dashboardCharts;
   dashboardView.innerHTML = `
     <div class="content-header">
       <div>
-        <h1>Painel</h1>
-        <span class="dashboard-scope" id="dashboardScope">Processos pelo ano do empenho; valores pelo ano de cada movimentacao.</span>
+        <h1>Gráficos</h1>
+        <span class="dashboard-scope" id="dashboardScope">Ano definido em Configurações. Processos pelo ano do empenho; valores pelo ano de cada movimentacao.</span>
       </div>
-      <select class="dashboard-year" id="dashboardYearSelect" aria-label="Ano do painel" aria-describedby="dashboardScope">
-        ${dashboardYearOptions(year, state.dashboardYears)}
-      </select>
     </div>
     <section class="dashboard-grid" aria-label="Indicadores operacionais">
       ${dashboardMetricsMarkup(state.dashboardMetrics)}
@@ -3080,24 +3118,6 @@ function renderDashboardView() {
       ${financialChart()}
     </div>
   `;
-  dashboardView.querySelector("#dashboardYearSelect").addEventListener("change", async (event) => {
-    const select = event.currentTarget;
-    const requestedYear = select.value;
-    setControlBusy(select, true);
-    dashboardView.setAttribute("aria-busy", "true");
-    try {
-      const result = await loadDashboardData(requestedYear);
-      if (result && state.activeSection === "dashboard") {
-        renderDashboardView();
-        focusDashboardYear();
-      }
-    } catch (error) {
-      renderDashboardLoadError(error.message || "Nao foi possivel carregar o painel deste ano.", requestedYear);
-    } finally {
-      setControlBusy(select, false);
-      dashboardView.removeAttribute("aria-busy");
-    }
-  });
 }
 
 function dashboardMetricsMarkup(data = {}) {
@@ -3242,20 +3262,6 @@ function emptyChartCard(title, message, extraClass = "") {
       <p class="chart-empty-state" role="status">${escapeHtml(message)}</p>
     </article>
   `;
-}
-
-function focusDashboardYear() {
-  dashboardView.querySelector("#dashboardYearSelect")?.focus();
-}
-
-function renderDashboardLoadError(message, requestedYear) {
-  renderSectionError(dashboardView, message, "dashboard", async () => {
-    const result = await loadDashboardData(requestedYear);
-    if (result && state.activeSection === "dashboard") {
-      renderDashboardView();
-      focusDashboardYear();
-    }
-  });
 }
 
 function chartKey(label) {
@@ -3711,14 +3717,11 @@ async function renderSettingsView(message = "", messageType = "success") {
 function renderAccountSettings() {
   const profileName = currentUser?.name || currentUser?.email || "";
   const profileImage = currentUser?.foto || "/assets/figma/settings-avatar.png";
+  const dashboardYear = Number(state.dashboardYear) || state.dashboardYears[0] || new Date().getFullYear();
   return `
     <section class="settings-account-screen" aria-labelledby="settingsAccountTitle">
       <header class="settings-account-header">
-        <button type="button" class="settings-back-button" id="settingsBackButton" aria-label="Voltar ao painel">
-          <img src="/assets/figma/arrow-left.svg" alt="">
-        </button>
         <h1 id="settingsAccountTitle">Configurações</h1>
-        <span aria-hidden="true"></span>
       </header>
       <div class="settings-profile-section">
         <button type="button" class="settings-profile-avatar" id="settingsProfileImageButton" aria-label="Escolher nova foto do perfil">
@@ -3728,9 +3731,9 @@ function renderAccountSettings() {
         <input id="settingsProfileImageInput" type="file" accept="image/png,image/jpeg,image/webp" hidden>
         <span>Alterar foto de perfil</span>
       </div>
-      <div class="settings-account-form" id="settingsAccountForm">
+      <form class="settings-account-form" id="settingsAccountForm">
         <label>Nome
-          <input type="text" value="${escapeAttribute(profileName)}" readonly>
+          <input type="text" name="nome" value="${escapeAttribute(profileName)}" maxlength="100" autocomplete="name" required>
         </label>
         <div class="settings-account-field">
           <span>Senha</span>
@@ -3739,8 +3742,14 @@ function renderAccountSettings() {
             <img src="/assets/figma/eye.svg" alt="">
           </button>
         </div>
+        <label>Ano dos gráficos
+          <select class="dashboard-year" id="settingsDashboardYear">
+            ${dashboardYearOptions(dashboardYear, state.dashboardYears)}
+          </select>
+        </label>
+        <button type="submit" class="settings-save-button">Salvar alterações</button>
         <p class="form-message" id="settingsAccountMessage" role="status" aria-live="polite"></p>
-      </div>
+      </form>
     </section>
   `;
 }
@@ -3904,9 +3913,8 @@ function renderNotificationSettings() {
 
 function bindSettingsHandlers() {
   enhancePasswordFields(settingsView);
-  settingsView.querySelector("#settingsBackButton")?.addEventListener("click", () => {
-    void openSection("dashboard");
-  });
+  settingsView.querySelector("#settingsAccountForm")?.addEventListener("submit", saveAccountSettings);
+  settingsView.querySelector("#settingsDashboardYear")?.addEventListener("change", changeDashboardYearFromSettings);
   settingsView.querySelector("#settingsPasswordButton")?.addEventListener("click", () => {
     if (!changePasswordDialog?.open) changePasswordDialog?.showModal();
     changePasswordForm?.elements.senhaAtual?.focus();
@@ -3933,6 +3941,63 @@ function bindSettingsHandlers() {
   settingsView.querySelectorAll("[data-attach-template]").forEach((button) => {
     button.addEventListener("click", () => attachTemplateDocument(button.dataset.attachTemplate));
   });
+}
+
+async function saveAccountSettings(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const message = form.querySelector("#settingsAccountMessage");
+  const nome = String(new FormData(form).get("nome") || "").trim();
+  if (!nome) {
+    message.className = "form-message error";
+    message.textContent = "Informe seu nome.";
+    form.elements.nome?.focus();
+    return;
+  }
+  setFormBusy(form, true, "Salvando...");
+  try {
+    const response = await api("/auth/profile", {
+      method: "PUT",
+      body: JSON.stringify({ nome })
+    });
+    if (response.user) setCurrentUser(response.user);
+    form.elements.nome.value = currentUser?.name || nome;
+    message.className = "form-message success";
+    message.textContent = "Nome atualizado.";
+  } catch (error) {
+    message.className = "form-message error";
+    message.textContent = error.message || "Nao foi possivel atualizar o nome.";
+  } finally {
+    setFormBusy(form, false);
+  }
+}
+
+async function changeDashboardYearFromSettings(event) {
+  const select = event.currentTarget;
+  const message = settingsView.querySelector("#settingsAccountMessage");
+  const requestedYear = select.value;
+  setControlBusy(select, true);
+  settingsView.setAttribute("aria-busy", "true");
+  try {
+    const result = await loadDashboardData(requestedYear);
+    if (!result) return;
+    rememberDashboardYear(state.dashboardYear);
+    select.innerHTML = dashboardYearOptions(state.dashboardYear, state.dashboardYears);
+    select.value = state.dashboardYear;
+    if (message) {
+      message.className = "form-message success";
+      message.textContent = "Ano dos gráficos atualizado.";
+    }
+  } catch (error) {
+    select.value = state.dashboardYear;
+    if (message) {
+      message.className = "form-message error";
+      message.textContent = error.message || "Nao foi possivel carregar os gráficos deste ano.";
+    }
+  } finally {
+    setControlBusy(select, false);
+    settingsView.removeAttribute("aria-busy");
+  }
 }
 
 async function changeProfileImage(event) {

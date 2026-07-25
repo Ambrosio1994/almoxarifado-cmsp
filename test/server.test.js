@@ -1365,6 +1365,36 @@ describe("rotas http", () => {
     assert.match(invalid.json().error, /PNG, JPEG ou WebP/);
   });
 
+  it("permite ao usuario autenticado atualizar o proprio nome", async () => {
+    const { token } = await authenticatedAs("almoxarifado");
+    const changed = await invokeRequest({
+      method: "PUT",
+      path: "/auth/profile",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ nome: "  Novo Nome  " })
+    });
+
+    assert.equal(changed.statusCode, 200);
+    assert.equal(changed.json().user.nome, "Novo Nome");
+
+    const session = await invokeRequest({
+      method: "GET",
+      path: "/auth/session",
+      headers: { authorization: `Bearer ${token}` }
+    });
+    assert.equal(session.statusCode, 200);
+    assert.equal(session.json().nome, "Novo Nome");
+
+    const invalid = await invokeRequest({
+      method: "PUT",
+      path: "/auth/profile",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ nome: " " })
+    });
+    assert.equal(invalid.statusCode, 400);
+    assert.match(invalid.json().error, /nome de ate 100 caracteres/);
+  });
+
   it("rejeita corpo de login grande antes da verificacao de senha", async () => {
     const response = await invokeRequest({
       method: "POST",

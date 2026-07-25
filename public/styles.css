@@ -707,12 +707,6 @@ button.secondary,
   justify-content: flex-end;
 }
 
-#processExportFormat {
-  height: 40px;
-  min-height: 40px;
-  width: 120px;
-}
-
 .search-box {
   align-items: center;
   background: var(--search-bg);
@@ -3149,7 +3143,6 @@ dialog::backdrop {
     width: 100%;
   }
 
-  .process-header-actions #processExportFormat,
   .process-header-actions button {
     width: 100%;
   }
