@@ -195,7 +195,7 @@ body[data-app-section="settings"] {
 }
 
 .auth-screen {
-  background: #020306 url("/assets/figma/login-background.webp") center / cover no-repeat;
+  background: #020306 url("/assets/figma/login-background.png") center / cover no-repeat;
   min-height: 100vh;
   padding: 28px;
 }
@@ -403,32 +403,9 @@ html[data-theme] .sidebar-logout {
   z-index: 40;
 }
 
-body[data-app-section="processes"] .topbar-title > strong {
-  display: none;
-}
-
-.process-theme-slot {
-  display: inline-flex;
-}
-
-body[data-app-section="processes"] .process-theme-slot .theme-toggle {
-  background: var(--theme-surface-faint);
-  border-color: var(--theme-border-soft);
-  min-width: 40px;
-  padding-inline: 10px;
-}
-
-body[data-app-section="processes"] .process-theme-slot .theme-toggle strong {
-  display: none;
-}
-
 .app-shell > main {
   min-height: 100vh;
   padding-top: 68px;
-}
-
-body[data-app-section="processes"] .app-shell > main {
-  padding-top: 28px;
 }
 
 .app-shell > main::before {
@@ -1059,6 +1036,11 @@ html[data-theme] .settings-back-button {
   width: 100%;
 }
 
+.settings-profile-avatar:disabled {
+  cursor: wait;
+  opacity: .68;
+}
+
 .settings-camera-badge {
   background: var(--cosmos-cyan) url("/assets/figma/camera.svg") center / 16px no-repeat;
   border-radius: 999px;
@@ -1094,8 +1076,7 @@ html[data-theme] .settings-back-button {
 }
 
 .settings-account-form input[type="text"],
-.settings-password-button,
-.settings-theme-row {
+.settings-password-button {
   background: var(--theme-surface-faint);
   border: 1px solid var(--theme-border-soft);
   border-radius: 12px;
@@ -1129,69 +1110,6 @@ html[data-theme] .settings-password-button {
 html[data-theme="light"] .settings-back-button img,
 html[data-theme="light"] .settings-password-button img {
   filter: invert(1);
-}
-
-.settings-theme-row {
-  align-items: center;
-  display: flex;
-  height: 52px;
-  justify-content: space-between;
-  padding: 0 12px 0 16px;
-}
-
-.settings-theme-row strong {
-  color: var(--theme-text);
-  font-size: 15px;
-  font-weight: 400;
-  text-transform: none;
-}
-
-#settingsThemeToggle {
-  appearance: none;
-  background: var(--theme-border-strong);
-  border: 0;
-  border-radius: 999px;
-  cursor: pointer;
-  height: 26px;
-  min-height: 26px;
-  padding: 3px;
-  position: relative;
-  transition: background-color .18s ease;
-  width: 48px;
-}
-
-#settingsThemeToggle::after {
-  background: #fff;
-  border-radius: 999px;
-  content: "";
-  display: block;
-  height: 20px;
-  transform: translateX(0);
-  transition: transform .18s ease;
-  width: 20px;
-}
-
-#settingsThemeToggle:checked {
-  background: var(--cosmos-cyan);
-}
-
-#settingsThemeToggle:checked::after {
-  background: #090514;
-  transform: translateX(22px);
-}
-
-.settings-save-button,
-html[data-theme] .settings-save-button {
-  background: var(--cosmos-cyan);
-  border: 0;
-  border-radius: 14px;
-  box-shadow: 0 8px 16px rgb(34 211 238 / 25%);
-  color: #090514;
-  font-size: 16px;
-  font-weight: 700;
-  height: 52px;
-  margin-top: 4px;
-  width: 100%;
 }
 
 .settings-account-form .form-message {
@@ -1253,123 +1171,14 @@ html[data-theme] .settings-save-button {
   border-radius: 16px;
 }
 
-.profile-image-dialog,
-html[data-theme] .profile-image-dialog {
-  background: transparent;
-  border: 0;
-  box-shadow: none;
-  cursor: zoom-out;
-  max-height: 90vh;
-  max-width: 90vw;
-  overflow: visible;
-  padding: 0;
-}
-
-.profile-image-dialog img {
-  border-radius: 18px;
-  box-shadow: 0 24px 80px var(--theme-shadow);
-  display: block;
-  max-height: 88vh;
-  max-width: 88vw;
-  object-fit: contain;
-}
-
-.profile-image-dialog::backdrop {
-  background: var(--theme-backdrop);
-}
-
-.account-settings-dialog {
-  background:
-    linear-gradient(var(--theme-settings-overlay), var(--theme-settings-overlay)),
-    url("/assets/figma/settings-background.png") center / cover no-repeat !important;
-  border-radius: 0;
-  height: 100vh;
-  margin: 0;
-  max-height: none;
-  max-width: none;
-  padding: 0 24px 32px;
-  width: 100vw;
-}
-
-.account-settings-dialog .dialog-header {
-  background: transparent;
-  border: 0;
-  display: grid;
-  grid-template-columns: 40px 1fr 40px;
-  padding: 28px 0 12px;
-  text-align: center;
-}
-
-.account-settings-dialog .dialog-header strong {
-  font-size: 18px;
-}
-
-.account-back-button,
-html[data-theme] .account-back-button {
-  align-items: center;
-  background: var(--theme-surface-faint);
-  border: 1px solid var(--theme-border-soft);
-  border-radius: 999px;
-  display: inline-flex;
-  height: 40px;
-  justify-content: center;
-  padding: 0;
-  width: 40px;
-}
-
-.account-settings-dialog .process-form {
-  gap: 16px;
-  margin: 0 auto;
-  max-width: 1180px;
-  padding: 0;
-}
-
-.account-profile-hero {
-  align-items: center;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  margin-bottom: 4px;
-}
-
-.account-profile-avatar {
-  height: 100px;
-  position: relative;
-  width: 100px;
-}
-
-.account-profile-avatar > img {
-  border: 2px solid var(--cosmos-cyan);
-  border-radius: 999px;
-  height: 100%;
-  object-fit: cover;
-  width: 100%;
-}
-
-.account-camera-badge {
-  background: var(--cosmos-cyan) url("/assets/figma/camera.svg") center / 16px no-repeat;
-  border-radius: 999px;
-  bottom: 0;
-  box-shadow: 0 4px 8px rgb(0 0 0 / 35%);
-  height: 32px;
-  position: absolute;
-  right: 0;
-  width: 32px;
-}
-
-.account-profile-hero > span {
-  color: var(--cosmos-cyan);
-  font-size: 14px;
-}
-
-.account-settings-dialog label {
+.password-settings-dialog label {
   color: var(--theme-text-muted);
   font-size: 13px;
   font-weight: 600;
   text-transform: uppercase;
 }
 
-.account-settings-dialog input {
+.password-settings-dialog input {
   background: var(--theme-surface-faint);
   border-color: var(--theme-border-soft);
   border-radius: 12px;
@@ -1377,39 +1186,28 @@ html[data-theme] .account-back-button {
   height: 48px;
 }
 
-.account-theme-row > span {
-  align-items: center;
+.password-settings-dialog {
+  box-shadow: 0 24px 70px var(--theme-shadow);
+}
+
+.password-settings-dialog .dialog-header {
   background: var(--theme-surface-faint);
-  border: 1px solid var(--theme-border-soft);
-  border-radius: 12px;
-  display: flex;
-  height: 52px;
-  justify-content: space-between;
-  padding: 0 16px;
 }
 
-.account-theme-row strong {
-  color: var(--theme-text);
-  font-size: 15px;
-  font-weight: 400;
-  text-transform: none;
+.password-settings-form {
+  gap: 16px;
+  max-height: min(70vh, 520px);
+  padding: 20px;
 }
 
-#accountThemeToggle {
-  accent-color: var(--cosmos-cyan);
-  height: 26px;
-  min-height: 26px;
-  width: 48px;
-}
-
-.account-settings-dialog .actions button {
+.password-settings-dialog .actions button {
   background: var(--cosmos-cyan);
   border: 0;
   border-radius: 14px;
   box-shadow: 0 8px 16px rgb(34 211 238 / 25%);
   color: #090514;
   font-size: 16px;
-  height: 52px;
+  min-height: 48px;
   width: 100%;
 }
 
@@ -1420,10 +1218,6 @@ html[data-theme] .account-back-button {
 
   .app-shell > main::before {
     left: 0;
-  }
-
-  body[data-app-section="processes"] main {
-    padding-top: 62px;
   }
 
   .mobile-menu-toggle {
@@ -1451,7 +1245,7 @@ html[data-theme] .account-back-button {
 
   body[data-app-section="processes"] .process-header-actions {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     width: 100%;
   }
 
@@ -1482,14 +1276,6 @@ html[data-theme] .account-back-button {
   .supplier-search {
     max-width: none;
     width: 100%;
-  }
-
-  .account-settings-dialog {
-    padding-inline: 18px;
-  }
-
-  .account-settings-dialog .dialog-header {
-    padding-top: 16px;
   }
 
   .settings-account-screen {

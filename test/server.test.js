@@ -1334,6 +1334,37 @@ describe("rotas http", () => {
     assert.equal(oldSession.statusCode, 401);
   });
 
+  it("permite ao usuario autenticado atualizar a propria foto de perfil", async () => {
+    const { token } = await authenticatedAs("almoxarifado");
+    const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9WlXl9sAAAAASUVORK5CYII=";
+    const changed = await invokeRequest({
+      method: "PUT",
+      path: "/auth/profile-photo",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ foto: png })
+    });
+
+    assert.equal(changed.statusCode, 200);
+    assert.equal(changed.json().user.foto, png);
+
+    const session = await invokeRequest({
+      method: "GET",
+      path: "/auth/session",
+      headers: { authorization: `Bearer ${token}` }
+    });
+    assert.equal(session.statusCode, 200);
+    assert.equal(session.json().foto, png);
+
+    const invalid = await invokeRequest({
+      method: "PUT",
+      path: "/auth/profile-photo",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ foto: "data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=" })
+    });
+    assert.equal(invalid.statusCode, 400);
+    assert.match(invalid.json().error, /PNG, JPEG ou WebP/);
+  });
+
   it("rejeita corpo de login grande antes da verificacao de senha", async () => {
     const response = await invokeRequest({
       method: "POST",

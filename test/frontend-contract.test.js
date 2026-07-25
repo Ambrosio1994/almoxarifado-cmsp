@@ -36,7 +36,7 @@ describe("contrato visual e de navegacao", () => {
   it("aplica as superficies do Figma com assets locais e sem alterar os fluxos reais", () => {
     assert.match(html, /href="\/figma-theme\.css"/);
     assert.match(html, /class="auth-heading"[\s\S]*?Acesse sua conta[\s\S]*?Insira suas credenciais abaixo/);
-    assert.match(figmaTheme, /\.auth-screen\s*\{[\s\S]*?login-background\.webp/);
+    assert.match(figmaTheme, /\.auth-screen\s*\{[\s\S]*?login-background\.png/);
     assert.match(figmaTheme, /body\[data-app-section="dashboard"\][\s\S]*?dashboard-overlay\.png/);
     assert.match(figmaTheme, /body\[data-app-section="processes"\][\s\S]*?processes-background\.png/);
     assert.match(figmaTheme, /body\[data-app-section="board"\][\s\S]*?board-background\.png/);
@@ -48,10 +48,9 @@ describe("contrato visual e de navegacao", () => {
     assert.match(figmaTheme, /\.supplier-search\s*\{[\s\S]*?margin-inline:\s*auto[\s\S]*?max-width:\s*620px/);
     assert.match(app, /document\.body\.dataset\.appSection = section/);
     assert.match(app, /localStorage\.getItem\("almoxTheme"\) \|\| "dark"/);
-    assert.match(html, /id="accountProfileName"[^>]*readonly/);
-    assert.match(html, /id="accountThemeToggle"[^>]*role="switch"/);
+    assert.doesNotMatch(html, /accountProfileName|accountThemeToggle/);
     for (const asset of [
-      "login-background.webp",
+      "login-background.png",
       "dashboard-overlay.png",
       "processes-background.png",
       "board-background.png",
@@ -176,12 +175,17 @@ describe("contrato visual e de navegacao", () => {
     assert.match(html, /data-section="suppliers"[\s\S]*?Fornecedores<\/a>[\s\S]*?data-section="settings"[\s\S]*?Configurações<\/a>/);
     assert.match(app, /class="settings-account-screen"/);
     assert.match(app, /id="settingsPasswordButton"/);
-    assert.match(app, /id="settingsThemeToggle"/);
+    assert.doesNotMatch(app, /settingsThemeToggle|settingsThemeLabel/);
     assert.match(app, /id="settingsProfileImageButton"/);
+    assert.match(app, /id="settingsProfileImageInput" type="file" accept="image\/png,image\/jpeg,image\/webp"/);
+    assert.match(app, /api\("\/auth\/profile-photo"/);
+    assert.match(app, /function resizeProfileImage\(file\)/);
     assert.match(app, /Configurações administrativas/);
     assert.match(app, /const isAdmin = currentUser\?\.role === "admin"/);
     assert.match(app, /if \(section === "users" && currentUser\?\.role !== "admin"\)/);
-    assert.match(html, /<dialog id="profileImageDialog"[^>]*>\s*<img id="profileImagePreview"[^>]*>\s*<\/dialog>/);
+    assert.doesNotMatch(html, /profileImageDialog|profileImagePreview/);
+    assert.match(html, /<dialog id="changePasswordDialog" class="small-dialog password-settings-dialog"[\s\S]*?name="senhaAtual"[\s\S]*?name="novaSenha"[\s\S]*?name="confirmacao"[\s\S]*?Salvar nova senha/);
+    assert.doesNotMatch(html, /id="changePasswordDialog"[\s\S]*?accountThemeToggle/);
     assert.match(figmaTheme, /html\[data-theme\] \.auth-form \.email-submit\s*\{[\s\S]*?background:\s*#fff/);
     assert.match(figmaTheme, /html\[data-theme\] \.auth-form \.password-toggle\s*\{[\s\S]*?eye-off\.svg/);
   });
@@ -298,8 +302,8 @@ describe("contrato visual e de navegacao", () => {
     assert.match(processList, /id="downloadProcessesButton">Download<\/button>/);
     assert.match(processList, /id="newProcessButton">\+ Novo<\/button>/);
     assert.match(processList, /class="process-search-row"[\s\S]*?id="searchInput"[\s\S]*?class="process-filter-state"[\s\S]*?id="quickFilter"[\s\S]*?id="quickFilterBar"/);
-    assert.match(app, /function placeThemeToggle\(section\)/);
-    assert.match(app, /section === "processes" \? processThemeSlot : topbar/);
+    assert.doesNotMatch(html, /processThemeSlot/);
+    assert.doesNotMatch(app, /placeThemeToggle|processThemeSlot/);
     assert.match(figmaTheme, /\.process-search-row\s*\{[\s\S]*?margin:[^;]*auto[\s\S]*?max-width:\s*680px/);
     assert.match(figmaTheme, /\.topbar\s*\{[\s\S]*?background:\s*transparent[\s\S]*?height:\s*0[\s\S]*?min-height:\s*0/);
     assert.match(figmaTheme, /\.topbar > \.theme-toggle\s*\{[\s\S]*?position:\s*fixed[\s\S]*?right:\s*18px[\s\S]*?top:\s*12px/);
