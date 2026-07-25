@@ -817,7 +817,7 @@ async function handleApi(req, res, url) {
     const store = await readProcessesStore();
     const filtered = filterProcesses(store.processos, Object.fromEntries(url.searchParams));
     const enriched = filtered.map((processo) => enrichProcess(processo));
-    const result = applyQuickFilter(enriched, url.searchParams.get("filtroRapido"));
+    const result = applyQuickFilter(enriched, url.searchParams.getAll("filtroRapido"));
     sendJson(res, 200, result);
     return;
   }
@@ -826,7 +826,7 @@ async function handleApi(req, res, url) {
     const store = await readProcessesStore();
     const format = String(url.searchParams.get("format") || "csv").toLowerCase();
     const filtered = filterProcesses(store.processos, Object.fromEntries(url.searchParams));
-    const enriched = applyQuickFilter(filtered.map((processo) => enrichProcess(processo)), url.searchParams.get("filtroRapido"));
+    const enriched = applyQuickFilter(filtered.map((processo) => enrichProcess(processo)), url.searchParams.getAll("filtroRapido"));
     sendProcessesExport(res, enriched, format);
     return;
   }

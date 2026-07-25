@@ -624,6 +624,26 @@ textarea::placeholder {
   color: var(--theme-text-muted);
 }
 
+.process-primary-label {
+  color: var(--theme-text-muted);
+}
+
+.process-primary-group > input,
+html[data-theme] .process-primary-group > input {
+  height: var(--process-primary-control-height);
+  min-height: var(--process-primary-control-height);
+  padding: 0 12px;
+}
+
+.commitment-number-field select,
+.commitment-number-field input,
+html[data-theme] .commitment-number-field select,
+html[data-theme] .commitment-number-field input {
+  height: 100%;
+  min-height: 0;
+  padding: 0 10px;
+}
+
 .search-box,
 html[data-theme] .search-box,
 html[data-theme] .search-box:focus-within {
@@ -785,14 +805,17 @@ html[data-theme] .settings-form {
   color: var(--theme-status-danger-text);
 }
 
-body[data-app-section="processes"] .table-wrap,
-body[data-app-section="processes"] .process-table {
-  background: var(--theme-table-bg);
+body[data-app-section="processes"] .table-wrap {
+  background: var(--theme-content-glass);
 }
 
 body[data-app-section="processes"] .table-wrap {
-  backdrop-filter: blur(7px);
+  backdrop-filter: blur(3px);
   border-color: var(--theme-border-glass);
+}
+
+body[data-app-section="processes"] .process-table {
+  background: transparent;
 }
 
 body[data-app-section="processes"] .process-table th {
@@ -818,7 +841,7 @@ body[data-app-section="processes"] .process-table tbody tr:hover {
   }
 
   body[data-app-section="processes"] .process-table tbody td {
-    background: var(--theme-surface-faint);
+    background: transparent;
     border-bottom: 1px solid var(--theme-border-soft);
     border-top: 1px solid var(--theme-border-soft);
   }
@@ -849,8 +872,8 @@ body[data-app-section="processes"] .empty-table-row:hover {
 
 .dashboard-grid .metric,
 html[data-theme] .dashboard-grid .metric {
-  backdrop-filter: blur(10px);
-  background: var(--theme-surface);
+  backdrop-filter: blur(3px);
+  background: var(--theme-content-glass);
   border-color: var(--theme-border);
   border-radius: 12px;
   padding: 20px;
@@ -888,8 +911,8 @@ html[data-theme] .dashboard-grid .metric {
 
 .chart-card,
 html[data-theme] .chart-card {
-  backdrop-filter: blur(10px);
-  background: var(--theme-surface);
+  backdrop-filter: blur(3px);
+  background: var(--theme-content-glass);
   border-color: var(--theme-border);
   border-radius: 12px;
   padding: 24px;
@@ -1407,6 +1430,10 @@ html[data-theme] .settings-save-button {
 
   body[data-app-section="processes"] .process-header-actions #newProcessButton {
     grid-column: auto;
+  }
+
+  body[data-app-section="processes"] .process-table tbody tr {
+    background: transparent;
   }
 
   .process-search-row {

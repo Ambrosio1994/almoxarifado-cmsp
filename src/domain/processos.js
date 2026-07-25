@@ -377,19 +377,24 @@ export function isProcessPendingLiquidation(processo = {}) {
 }
 
 export function applyQuickFilter(processos, quickFilter) {
-  if (!quickFilter) return processos;
+  const selectedFilters = [...new Set(
+    (Array.isArray(quickFilter) ? quickFilter : [quickFilter])
+      .map((value) => String(value || "").trim())
+      .filter((value) => QUICK_FILTERS.includes(value))
+  )];
+  if (selectedFilters.length === 0) return processos;
 
-  return processos.filter((processo) => {
-    if (quickFilter === "Em atraso") return isProcessOverdue(processo);
-    if (quickFilter === "Aguardando entrega") return isProcessAwaitingDelivery(processo);
-    if (quickFilter === "Entrega parcial") return processo.status === "Entrega parcial";
-    if (quickFilter === "Pendentes de liquidacao") return isProcessPendingLiquidation(processo);
-    if (quickFilter === "Liquidado") return processo.status === "Liquidado";
-    if (quickFilter === "Pago") return processo.status === "Pago";
-    if (quickFilter === "Anulado") return processo.status === "Anulado";
-    if (quickFilter === "Mais de 30 dias") return isProcessOverdue(processo);
-    return true;
-  });
+  return processos.filter((processo) => selectedFilters.some((selectedFilter) => {
+    if (selectedFilter === "Em atraso") return isProcessOverdue(processo);
+    if (selectedFilter === "Aguardando entrega") return isProcessAwaitingDelivery(processo);
+    if (selectedFilter === "Entrega parcial") return processo.status === "Entrega parcial";
+    if (selectedFilter === "Pendentes de liquidacao") return isProcessPendingLiquidation(processo);
+    if (selectedFilter === "Liquidado") return processo.status === "Liquidado";
+    if (selectedFilter === "Pago") return processo.status === "Pago";
+    if (selectedFilter === "Anulado") return processo.status === "Anulado";
+    if (selectedFilter === "Mais de 30 dias") return isProcessOverdue(processo);
+    return false;
+  }));
 }
 
 export function dashboardMetrics(processos, year) {

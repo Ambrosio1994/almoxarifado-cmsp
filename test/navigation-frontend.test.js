@@ -25,7 +25,7 @@ describe("Navegacao principal no DOM", () => {
     globalThis.fetch = async (input, options = {}) => {
       const path = String(input);
       if (path === "/auth/session") return jsonResponse({ email: "teste@example.com", nome: "Teste", role: "almoxarifado" });
-      if (path === "/api/meta") return jsonResponse({ status: [], filtrosRapidos: [] });
+      if (path === "/api/meta") return jsonResponse({ status: [], filtrosRapidos: ["Liquidado", "Pago"] });
       if (path === "/api/dashboard") return jsonResponse(dashboardPayload());
       if (path === "/api/suppliers" || path === "/api/processes") return jsonResponse([]);
       if (path.startsWith("/api/processes/download?")) {
@@ -92,8 +92,34 @@ describe("Navegacao principal no DOM", () => {
       const visibleThemeIcon = dom.window.document.querySelector('#themeToggle [data-theme-icon="light"]');
       assert.equal(dom.window.getComputedStyle(visibleThemeIcon).width, "16px");
       assert.equal(dom.window.getComputedStyle(visibleThemeIcon).height, "16px");
+      dom.window.document.querySelector("#newProcessButton").click();
+      const processDialog = dom.window.document.querySelector("#processDialog");
+      assert.equal(processDialog.open, true);
+      const processNumber = processDialog.querySelector("#processNumber");
+      const commitmentNumber = processDialog.querySelector(".commitment-number-field");
+      assert.equal(dom.window.getComputedStyle(processNumber).height, dom.window.getComputedStyle(commitmentNumber).height);
+      assert.equal(
+        dom.window
+          .getComputedStyle(processDialog.querySelector(".process-primary-group"))
+          .getPropertyValue("--process-primary-control-height")
+          .trim(),
+        "40px",
+      );
+      assert.deepEqual(
+        [...processDialog.querySelectorAll(".process-primary-label")].map((label) => dom.window.getComputedStyle(label).height),
+        ["16px", "16px"]
+      );
+      assert.equal(dom.window.getComputedStyle(processDialog.querySelector("#commitmentNumberPreview")).marginTop, "0px");
+      processDialog.close();
       assert.equal(dom.window.document.querySelector("#refreshProcessesButton"), null);
       assert.equal(dom.window.document.querySelector("#processExportFormat"), null);
+      const liquidatedFilter = dom.window.document.querySelector('[data-filter="Liquidado"]');
+      liquidatedFilter.click();
+      dom.window.document.querySelector('[data-filter="Pago"]').click();
+      assert.equal(dom.window.document.querySelector('[data-filter=""]').getAttribute("aria-pressed"), "false");
+      assert.equal(dom.window.document.querySelector('[data-filter="Liquidado"]').getAttribute("aria-pressed"), "true");
+      assert.equal(dom.window.document.querySelector('[data-filter="Pago"]').getAttribute("aria-pressed"), "true");
+      assert.equal(dom.window.document.querySelectorAll(".filter-chip.active").length, 2);
       dom.window.document.querySelector("#downloadProcessesButton").click();
       const processExportDialog = dom.window.document.querySelector("#processExportDialog");
       assert.equal(processExportDialog.open, true);
@@ -107,6 +133,11 @@ describe("Navegacao principal no DOM", () => {
       await waitFor(() => processDownloadPath.includes("format=csv"));
       dom.window.HTMLAnchorElement.prototype.click = originalAnchorClick;
       assert.equal(processExportDialog.open, false);
+      const processDownloadUrl = new URL(processDownloadPath, dom.window.location.href);
+      assert.deepEqual(processDownloadUrl.searchParams.getAll("filtroRapido"), ["Liquidado", "Pago"]);
+      dom.window.document.querySelector('[data-filter=""]').click();
+      assert.equal(dom.window.document.querySelector('[data-filter=""]').getAttribute("aria-pressed"), "true");
+      assert.equal(dom.window.document.querySelectorAll(".filter-chip.active").length, 1);
 
       const settingsNavigation = dom.window.document.querySelector('[data-section="settings"]');
       assert.equal(settingsNavigation.classList.contains("hidden"), false);

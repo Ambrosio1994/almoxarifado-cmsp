@@ -105,11 +105,11 @@
               </label>
             </div>
             <div class="process-filter-state">
-              <select id="quickFilter" aria-label="Filtro rapido"></select>
+              <select id="quickFilter" aria-label="Filtros rapidos" multiple></select>
               <select id="statusFilter" aria-label="Status"></select>
             </div>
 
-            <div class="quick-filter-bar" id="quickFilterBar"></div>
+            <div class="quick-filter-bar" id="quickFilterBar" role="group" aria-label="Filtros de empenhos. Selecione um ou mais."></div>
 
             <div class="table-wrap">
               <table class="process-table">
@@ -205,17 +205,21 @@
         <input type="hidden" name="id">
         <input type="hidden" name="versao">
 
-        <div class="split">
-          <label>Numero do processo <input name="numeroProcesso" maxlength="20"></label>
-          <label>Numero do empenho
-            <span class="commitment-number-field">
+        <div class="split process-primary-grid">
+          <div class="process-primary-group">
+            <label class="process-primary-label" for="processNumber">Numero do processo</label>
+            <input id="processNumber" name="numeroProcesso" maxlength="20">
+          </div>
+          <div class="process-primary-group">
+            <span class="process-primary-label" id="commitmentNumberLabel">Numero do empenho</span>
+            <span class="commitment-number-field" role="group" aria-labelledby="commitmentNumberLabel">
               <select id="commitmentYear" aria-label="Ano do empenho" required></select>
               <span class="commitment-number-prefix" aria-hidden="true">NE000</span>
               <input id="commitmentSequence" inputmode="numeric" pattern="[0-9]+" maxlength="11" placeholder="10" aria-label="Numero sequencial do empenho" required>
               <input type="hidden" name="numeroEmpenho">
             </span>
             <small id="commitmentNumberPreview">Exemplo: 2026NE00010</small>
-          </label>
+          </div>
         </div>
         <label>Data do processo <input name="dataProcesso" type="text" inputmode="numeric" data-date-input placeholder="DDMMAAAA" pattern="\d{2}-\d{2}-\d{4}" maxlength="10"></label>
         <label>Fornecedor <input name="fornecedor" maxlength="100"></label>

@@ -48,6 +48,19 @@ describe("regras de processo", () => {
     assert.deepEqual(applyQuickFilter(processos, "Pendentes de liquidacao").map(({ id }) => id), ["entregue", "enviado"]);
   });
 
+  it("combina varios filtros rapidos com logica de uniao", () => {
+    const processos = [
+      { id: "liquidado", status: "Liquidado" },
+      { id: "pago", status: "Pago" },
+      { id: "anulado", status: "Anulado" }
+    ];
+
+    assert.deepEqual(
+      applyQuickFilter(processos, ["Liquidado", "Pago"]).map(({ id }) => id),
+      ["liquidado", "pago"]
+    );
+  });
+
   it("inicia o fluxo em Criado antes do envio para SALC", () => {
     assert.equal(isValidStatusTransition("Criado", "Enviado para SALC"), true);
     assert.equal(isValidStatusTransition("Criado", "Empenho enviado ao fornecedor"), false);
