@@ -143,7 +143,6 @@ const processDialog = document.querySelector("#processDialog");
 const processDialogTitle = document.querySelector("#processDialogTitle");
 const newProcessButton = document.querySelector("#newProcessButton");
 const downloadProcessesButton = document.querySelector("#downloadProcessesButton");
-const refreshProcessesButton = document.querySelector("#refreshProcessesButton");
 const processExportFormat = document.querySelector("#processExportFormat");
 const materialsList = document.querySelector("#materialsList");
 const formMessage = document.querySelector("#formMessage");
@@ -226,7 +225,9 @@ const sidebarToggle = document.querySelector("#sidebarToggle");
 const sidebarResizer = document.querySelector("#sidebarResizer");
 const mobileMenuToggle = document.querySelector("#mobileMenuToggle");
 const sidebarBackdrop = document.querySelector("#sidebarBackdrop");
+const topbar = document.querySelector(".topbar");
 const themeToggle = document.querySelector("#themeToggle");
+const processThemeSlot = document.querySelector("#processThemeSlot");
 const documentMetadataDialog = document.querySelector("#documentMetadataDialog");
 const documentMetadataForm = document.querySelector("#documentMetadataForm");
 const processCreatorName = document.querySelector("#processCreatorName");
@@ -239,6 +240,8 @@ const changePasswordCloseButton = document.querySelector("#changePasswordCloseBu
 const accountProfileName = document.querySelector("#accountProfileName");
 const accountProfileImage = document.querySelector("#accountProfileImage");
 const accountThemeToggle = document.querySelector("#accountThemeToggle");
+const profileImageDialog = document.querySelector("#profileImageDialog");
+const profileImagePreview = document.querySelector("#profileImagePreview");
 const adminPasswordDialog = document.querySelector("#adminPasswordDialog");
 const adminPasswordForm = document.querySelector("#adminPasswordForm");
 const adminPasswordUser = document.querySelector("#adminPasswordUser");
@@ -545,6 +548,7 @@ function clearClientSession() {
     documentMetadataDialog,
     supplierInfoDialog,
     changePasswordDialog,
+    profileImageDialog,
     adminPasswordDialog
   ].forEach((modal) => {
     if (modal?.open) modal.close();
@@ -737,6 +741,8 @@ sidebarAvatarImage?.addEventListener("error", () => {
   sidebarAvatarImage.removeAttribute("src");
   sidebarAvatar?.classList.remove("has-image");
 });
+
+profileImageDialog?.addEventListener("click", () => profileImageDialog.close());
 
 function displayFirstName(name = "") {
   return String(name).trim().split(/\s+/)[0] || "Usuario";
@@ -1339,16 +1345,6 @@ processForm.addEventListener("submit", async (event) => {
 document.querySelector("#clearForm").addEventListener("click", () => clearForm({ preserveIdentity: true }));
 newProcessButton.addEventListener("click", () => openProcessDialog());
 downloadProcessesButton?.addEventListener("click", downloadProcesses);
-refreshProcessesButton?.addEventListener("click", async () => {
-  setButtonBusy(refreshProcessesButton, true, "Atualizando...");
-  try {
-    await refresh({ reload: true, updateDashboard: false });
-  } catch (error) {
-    showAppError(error.message || "Nao foi possivel atualizar os empenhos.");
-  } finally {
-    setButtonBusy(refreshProcessesButton, false);
-  }
-});
 searchInput.addEventListener("input", debounce(() => refresh({ reload: false }), 180));
 statusFilter.addEventListener("change", () => refresh({ reload: false }));
 quickFilter.addEventListener("change", () => refresh({ reload: false }));
@@ -3068,6 +3064,7 @@ function activateSectionShell(section) {
   cancelStandardDocumentUpload();
   state.activeSection = section;
   document.body.dataset.appSection = section;
+  placeThemeToggle(section);
   navItems.forEach((item) => {
     const active = item.dataset.section === section;
     item.classList.toggle("active", active);
@@ -3085,6 +3082,12 @@ function activateSectionShell(section) {
   settingsView.classList.toggle("hidden", section !== "settings");
   processDetailView.classList.add("hidden");
   state.selectedProcess = null;
+}
+
+function placeThemeToggle(section) {
+  if (!themeToggle || !topbar || !processThemeSlot) return;
+  const destination = section === "processes" ? processThemeSlot : topbar;
+  if (themeToggle.parentElement !== destination) destination.append(themeToggle);
 }
 
 function renderDashboardView() {
@@ -3751,10 +3754,10 @@ function renderAccountSettings() {
         <span aria-hidden="true"></span>
       </header>
       <div class="settings-profile-section">
-        <div class="settings-profile-avatar">
+        <button type="button" class="settings-profile-avatar" id="settingsProfileImageButton" aria-label="Visualizar foto do perfil">
           <img src="${escapeAttribute(profileImage)}" alt="${escapeAttribute(profileName ? `Foto de ${profileName}` : "Foto do perfil")}">
           <span class="settings-camera-badge" aria-hidden="true"></span>
-        </div>
+        </button>
         <span>Foto de perfil</span>
       </div>
       <form class="settings-account-form" id="settingsAccountForm">
@@ -3947,6 +3950,7 @@ function bindSettingsHandlers() {
     if (!changePasswordDialog?.open) changePasswordDialog?.showModal();
     changePasswordForm?.elements.senhaAtual?.focus();
   });
+  settingsView.querySelector("#settingsProfileImageButton")?.addEventListener("click", showProfileImage);
   settingsView.querySelector("#settingsAccountForm")?.addEventListener("submit", saveAccountSettings);
   settingsView.querySelectorAll("[data-settings-panel]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -3967,6 +3971,14 @@ function bindSettingsHandlers() {
   settingsView.querySelectorAll("[data-attach-template]").forEach((button) => {
     button.addEventListener("click", () => attachTemplateDocument(button.dataset.attachTemplate));
   });
+}
+
+function showProfileImage() {
+  if (!profileImageDialog || !profileImagePreview) return;
+  const profileName = currentUser?.name || currentUser?.email || "";
+  profileImagePreview.src = currentUser?.foto || "/assets/figma/settings-avatar.png";
+  profileImagePreview.alt = profileName ? `Foto de ${profileName}` : "Foto do perfil";
+  if (!profileImageDialog.open) profileImageDialog.showModal();
 }
 
 function saveAccountSettings(event) {

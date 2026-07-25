@@ -41,9 +41,11 @@ describe("contrato visual e de navegacao", () => {
     assert.match(figmaTheme, /body\[data-app-section="processes"\][\s\S]*?processes-background\.png/);
     assert.match(figmaTheme, /body\[data-app-section="board"\][\s\S]*?board-background\.png/);
     assert.match(figmaTheme, /body\[data-app-section="suppliers"\][\s\S]*?suppliers-background\.png/);
-    assert.match(figmaTheme, /body\[data-app-section="processes"\] \.table-wrap\s*\{[\s\S]*?background:\s*rgb\(17 20 28 \/ 62%\)/);
-    assert.match(figmaTheme, /\.board-view\s*\{[\s\S]*?background:\s*rgb\(13 15 20 \/ 62%\)/);
-    assert.match(figmaTheme, /\.module-view#suppliersView\s*\{[\s\S]*?background:\s*rgb\(11 13 19 \/ 62%\)/);
+    assert.match(figmaTheme, /body\[data-app-section="processes"\] \.table-wrap,[\s\S]*?background:\s*var\(--theme-table-bg\)/);
+    assert.match(figmaTheme, /\.board-view\s*\{[\s\S]*?background:\s*var\(--theme-content-glass\)/);
+    assert.match(figmaTheme, /\.module-view#suppliersView\s*\{[\s\S]*?background:\s*var\(--theme-content-glass-faint\)/);
+    assert.match(figmaTheme, /\.supplier-filters\s*\{[\s\S]*?justify-content:\s*center[\s\S]*?width:\s*100%/);
+    assert.match(figmaTheme, /\.supplier-search\s*\{[\s\S]*?margin-inline:\s*auto[\s\S]*?max-width:\s*620px/);
     assert.match(app, /document\.body\.dataset\.appSection = section/);
     assert.match(app, /localStorage\.getItem\("almoxTheme"\) \|\| "dark"/);
     assert.match(html, /id="accountProfileName"[^>]*readonly/);
@@ -63,6 +65,78 @@ describe("contrato visual e de navegacao", () => {
     }
   });
 
+  it("define conjuntos completos de tokens claros e escuros para todas as superficies", () => {
+    const lightStart = figmaTheme.indexOf(":root,");
+    const darkStart = figmaTheme.indexOf('html[data-theme="dark"]');
+    const rulesStart = figmaTheme.indexOf("body {", darkStart);
+    const lightTheme = figmaTheme.slice(lightStart, darkStart);
+    const darkTheme = figmaTheme.slice(darkStart, rulesStart);
+    const semanticTokens = [
+      "theme-page-overlay",
+      "theme-main-overlay",
+      "theme-sidebar-bg",
+      "theme-topbar-bg",
+      "theme-surface",
+      "theme-surface-strong",
+      "theme-surface-soft",
+      "theme-surface-faint",
+      "theme-content-glass",
+      "theme-content-glass-faint",
+      "theme-control-bg",
+      "theme-control-hover",
+      "theme-input-bg",
+      "theme-border",
+      "theme-border-strong",
+      "theme-border-soft",
+      "theme-border-glass",
+      "theme-text",
+      "theme-text-muted",
+      "theme-text-subtle",
+      "theme-link",
+      "theme-focus",
+      "theme-table-bg",
+      "theme-table-head",
+      "theme-table-hover",
+      "theme-table-line",
+      "theme-column-bg",
+      "theme-card-bg",
+      "theme-dialog-bg",
+      "theme-auth-panel",
+      "theme-auth-input",
+      "theme-settings-overlay",
+      "theme-shadow",
+      "theme-backdrop",
+      "theme-chart-grid",
+      "theme-status-info-bg",
+      "theme-status-info-text",
+      "theme-status-warning-bg",
+      "theme-status-warning-text",
+      "theme-status-success-bg",
+      "theme-status-success-text",
+      "theme-status-neutral-bg",
+      "theme-status-neutral-text",
+      "theme-status-danger-bg",
+      "theme-status-danger-text"
+    ];
+
+    assert.ok(lightStart >= 0);
+    assert.ok(darkStart > lightStart);
+    assert.ok(rulesStart > darkStart);
+    for (const token of semanticTokens) {
+      assert.match(lightTheme, new RegExp(`--${token}:`), `token claro ausente: ${token}`);
+      assert.match(darkTheme, new RegExp(`--${token}:`), `token escuro ausente: ${token}`);
+    }
+    assert.match(lightTheme, /--theme-text:\s*#0f172a/);
+    assert.match(lightTheme, /--theme-content-glass:\s*rgb\(246 248 244 \/ 62%\)/);
+    assert.match(lightTheme, /color-scheme:\s*light/);
+    assert.match(darkTheme, /--theme-text:\s*#f0f4f8/);
+    assert.match(darkTheme, /--theme-content-glass:\s*rgb\(13 15 20 \/ 42%\)/);
+    assert.match(darkTheme, /color-scheme:\s*dark/);
+    assert.match(figmaTheme, /\.dashboard-grid \.metric,[\s\S]*?background:\s*var\(--theme-surface\)/);
+    assert.match(figmaTheme, /\.settings-account-screen\s*\{[\s\S]*?background:\s*var\(--theme-content-glass\)/);
+    assert.match(figmaTheme, /dialog,[\s\S]*?background:\s*var\(--theme-dialog-bg\)/);
+  });
+
   it("restaura a ultima secao no boot sem carregar processos antecipadamente", () => {
     const boot = app.slice(app.indexOf("async function boot()"), app.indexOf("async function loadDashboardData"));
     assert.match(boot, /api\("\/api\/meta"\)/);
@@ -74,6 +148,7 @@ describe("contrato visual e de navegacao", () => {
     const processView = html.match(/<section[^>]*id="processListView"[^>]*>/)?.[0] || "";
     assert.match(processView, /class="[^"]*hidden[^"]*"/);
     assert.match(html, /id="dashboardView"/);
+    assert.match(html, /id="sectionTitle" class="sr-only"/);
   });
 
   it("oferece o Quadro como secao persistente, acessivel e responsiva", () => {
@@ -98,12 +173,17 @@ describe("contrato visual e de navegacao", () => {
     assert.match(html, /data-section="settings"[^>]*>[^<]*<span[^>]*>[\s\S]*?Configurações<\/a>/);
     assert.match(html, /id="usersView"/);
     assert.match(html, /id="settingsView"/);
+    assert.match(html, /data-section="suppliers"[\s\S]*?Fornecedores<\/a>[\s\S]*?data-section="settings"[\s\S]*?Configurações<\/a>/);
     assert.match(app, /class="settings-account-screen"/);
     assert.match(app, /id="settingsPasswordButton"/);
     assert.match(app, /id="settingsThemeToggle"/);
+    assert.match(app, /id="settingsProfileImageButton"/);
     assert.match(app, /Configurações administrativas/);
     assert.match(app, /const isAdmin = currentUser\?\.role === "admin"/);
     assert.match(app, /if \(section === "users" && currentUser\?\.role !== "admin"\)/);
+    assert.match(html, /<dialog id="profileImageDialog"[^>]*>\s*<img id="profileImagePreview"[^>]*>\s*<\/dialog>/);
+    assert.match(figmaTheme, /html\[data-theme\] \.auth-form \.email-submit\s*\{[\s\S]*?background:\s*#fff/);
+    assert.match(figmaTheme, /html\[data-theme\] \.auth-form \.password-toggle\s*\{[\s\S]*?eye-off\.svg/);
   });
 
   it("preserva os campos, limites e rotulos de aceite", () => {
@@ -209,10 +289,36 @@ describe("contrato visual e de navegacao", () => {
     assert.match(app, /event\.target\.dataset\.downloadProcess/);
   });
 
-  it("oferece atualizacao explicita e anulacao motivada", () => {
+  it("organiza os controles de Empenhos sem alterar pesquisa, filtros ou download", () => {
+    const processList = html.slice(html.indexOf('id="processListView"'), html.indexOf('id="dashboardView"'));
+    assert.match(processList, /<h1>Empenhos<\/h1>/);
+    assert.match(processList, /id="processExportFormat" type="hidden" value="excel"/);
+    assert.doesNotMatch(processList, /<select id="processExportFormat"/);
+    assert.doesNotMatch(processList, /id="refreshProcessesButton"/);
+    assert.match(processList, /id="downloadProcessesButton">Download<\/button>/);
+    assert.match(processList, /id="newProcessButton">\+ Novo<\/button>/);
+    assert.match(processList, /class="process-search-row"[\s\S]*?id="searchInput"[\s\S]*?class="process-filter-state"[\s\S]*?id="quickFilter"[\s\S]*?id="quickFilterBar"/);
+    assert.match(app, /function placeThemeToggle\(section\)/);
+    assert.match(app, /section === "processes" \? processThemeSlot : topbar/);
+    assert.match(figmaTheme, /\.process-search-row\s*\{[\s\S]*?margin:[^;]*auto[\s\S]*?max-width:\s*680px/);
+    assert.match(figmaTheme, /body\[data-app-section="processes"\] \.process-table th\s*\{[\s\S]*?background:\s*var\(--theme-table-head\)/);
+    const processTableTheme = figmaTheme.slice(
+      figmaTheme.indexOf('body[data-app-section="processes"] .table-wrap'),
+      figmaTheme.indexOf(".dashboard-grid")
+    );
+    assert.doesNotMatch(processTableTheme, /\bopacity\s*:/);
+    const boardPanelTheme = figmaTheme.slice(
+      figmaTheme.indexOf(".board-view {"),
+      figmaTheme.indexOf(".board-heading span")
+    );
+    assert.doesNotMatch(boardPanelTheme, /\bopacity\s*:/);
+  });
+
+  it("preserva a anulacao motivada sem o controle visual de atualizacao", () => {
     assert.doesNotMatch(html, /id="publicConsultButton"/);
     assert.doesNotMatch(app, /\bpublico\b/);
-    assert.match(html, /id="refreshProcessesButton"/);
+    assert.doesNotMatch(html, /id="refreshProcessesButton"/);
+    assert.doesNotMatch(app, /refreshProcessesButton/);
     assert.match(html, /id="cancelProcessDialog"/);
     assert.match(html, /name="motivo"[^>]*maxlength="1000"[^>]*required/);
   });
