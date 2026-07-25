@@ -80,15 +80,24 @@ describe("Navegacao principal no DOM", () => {
         assert.equal(new Set(values).size, 1, `${property}: ${values.join(", ")}`);
       }
       const themeStyleAcrossScreens = Object.fromEntries([
+        "width",
+        "minWidth",
         "height",
         "paddingTop",
+        "paddingRight",
         "paddingBottom",
+        "paddingLeft",
         "lineHeight",
         "backgroundColor",
         "borderTopColor",
         "borderTopWidth",
         "borderRadius"
       ].map((property) => [property, dom.window.getComputedStyle(actionButtons[0])[property]]));
+      const themeLabelStyleAcrossScreens = Object.fromEntries([
+        "fontSize",
+        "fontWeight",
+        "lineHeight"
+      ].map((property) => [property, dom.window.getComputedStyle(actionButtons[0].querySelector("strong"))[property]]));
       const visibleThemeIcon = dom.window.document.querySelector('#themeToggle [data-theme-icon="light"]');
       assert.equal(dom.window.getComputedStyle(visibleThemeIcon).width, "16px");
       assert.equal(dom.window.getComputedStyle(visibleThemeIcon).height, "16px");
@@ -139,6 +148,28 @@ describe("Navegacao principal no DOM", () => {
       assert.equal(dom.window.document.querySelector('[data-filter=""]').getAttribute("aria-pressed"), "true");
       assert.equal(dom.window.document.querySelectorAll(".filter-chip.active").length, 1);
 
+      for (const section of ["dashboard", "board", "suppliers"]) {
+        const navigation = dom.window.document.querySelector(`[data-section="${section}"]`);
+        navigation.click();
+        await waitFor(() => navigation.getAttribute("aria-current") === "page");
+        assert.ok(dom.window.document.querySelector(".topbar").contains(dom.window.document.querySelector("#themeToggle")));
+        assert.equal(dom.window.getComputedStyle(dom.window.document.querySelector("#themeToggle")).position, "absolute");
+        for (const [property, expected] of Object.entries(themeStyleAcrossScreens)) {
+          assert.equal(
+            dom.window.getComputedStyle(dom.window.document.querySelector("#themeToggle"))[property],
+            expected,
+            `${section}: ${property}`
+          );
+        }
+        for (const [property, expected] of Object.entries(themeLabelStyleAcrossScreens)) {
+          assert.equal(
+            dom.window.getComputedStyle(dom.window.document.querySelector("#themeToggle strong"))[property],
+            expected,
+            `${section}: texto ${property}`
+          );
+        }
+      }
+
       const settingsNavigation = dom.window.document.querySelector('[data-section="settings"]');
       assert.equal(settingsNavigation.classList.contains("hidden"), false);
       settingsNavigation.click();
@@ -146,8 +177,12 @@ describe("Navegacao principal no DOM", () => {
 
       assert.equal(dom.window.document.querySelector("#sectionTitle").textContent, "Configurações");
       assert.ok(dom.window.document.querySelector(".topbar").contains(dom.window.document.querySelector("#themeToggle")));
+      assert.equal(dom.window.getComputedStyle(dom.window.document.querySelector("#themeToggle")).position, "absolute");
       for (const [property, expected] of Object.entries(themeStyleAcrossScreens)) {
         assert.equal(dom.window.getComputedStyle(dom.window.document.querySelector("#themeToggle"))[property], expected, property);
+      }
+      for (const [property, expected] of Object.entries(themeLabelStyleAcrossScreens)) {
+        assert.equal(dom.window.getComputedStyle(dom.window.document.querySelector("#themeToggle strong"))[property], expected, `texto ${property}`);
       }
       assert.equal(dom.window.document.querySelector("#settingsAccountTitle").textContent, "Configurações");
       assert.equal(dom.window.document.querySelector("#settingsBackButton"), null);

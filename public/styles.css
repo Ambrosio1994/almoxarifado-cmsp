@@ -14,7 +14,7 @@
   --green: #17665d;
   --red: #b42318;
   --search-bg: #fff;
-  --sidebar-width: 234px;
+  --sidebar-width: 252px;
 }
 
 :root[data-theme="dark"] {
