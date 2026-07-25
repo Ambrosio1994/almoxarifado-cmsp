@@ -54,9 +54,9 @@
         <a href="#" class="nav-item" data-section="processes"><span aria-hidden="true">▱</span>Empenhos</a>
         <a href="#" class="nav-item" data-section="board"><span aria-hidden="true">▥</span>Quadro</a>
         <a href="#" class="nav-item" data-section="suppliers"><span aria-hidden="true">▤</span>Fornecedores</a>
+        <a href="#" class="nav-item hidden" data-section="settings"><span aria-hidden="true">⚙</span>Configurações</a>
         <a href="#" class="nav-item hidden" data-section="audit"><span aria-hidden="true">◫</span>Auditoria</a>
         <a href="#" class="nav-item hidden" data-section="users"><span aria-hidden="true">♙</span>Usuarios e permissoes</a>
-        <a href="#" class="nav-item hidden" data-section="settings"><span aria-hidden="true">⚙</span>Configurações</a>
       </nav>
       <button type="button" class="sidebar-logout" id="logoutButton">Sair</button>
     </aside>
@@ -66,7 +66,7 @@
       <header class="topbar">
         <div class="topbar-title">
           <button type="button" class="mobile-menu-toggle" id="mobileMenuToggle" aria-label="Abrir menu" aria-controls="sidebar" aria-expanded="false">☰</button>
-          <strong id="sectionTitle">Painel</strong>
+          <strong id="sectionTitle" class="sr-only">Painel</strong>
         </div>
         <button type="button" class="theme-toggle" id="themeToggle" aria-label="Alternar para modo escuro" title="Alternar tema">
           <span aria-hidden="true">◐</span>
@@ -84,22 +84,20 @@
                 <h1>Empenhos</h1>
               </div>
               <div class="process-header-actions">
-                <select id="processExportFormat" aria-label="Formato de exportacao">
-                  <option value="excel">Excel</option>
-                  <option value="pdf">PDF</option>
-                  <option value="csv">CSV</option>
-                </select>
+                <input id="processExportFormat" type="hidden" value="excel">
                 <button type="button" class="secondary" id="downloadProcessesButton">Download</button>
-                <button type="button" class="secondary" id="refreshProcessesButton">Atualizar</button>
                 <button type="button" id="newProcessButton">+ Novo</button>
+                <span class="process-theme-slot" id="processThemeSlot"></span>
               </div>
             </div>
 
-            <div class="filters">
+            <div class="process-search-row">
               <label class="search-box" aria-label="Pesquisar processos">
                 <span>⌕</span>
                 <input id="searchInput" placeholder="Buscar por processo, empenho, nota fiscal, fornecedor ou material">
               </label>
+            </div>
+            <div class="process-filter-state">
               <select id="quickFilter" aria-label="Filtro rapido"></select>
               <select id="statusFilter" aria-label="Status"></select>
             </div>
@@ -457,6 +455,10 @@
         <div class="actions"><button type="submit">Salvar alterações</button></div>
         <p class="form-message" id="changePasswordMessage" role="status" aria-live="polite"></p>
       </form>
+    </dialog>
+
+    <dialog id="profileImageDialog" class="profile-image-dialog" aria-label="Foto do perfil">
+      <img id="profileImagePreview" src="/assets/figma/settings-avatar.png" alt="Foto do perfil ampliada">
     </dialog>
 
     <dialog id="adminPasswordDialog" class="small-dialog" aria-labelledby="adminPasswordDialogTitle">
