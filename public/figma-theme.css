@@ -194,7 +194,9 @@ body[data-app-section="settings"] {
   background-image: url("/assets/figma/settings-background.png");
 }
 
-.auth-screen {
+.auth-screen,
+:root[data-theme="light"] .auth-screen,
+:root[data-theme="dark"] .auth-screen {
   background: #020306 url("/assets/figma/login-background.png") center / cover no-repeat;
   color: #f8fafc;
   color-scheme: dark;
@@ -208,8 +210,8 @@ body[data-app-section="settings"] {
 }
 
 .auth-panel,
-html[data-theme="light"] .auth-panel,
-html[data-theme="dark"] .auth-panel {
+:root[data-theme="light"] .auth-panel,
+:root[data-theme="dark"] .auth-panel {
   backdrop-filter: blur(12px);
   background: rgb(6 10 24 / 70%);
   border: 1px solid rgb(88 199 250 / 25%);
@@ -256,8 +258,10 @@ html[data-theme="dark"] .auth-panel {
 
 .email-only input,
 .password-step input,
-html[data-theme] .email-only input,
-html[data-theme] .password-step input {
+:root[data-theme="light"] .email-only input,
+:root[data-theme="light"] .password-step input,
+:root[data-theme="dark"] .email-only input,
+:root[data-theme="dark"] .password-step input {
   background: rgb(14 21 40 / 90%);
   border: 1px solid rgb(77 153 255 / 50%);
   border-radius: 12px;
@@ -504,10 +508,21 @@ html[data-theme] .icon-button {
   color: var(--theme-text);
 }
 
-#newProcessButton {
+body[data-app-section="processes"] .process-header-actions button,
+html[data-theme] body[data-app-section="processes"] .process-header-actions button {
   background: transparent;
   border-color: #fbbf24;
   box-shadow: 0 0 0 1px rgb(251 191 36 / 34%);
+  color: var(--theme-text);
+  font-size: 13px;
+  font-weight: 700;
+  min-height: 38px;
+  padding: 8px 14px;
+}
+
+body[data-app-section="processes"] .process-header-actions .theme-toggle strong {
+  font-size: inherit;
+  font-weight: inherit;
 }
 
 input,

@@ -3106,7 +3106,6 @@ function renderDashboardView() {
     <div class="content-header">
       <div>
         <h1>Gráficos</h1>
-        <span class="dashboard-scope" id="dashboardScope">Ano definido em Configurações. Processos pelo ano do empenho; valores pelo ano de cada movimentacao.</span>
       </div>
     </div>
     <section class="dashboard-grid" aria-label="Indicadores operacionais">
