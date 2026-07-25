@@ -180,7 +180,7 @@ describe("contrato visual e de navegacao", () => {
     assert.match(html, /data-section="board"[\s\S]*?Quadro<\/a>/);
     assert.match(html, /<section class="module-view hidden board-view" id="boardView"/);
     assert.match(html, /id="boardMessage"[^>]*aria-live="polite"/);
-    assert.match(html, /id="kanbanBoard"[^>]*aria-label="Quadro de processos"/);
+    assert.match(html, /id="kanbanBoard"[^>]*aria-label="Quadro de Empenhos"/);
     assert.match(html, /id="boardHideEmptyColumns"/);
     assert.match(app, /const APP_SECTIONS = new Set\(\[[\s\S]*?"board"/);
     assert.match(app, /board:\s*\(\) => renderBoardView\(\)/);
@@ -344,17 +344,40 @@ describe("contrato visual e de navegacao", () => {
       figmaTheme.indexOf(".theme-toggle,"),
       figmaTheme.indexOf(".topbar > .theme-toggle")
     );
-    assert.match(themeToggleRules, /background:\s*var\(--theme-control-bg\)/);
-    assert.match(themeToggleRules, /border:\s*1px solid var\(--theme-border\)/);
+    assert.match(themeToggleRules, /background:\s*transparent/);
+    assert.match(themeToggleRules, /border:\s*1px solid #fbbf24/);
     assert.match(themeToggleRules, /border-radius:\s*8px/);
     assert.match(themeToggleRules, /box-shadow:\s*none/);
     assert.match(themeToggleRules, /height:\s*38px/);
     assert.match(themeToggleRules, /padding:\s*8px 14px/);
-    assert.match(themeToggleRules, /\.theme-toggle > span\s*\{[\s\S]*?display:\s*inline-flex[\s\S]*?justify-content:\s*center[\s\S]*?width:\s*18px/);
+    assert.match(html, /id="themeToggle"[^>]*data-target-theme="dark"[\s\S]*?class="theme-toggle-icon"[\s\S]*?data-theme-icon="light"[\s\S]*?data-theme-icon="dark"/);
+    assert.match(app, /themeToggle\.dataset\.targetTheme = isDark \? "light" : "dark"/);
+    assert.match(themeToggleRules, /\.theme-toggle > \.theme-toggle-icon\s*\{[\s\S]*?display:\s*inline-flex[\s\S]*?height:\s*16px[\s\S]*?justify-content:\s*center[\s\S]*?width:\s*16px/);
+    assert.match(themeToggleRules, /\.theme-toggle-icon svg\s*\{[\s\S]*?height:\s*16px[\s\S]*?width:\s*16px/);
     assert.match(themeToggleRules, /\.theme-toggle:focus-visible\s*\{[\s\S]*?outline:\s*2px solid var\(--theme-focus\)/);
-    assert.match(figmaTheme, /body\[data-app-section="processes"\] \.process-header-actions button,[\s\S]*?background:\s*transparent[\s\S]*?border:\s*1px solid #fbbf24[\s\S]*?box-shadow:\s*none[\s\S]*?height:\s*38px[\s\S]*?padding:\s*8px 14px/);
+    const processActionRules = figmaTheme.slice(
+      figmaTheme.indexOf('body[data-app-section="processes"] .process-header-actions button,'),
+      figmaTheme.indexOf('body[data-app-section="processes"] .process-header-actions .theme-toggle strong')
+    );
+    assert.match(processActionRules, /align-items:\s*center/);
+    assert.match(processActionRules, /background:\s*transparent/);
+    assert.match(processActionRules, /border:\s*1px solid #fbbf24/);
+    assert.match(processActionRules, /box-shadow:\s*none/);
+    assert.match(processActionRules, /display:\s*inline-flex/);
+    assert.match(processActionRules, /height:\s*38px/);
+    assert.match(processActionRules, /justify-content:\s*center/);
+    assert.match(processActionRules, /line-height:\s*1/);
+    assert.match(processActionRules, /margin:\s*0/);
+    assert.match(processActionRules, /padding:\s*8px 14px/);
+    assert.doesNotMatch(processActionRules, /transform|translateY|vertical-align|position:\s*relative|margin-(?:top|bottom)/);
     assert.match(figmaTheme, /\.topbar > \.theme-toggle\s*\{[\s\S]*?position:\s*fixed[\s\S]*?right:\s*18px[\s\S]*?top:\s*12px/);
     assert.match(figmaTheme, /body\[data-app-section="processes"\] \.process-table th\s*\{[\s\S]*?background:\s*var\(--theme-table-head\)/);
+    assert.match(html, /<th>Nº Processo<\/th>[\s\S]*?<th>Data Envio fornecedor<\/th>[\s\S]*?<th>Requisitante<\/th>/);
+    assert.match(app, /\["Empenhos do ano", data\.processosAtivos\][\s\S]*?\["Atrasados", data\.atrasados[\s\S]*?\["Liquidação Pendente", data\.pendentesLiquidacao\]/);
+    assert.match(app, /dashboard-summary-chart/);
+    assert.match(figmaTheme, /\.dashboard-summary-chart\s*\{[\s\S]*?min-height:\s*300px/);
+    assert.match(app, /class="secondary" data-supplier-history=[\s\S]*?>Histórico de Empenhos<\/button>/);
+    assert.match(app, /class="secondary" data-supplier-info=/);
     assert.match(figmaTheme, /@media \(min-width:\s*641px\)\s*\{[\s\S]*?body\[data-app-section="processes"\] \.process-table\s*\{[\s\S]*?border-spacing:\s*0 12px/);
     assert.match(figmaTheme, /body\[data-app-section="processes"\] \.process-table tbody td\s*\{[\s\S]*?background:\s*var\(--theme-surface-faint\)[\s\S]*?border-bottom:\s*1px solid var\(--theme-border-soft\)/);
     const processTableTheme = figmaTheme.slice(

@@ -6,7 +6,14 @@ import { JSDOM } from "jsdom";
 describe("Navegacao principal no DOM", () => {
   it("restaura a secao do usuario ao recarregar e salva a proxima navegacao", async () => {
     const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
+    const [baseStyles, figmaTheme] = await Promise.all([
+      readFile(new URL("../public/styles.css", import.meta.url), "utf8"),
+      readFile(new URL("../public/figma-theme.css", import.meta.url), "utf8")
+    ]);
     const dom = new JSDOM(html, { url: "http://localhost/", pretendToBeVisual: true });
+    const style = dom.window.document.createElement("style");
+    style.textContent = `${baseStyles}\n${figmaTheme}`;
+    dom.window.document.head.append(style);
     installDialogPolyfill(dom.window);
     const restoreGlobals = installDomGlobals(dom.window);
     const storageKey = "almoxActiveSection:teste@example.com";
@@ -47,6 +54,44 @@ describe("Navegacao principal no DOM", () => {
       assert.equal(dom.window.document.querySelector("#sectionTitle").textContent, "Empenhos");
       assert.equal(dom.window.sessionStorage.getItem(storageKey), "processes");
       assert.ok(dom.window.document.querySelector("#processThemeSlot").contains(dom.window.document.querySelector("#themeToggle")));
+      assert.equal(dom.window.document.querySelector("#themeToggle").dataset.targetTheme, "light");
+      assert.equal(dom.window.document.querySelectorAll("#themeToggle [data-theme-icon]").length, 2);
+      const actionButtons = [
+        dom.window.document.querySelector("#themeToggle"),
+        dom.window.document.querySelector("#downloadProcessesButton"),
+        dom.window.document.querySelector("#newProcessButton")
+      ];
+      const comparableProperties = [
+        "height",
+        "paddingTop",
+        "paddingBottom",
+        "lineHeight",
+        "alignItems",
+        "justifyContent",
+        "display",
+        "marginTop",
+        "marginBottom",
+        "position",
+        "transform",
+        "verticalAlign"
+      ];
+      for (const property of comparableProperties) {
+        const values = actionButtons.map((button) => dom.window.getComputedStyle(button)[property]);
+        assert.equal(new Set(values).size, 1, `${property}: ${values.join(", ")}`);
+      }
+      const themeStyleAcrossScreens = Object.fromEntries([
+        "height",
+        "paddingTop",
+        "paddingBottom",
+        "lineHeight",
+        "backgroundColor",
+        "borderTopColor",
+        "borderTopWidth",
+        "borderRadius"
+      ].map((property) => [property, dom.window.getComputedStyle(actionButtons[0])[property]]));
+      const visibleThemeIcon = dom.window.document.querySelector('#themeToggle [data-theme-icon="light"]');
+      assert.equal(dom.window.getComputedStyle(visibleThemeIcon).width, "16px");
+      assert.equal(dom.window.getComputedStyle(visibleThemeIcon).height, "16px");
       assert.equal(dom.window.document.querySelector("#refreshProcessesButton"), null);
       assert.equal(dom.window.document.querySelector("#processExportFormat"), null);
       dom.window.document.querySelector("#downloadProcessesButton").click();
@@ -70,6 +115,9 @@ describe("Navegacao principal no DOM", () => {
 
       assert.equal(dom.window.document.querySelector("#sectionTitle").textContent, "Configurações");
       assert.ok(dom.window.document.querySelector(".topbar").contains(dom.window.document.querySelector("#themeToggle")));
+      for (const [property, expected] of Object.entries(themeStyleAcrossScreens)) {
+        assert.equal(dom.window.getComputedStyle(dom.window.document.querySelector("#themeToggle"))[property], expected, property);
+      }
       assert.equal(dom.window.document.querySelector("#settingsAccountTitle").textContent, "Configurações");
       assert.equal(dom.window.document.querySelector("#settingsBackButton"), null);
       const profileName = dom.window.document.querySelector('#settingsAccountForm input[name="nome"]');
@@ -101,6 +149,7 @@ describe("Navegacao principal no DOM", () => {
       assert.equal(dom.window.localStorage.getItem("almoxTheme"), "light");
       assert.equal(dom.window.document.documentElement.dataset.theme, "light");
       assert.equal(dom.window.document.querySelector("#themeToggle").getAttribute("aria-label"), "Alternar para modo escuro");
+      assert.equal(dom.window.document.querySelector("#themeToggle").dataset.targetTheme, "dark");
 
       const logoutButton = dom.window.document.querySelector("#logoutButton");
       logoutButton.click();
