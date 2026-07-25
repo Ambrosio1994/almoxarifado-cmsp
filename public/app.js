@@ -236,6 +236,9 @@ const changePasswordDialog = document.querySelector("#changePasswordDialog");
 const changePasswordForm = document.querySelector("#changePasswordForm");
 const changePasswordMessage = document.querySelector("#changePasswordMessage");
 const changePasswordCloseButton = document.querySelector("#changePasswordCloseButton");
+const accountProfileName = document.querySelector("#accountProfileName");
+const accountProfileImage = document.querySelector("#accountProfileImage");
+const accountThemeToggle = document.querySelector("#accountThemeToggle");
 const adminPasswordDialog = document.querySelector("#adminPasswordDialog");
 const adminPasswordForm = document.querySelector("#adminPasswordForm");
 const adminPasswordUser = document.querySelector("#adminPasswordUser");
@@ -308,10 +311,15 @@ function configureCommitmentFields(numeroEmpenho = "") {
 }
 
 function initTheme() {
-  const savedTheme = localStorage.getItem("almoxTheme") || "light";
+  const savedTheme = localStorage.getItem("almoxTheme") || "dark";
   applyTheme(savedTheme === "dark" ? "dark" : "light");
   themeToggle?.addEventListener("click", () => {
     const nextTheme = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+    applyTheme(nextTheme);
+    localStorage.setItem("almoxTheme", nextTheme);
+  });
+  accountThemeToggle?.addEventListener("change", () => {
+    const nextTheme = accountThemeToggle.checked ? "dark" : "light";
     applyTheme(nextTheme);
     localStorage.setItem("almoxTheme", nextTheme);
   });
@@ -320,10 +328,12 @@ function initTheme() {
 function applyTheme(theme) {
   document.documentElement.dataset.theme = theme;
   const isDark = theme === "dark";
-  if (!themeToggle) return;
-  themeToggle.setAttribute("aria-label", isDark ? "Alternar para modo claro" : "Alternar para modo escuro");
-  themeToggle.querySelector("span").textContent = isDark ? "☼" : "◐";
-  themeToggle.querySelector("strong").textContent = isDark ? "Claro" : "Escuro";
+  if (themeToggle) {
+    themeToggle.setAttribute("aria-label", isDark ? "Alternar para modo claro" : "Alternar para modo escuro");
+    themeToggle.querySelector("span").textContent = isDark ? "☼" : "◐";
+    themeToggle.querySelector("strong").textContent = isDark ? "Claro" : "Escuro";
+  }
+  if (accountThemeToggle) accountThemeToggle.checked = isDark;
 }
 
 async function initAuth() {
@@ -633,6 +643,7 @@ function enforceRequiredPasswordChange() {
 
 function showAuth() {
   document.body.classList.remove("auth-pending");
+  document.body.dataset.appSection = "auth";
   authScreen.classList.remove("hidden");
   appShell.classList.add("hidden");
   sidebar.classList.add("hidden");
@@ -700,6 +711,11 @@ function renderSidebarProfile() {
     sidebarAvatarImage.hidden = true;
   }
   sidebarAvatar.classList.toggle("has-image", Boolean(currentUser.foto));
+  if (accountProfileName) accountProfileName.value = currentUser.name || currentUser.email || "";
+  if (accountProfileImage) {
+    accountProfileImage.src = currentUser.foto || "/assets/figma/settings-avatar.png";
+    accountProfileImage.alt = currentUser.name ? `Foto de ${currentUser.name}` : "Foto do perfil";
+  }
 }
 
 function applyRoleVisibility() {
@@ -3047,6 +3063,7 @@ function rememberActiveSection(section) {
 function activateSectionShell(section) {
   cancelStandardDocumentUpload();
   state.activeSection = section;
+  document.body.dataset.appSection = section;
   navItems.forEach((item) => {
     const active = item.dataset.section === section;
     item.classList.toggle("active", active);

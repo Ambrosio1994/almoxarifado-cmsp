@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import {
   isValidPasswordInput,
   PASSWORD_POLICY_MESSAGE
@@ -9,6 +9,7 @@ import {
 const html = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
 const app = readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
 const styles = readFileSync(new URL("../public/styles.css", import.meta.url), "utf8");
+const figmaTheme = readFileSync(new URL("../public/figma-theme.css", import.meta.url), "utf8");
 const passwordComponent = readFileSync(new URL("../public/password-fields.js", import.meta.url), "utf8");
 
 describe("contrato visual e de navegacao", () => {
@@ -30,6 +31,33 @@ describe("contrato visual e de navegacao", () => {
     assert.match(loginForm, /name="senha"[^>]*type="password"/);
     assert.match(loginForm, />Entrar<\/button>/);
     assert.doesNotMatch(loginForm, /consultar empenhos/i);
+  });
+
+  it("aplica as superficies do Figma com assets locais e sem alterar os fluxos reais", () => {
+    assert.match(html, /href="\/figma-theme\.css"/);
+    assert.match(html, /class="auth-heading"[\s\S]*?Acesse sua conta[\s\S]*?Insira suas credenciais abaixo/);
+    assert.match(figmaTheme, /\.auth-screen\s*\{[\s\S]*?login-background\.png/);
+    assert.match(figmaTheme, /body\[data-app-section="dashboard"\][\s\S]*?dashboard-overlay\.png/);
+    assert.match(figmaTheme, /body\[data-app-section="processes"\][\s\S]*?processes-background\.png/);
+    assert.match(figmaTheme, /body\[data-app-section="board"\][\s\S]*?board-background\.png/);
+    assert.match(figmaTheme, /body\[data-app-section="suppliers"\][\s\S]*?suppliers-background\.png/);
+    assert.match(app, /document\.body\.dataset\.appSection = section/);
+    assert.match(app, /localStorage\.getItem\("almoxTheme"\) \|\| "dark"/);
+    assert.match(html, /id="accountProfileName"[^>]*readonly/);
+    assert.match(html, /id="accountThemeToggle"[^>]*role="switch"/);
+    for (const asset of [
+      "login-background.png",
+      "dashboard-overlay.png",
+      "processes-background.png",
+      "board-background.png",
+      "suppliers-background.png",
+      "settings-background.png",
+      "settings-avatar.png",
+      "eye-off.svg",
+      "camera.svg"
+    ]) {
+      assert.equal(existsSync(new URL(`../public/assets/figma/${asset}`, import.meta.url)), true, asset);
+    }
   });
 
   it("restaura a ultima secao no boot sem carregar processos antecipadamente", () => {
