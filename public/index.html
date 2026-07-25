@@ -68,8 +68,16 @@
           <button type="button" class="mobile-menu-toggle" id="mobileMenuToggle" aria-label="Abrir menu" aria-controls="sidebar" aria-expanded="false">☰</button>
           <strong id="sectionTitle" class="sr-only">Gráficos</strong>
         </div>
-        <button type="button" class="theme-toggle" id="themeToggle" aria-label="Alternar para modo escuro" title="Alternar tema">
-          <span aria-hidden="true">◐</span>
+        <button type="button" class="theme-toggle" id="themeToggle" data-target-theme="dark" aria-label="Alternar para modo escuro" title="Alternar tema">
+          <span class="theme-toggle-icon" aria-hidden="true">
+            <svg data-theme-icon="light" viewBox="0 0 24 24" focusable="false">
+              <circle cx="12" cy="12" r="4"></circle>
+              <path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.65 17.65l1.42 1.42M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.65 6.35l1.42-1.42"></path>
+            </svg>
+            <svg data-theme-icon="dark" viewBox="0 0 24 24" focusable="false">
+              <path d="M20.2 15.1A8.5 8.5 0 0 1 8.9 3.8 8.5 8.5 0 1 0 20.2 15.1Z"></path>
+            </svg>
+          </span>
           <strong>Escuro</strong>
         </button>
       </header>
@@ -108,16 +116,16 @@
                 <caption class="sr-only">Lista de processos e empenhos</caption>
                 <thead>
                   <tr>
-                    <th>Nº Processo no SPED</th>
+                    <th>Nº Processo</th>
                     <th>Nº Empenho</th>
                     <th>Fornecedor</th>
                     <th>Materiais</th>
                     <th>Valor total</th>
-                    <th>Envio fornecedor</th>
+                    <th>Data Envio fornecedor</th>
                     <th>Dias</th>
                     <th>Data entrega</th>
                     <th>Envio liquidacao</th>
-                    <th>Criado por</th>
+                    <th>Requisitante</th>
                     <th>Status</th>
                   </tr>
                 </thead>
@@ -131,7 +139,7 @@
         <section class="module-view hidden board-view" id="boardView">
           <div class="content-header board-heading">
             <div>
-              <h1>Quadro de processos</h1>
+              <h1>Quadro de Empenhos</h1>
               <span>Visualize e avance os empenhos pelas etapas permitidas.</span>
             </div>
           </div>
@@ -155,7 +163,7 @@
             <button type="button" class="secondary" id="refreshBoardButton">Atualizar</button>
           </div>
           <p class="board-message" id="boardMessage" role="status" aria-live="polite"></p>
-          <div id="kanbanBoard" class="kanban-board" aria-label="Quadro de processos"></div>
+          <div id="kanbanBoard" class="kanban-board" aria-label="Quadro de Empenhos"></div>
         </section>
         <section class="module-view hidden" id="suppliersView"></section>
         <section class="module-view hidden" id="auditView"></section>

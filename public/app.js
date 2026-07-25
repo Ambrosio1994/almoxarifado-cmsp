@@ -326,7 +326,7 @@ function applyTheme(theme) {
   const isDark = theme === "dark";
   if (themeToggle) {
     themeToggle.setAttribute("aria-label", isDark ? "Alternar para modo claro" : "Alternar para modo escuro");
-    themeToggle.querySelector("span").textContent = isDark ? "☼" : "◐";
+    themeToggle.dataset.targetTheme = isDark ? "light" : "dark";
     themeToggle.querySelector("strong").textContent = isDark ? "Claro" : "Escuro";
   }
 }
@@ -3087,7 +3087,7 @@ function activateSectionShell(section) {
     if (active) item.setAttribute("aria-current", "page");
     else item.removeAttribute("aria-current");
   });
-  const titles = { dashboard: "Gráficos", processes: "Empenhos", board: "Quadro de processos", suppliers: "Fornecedores", audit: "Auditoria", users: "Usuarios e permissoes", settings: "Configurações" };
+  const titles = { dashboard: "Gráficos", processes: "Empenhos", board: "Quadro de Empenhos", suppliers: "Fornecedores", audit: "Auditoria", users: "Usuarios e permissoes", settings: "Configurações" };
   if (sectionTitle) sectionTitle.textContent = titles[section] || "";
   processListView.classList.toggle("hidden", section !== "processes");
   dashboardView.classList.toggle("hidden", section !== "dashboard");
@@ -3121,10 +3121,10 @@ function renderDashboardView() {
 
 function dashboardMetricsMarkup(data = {}) {
   const items = [
-    ["Processos do ano", data.processosAtivos],
-    ["Em atraso", data.atrasados, "attention"],
+    ["Empenhos do ano", data.processosAtivos],
+    ["Atrasados", data.atrasados, "attention"],
     ["Aguardando entrega", data.aguardandoEntrega],
-    ["Pendentes de liquidacao", data.pendentesLiquidacao]
+    ["Liquidação Pendente", data.pendentesLiquidacao]
   ];
   return items.map(([label, value, tone = ""]) => `
     <article class="metric ${tone}" aria-label="${escapeAttribute(`${label}: ${Number(value) || 0}`)}">
@@ -3197,7 +3197,7 @@ function financialChart() {
     ["Empenhado", committed],
     ["Liquidado", liquidated],
     ["Pago", paid]
-  ], money, "Nenhum valor financeiro registrado neste ano.");
+  ], money, "Nenhum valor financeiro registrado neste ano.", "dashboard-summary-chart");
 }
 
 function groupedMonth(row, max) {
@@ -3229,15 +3229,15 @@ function groupedBar(month, key, label, value, max) {
 
 function statusDistributionChart(entries = []) {
   const normalized = entries.map((entry) => [entry.status, entry.quantidade]);
-  return chartCard("Distribuicao dos processos por status", normalized, (value) => String(Number(value) || 0), "Nenhum processo associado a este ano.");
+  return chartCard("Distribuicao dos processos por status", normalized, (value) => String(Number(value) || 0), "Nenhum processo associado a este ano.", "dashboard-summary-chart");
 }
 
-function chartCard(title, entries = [], formatter = String, emptyMessage = "Nenhum dado disponivel.") {
+function chartCard(title, entries = [], formatter = String, emptyMessage = "Nenhum dado disponivel.", extraClass = "") {
   const hasData = entries.some(([, value]) => Number(value) > 0);
-  if (!hasData) return emptyChartCard(title, emptyMessage);
+  if (!hasData) return emptyChartCard(title, emptyMessage, extraClass);
   const max = Math.max(...entries.map(([, value]) => Number(value)), 1);
   return `
-    <article class="chart-card">
+    <article class="chart-card ${extraClass}">
       <h2>${escapeHtml(title)}</h2>
       <div class="chart-bars">
         ${entries.map(([label, value]) => `
@@ -3524,8 +3524,8 @@ function supplierRow(fornecedor) {
         ${supplierSummaryLine("Enderecos", fornecedor.enderecos)}
       </div>
       <div class="supplier-actions">
-        <button type="button" class="secondary" data-supplier-history="${escapeAttribute(key)}">Historico de processos</button>
-        ${currentUser.role === "auditor" ? "" : `<button type="button" data-supplier-info="${escapeAttribute(fornecedor.razaoSocial)}">Adicionar informacoes</button>`}
+        <button type="button" class="secondary" data-supplier-history="${escapeAttribute(key)}">Histórico de Empenhos</button>
+        ${currentUser.role === "auditor" ? "" : `<button type="button" class="secondary" data-supplier-info="${escapeAttribute(fornecedor.razaoSocial)}">Adicionar informacoes</button>`}
       </div>
     </article>
     ${historyOpen ? supplierHistory(fornecedor) : ""}
@@ -3544,8 +3544,8 @@ function supplierDetail(fornecedor) {
         ${fornecedor.observacoes ? `<span>Observações: ${escapeHtml(fornecedor.observacoes)}</span>` : ""}
       </div>
       <div class="supplier-actions">
-        <button type="button" class="secondary" data-supplier-history="${escapeAttribute(normalizeText(fornecedor.razaoSocial))}">Historico de processos</button>
-        ${currentUser.role === "auditor" ? "" : `<button type="button" data-supplier-info="${escapeAttribute(fornecedor.razaoSocial)}">Adicionar informacoes</button>`}
+        <button type="button" class="secondary" data-supplier-history="${escapeAttribute(normalizeText(fornecedor.razaoSocial))}">Histórico de Empenhos</button>
+        ${currentUser.role === "auditor" ? "" : `<button type="button" class="secondary" data-supplier-info="${escapeAttribute(fornecedor.razaoSocial)}">Adicionar informacoes</button>`}
       </div>
     </section>
   `;
@@ -3555,11 +3555,11 @@ function supplierHistory(fornecedor) {
   const processos = processesForSupplier(fornecedor.razaoSocial);
   return `
     <section class="supplier-history">
-      <strong>Historico de processos</strong>
+      <strong>Histórico de Empenhos</strong>
       ${processos.length ? `
         <div class="table-wrap compact-table">
           <table>
-            <caption class="sr-only">Processos vinculados a ${escapeHtml(fornecedor.razaoSocial)}</caption>
+            <caption class="sr-only">Empenhos vinculados a ${escapeHtml(fornecedor.razaoSocial)}</caption>
             <thead>
               <tr>
                 <th>Processo</th>
@@ -3582,7 +3582,7 @@ function supplierHistory(fornecedor) {
             </tbody>
           </table>
         </div>
-      ` : `<p class="empty-state">Nenhum processo vinculado a este fornecedor.</p>`}
+      ` : `<p class="empty-state">Nenhum empenho vinculado a este fornecedor.</p>`}
     </section>
   `;
 }

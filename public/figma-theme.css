@@ -404,8 +404,8 @@ html[data-theme] .sidebar-logout {
 html[data-theme] .theme-toggle {
   align-items: center;
   backdrop-filter: blur(14px);
-  background: var(--theme-control-bg);
-  border: 1px solid var(--theme-border);
+  background: transparent;
+  border: 1px solid #fbbf24;
   border-radius: 8px;
   box-shadow: none;
   box-sizing: border-box;
@@ -415,30 +415,50 @@ html[data-theme] .theme-toggle {
   height: 38px;
   justify-content: center;
   line-height: 1;
+  margin: 0;
   min-height: 38px;
   padding: 8px 14px;
-  vertical-align: middle;
   white-space: nowrap;
 }
 
-.theme-toggle > span {
+.theme-toggle > .theme-toggle-icon {
   align-items: center;
   color: currentColor;
   display: inline-flex;
-  flex: 0 0 18px;
-  font-family: Arial, sans-serif;
-  font-size: 17px;
-  height: 18px;
+  flex: 0 0 16px;
+  height: 16px;
   justify-content: center;
   line-height: 1;
+  margin: 0;
   opacity: 1;
-  width: 18px;
+  padding: 0;
+  width: 16px;
+}
+
+.theme-toggle-icon svg {
+  display: none;
+  fill: none;
+  height: 16px;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+  width: 16px;
+}
+
+.theme-toggle[data-target-theme="light"] [data-theme-icon="light"],
+.theme-toggle[data-target-theme="dark"] [data-theme-icon="dark"] {
+  display: block;
 }
 
 .theme-toggle > strong {
-  display: inline;
+  align-items: center;
+  display: inline-flex;
   font-size: 13px;
+  justify-content: center;
   line-height: 1;
+  margin: 0;
+  padding: 0;
 }
 
 .theme-toggle:focus {
@@ -458,11 +478,21 @@ html[data-theme] .theme-toggle {
 }
 
 .process-theme-slot {
+  align-items: center;
   display: inline-flex;
+  height: 38px;
+  justify-content: center;
+  line-height: 1;
+  margin: 0;
+  padding: 0;
 }
 
 .process-theme-slot .theme-toggle {
   position: static;
+}
+
+body[data-app-section="processes"] .process-header-actions {
+  align-items: center;
 }
 
 .app-shell > main {
@@ -568,9 +598,9 @@ html[data-theme] body[data-app-section="processes"] .process-header-actions butt
   height: 38px;
   justify-content: center;
   line-height: 1;
+  margin: 0;
   min-height: 38px;
   padding: 8px 14px;
-  vertical-align: middle;
 }
 
 body[data-app-section="processes"] .process-header-actions .theme-toggle strong {
@@ -875,6 +905,21 @@ html[data-theme] .chart-card {
   min-height: 334px;
 }
 
+.dashboard-summary-chart {
+  display: flex;
+  flex-direction: column;
+  min-height: 300px;
+}
+
+.dashboard-summary-chart .chart-bars {
+  align-content: space-evenly;
+  flex: 1;
+}
+
+.dashboard-summary-chart .chart-empty-state {
+  flex: 1;
+}
+
 .chart-legend span {
   color: var(--theme-text-muted) !important;
 }
@@ -1037,11 +1082,6 @@ html[data-theme] .kanban-card {
 
 .module-row span {
   color: var(--theme-text-muted);
-}
-
-.supplier-actions button:not(.secondary) {
-  background: transparent;
-  border-color: transparent;
 }
 
 .supplier-detail,

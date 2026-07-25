@@ -76,7 +76,7 @@ describe("Quadro kanban no DOM", () => {
 
       const board = dom.window.document.querySelector("#kanbanBoard");
       assert.equal(dom.window.document.querySelector('[data-section="board"]').getAttribute("aria-current"), "page");
-      assert.equal(dom.window.document.querySelector("#sectionTitle").textContent, "Quadro de processos");
+      assert.equal(dom.window.document.querySelector("#sectionTitle").textContent, "Quadro de Empenhos");
       assert.equal(board.querySelectorAll(".kanban-column").length, STATUSES.length);
       assert.ok([...dom.window.document.querySelector("#boardResponsibleFilter").options].some((option) => option.value === "Carla"));
       assert.ok([...dom.window.document.querySelector("#boardSupplierFilter").options].some((option) => option.value === "Beta"));
@@ -105,7 +105,7 @@ describe("Quadro kanban no DOM", () => {
       await waitFor(() => !dom.window.document.querySelector("#processDetailView").classList.contains("hidden"));
       dom.window.document.querySelector("#backToProcesses").click();
       await waitFor(() => !dom.window.document.querySelector("#boardView").classList.contains("hidden"));
-      assert.equal(dom.window.document.querySelector("#sectionTitle").textContent, "Quadro de processos");
+      assert.equal(dom.window.document.querySelector("#sectionTitle").textContent, "Quadro de Empenhos");
 
       const search = dom.window.document.querySelector("#boardSearchInput");
       search.value = "Beta";

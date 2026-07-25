@@ -30,6 +30,13 @@ describe("Gráficos no DOM", () => {
       assert.equal(dashboard.querySelector("h1").textContent, "Gráficos");
       assert.equal(dashboard.querySelector("#dashboardYearSelect"), null);
       assert.deepEqual([...dashboard.querySelectorAll(".metric strong")].map((item) => item.textContent.trim()), ["2", "1", "1", "0"]);
+      assert.deepEqual([...dashboard.querySelectorAll(".metric span")].map((item) => item.textContent.trim()), [
+        "Empenhos do ano",
+        "Atrasados",
+        "Aguardando entrega",
+        "Liquidação Pendente"
+      ]);
+      assert.equal(dashboard.querySelectorAll(".dashboard-summary-chart").length, 2);
       assert.equal(dashboard.querySelector(".external-pie"), null);
       assert.match(dashboard.textContent, /Aguardando entrega/);
       assert.match(dashboard.textContent, /Anulado/);

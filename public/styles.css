@@ -3255,16 +3255,17 @@ dialog::backdrop {
     text-transform: uppercase;
   }
 
-  .process-table tbody td:nth-child(1)::before { content: "Processo"; }
+  .process-table tbody td:nth-child(1)::before { content: "Nº Processo"; }
   .process-table tbody td:nth-child(2)::before { content: "Empenho"; }
   .process-table tbody td:nth-child(3)::before { content: "Fornecedor"; }
   .process-table tbody td:nth-child(4)::before { content: "Materiais"; }
   .process-table tbody td:nth-child(5)::before { content: "Valor total"; }
-  .process-table tbody td:nth-child(6)::before { content: "Envio fornecedor"; }
+  .process-table tbody td:nth-child(6)::before { content: "Data Envio fornecedor"; }
   .process-table tbody td:nth-child(7)::before { content: "Dias"; }
   .process-table tbody td:nth-child(8)::before { content: "Entrega"; }
   .process-table tbody td:nth-child(9)::before { content: "Envio liquidação"; }
-  .process-table tbody td:nth-child(10)::before { content: "Status"; }
+  .process-table tbody td:nth-child(10)::before { content: "Requisitante"; }
+  .process-table tbody td:nth-child(11)::before { content: "Status"; }
 
   .process-table .empty-table-row td::before {
     display: none;
