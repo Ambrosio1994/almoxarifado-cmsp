@@ -50,7 +50,7 @@
         </div>
       </section>
       <nav class="side-nav" aria-label="Navegacao principal">
-        <a href="#" class="nav-item active" data-section="dashboard" aria-current="page"><span aria-hidden="true">▦</span>Painel</a>
+        <a href="#" class="nav-item active" data-section="dashboard" aria-current="page"><span aria-hidden="true">▦</span>Gráficos</a>
         <a href="#" class="nav-item" data-section="processes"><span aria-hidden="true">▱</span>Empenhos</a>
         <a href="#" class="nav-item" data-section="board"><span aria-hidden="true">▥</span>Quadro</a>
         <a href="#" class="nav-item" data-section="suppliers"><span aria-hidden="true">▤</span>Fornecedores</a>
@@ -66,7 +66,7 @@
       <header class="topbar">
         <div class="topbar-title">
           <button type="button" class="mobile-menu-toggle" id="mobileMenuToggle" aria-label="Abrir menu" aria-controls="sidebar" aria-expanded="false">☰</button>
-          <strong id="sectionTitle" class="sr-only">Painel</strong>
+          <strong id="sectionTitle" class="sr-only">Gráficos</strong>
         </div>
         <button type="button" class="theme-toggle" id="themeToggle" aria-label="Alternar para modo escuro" title="Alternar tema">
           <span aria-hidden="true">◐</span>
@@ -84,7 +84,7 @@
                 <h1>Empenhos</h1>
               </div>
               <div class="process-header-actions">
-                <input id="processExportFormat" type="hidden" value="excel">
+                <span class="process-theme-slot" id="processThemeSlot"></span>
                 <button type="button" class="secondary" id="downloadProcessesButton">Download</button>
                 <button type="button" id="newProcessButton">+ Novo</button>
               </div>
@@ -127,7 +127,7 @@
           </section>
         </section>
 
-        <section class="module-view" id="dashboardView"><p class="empty-state">Carregando painel...</p></section>
+        <section class="module-view" id="dashboardView"><p class="empty-state">Carregando gráficos...</p></section>
         <section class="module-view hidden board-view" id="boardView">
           <div class="content-header board-heading">
             <div>
@@ -359,6 +359,27 @@
         </div>
         <p class="form-message" id="cancelProcessMessage" role="alert" aria-live="assertive"></p>
       </form>
+    </dialog>
+
+    <dialog id="processExportDialog" class="small-dialog" aria-labelledby="processExportDialogTitle">
+      <form method="dialog" class="dialog-header">
+        <strong id="processExportDialogTitle">Baixar empenhos</strong>
+        <button type="submit" class="secondary">Fechar</button>
+      </form>
+      <div class="download-options">
+        <button type="button" class="download-choice" data-process-export-format="excel">
+          <strong>Excel (.xls)</strong>
+          <span>Planilha pronta para abrir no Excel.</span>
+        </button>
+        <button type="button" class="download-choice" data-process-export-format="pdf">
+          <strong>PDF (.pdf)</strong>
+          <span>Relatório dos empenhos em formato PDF.</span>
+        </button>
+        <button type="button" class="download-choice" data-process-export-format="csv">
+          <strong>CSV (.csv)</strong>
+          <span>Dados separados por vírgulas para importação.</span>
+        </button>
+      </div>
     </dialog>
 
     <dialog id="downloadDialog" class="small-dialog" aria-labelledby="downloadDialogTitle">

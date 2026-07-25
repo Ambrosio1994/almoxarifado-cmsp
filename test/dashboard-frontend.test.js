@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { JSDOM } from "jsdom";
 
-describe("Painel no DOM", () => {
-  it("troca o ano, repete a requisicao com erro e apresenta estados vazios acessiveis", async () => {
+describe("Gráficos no DOM", () => {
+  it("move a troca de ano para Configuracoes e apresenta estados vazios acessiveis", async () => {
     const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
     const dom = new JSDOM(html, { url: "http://localhost/", pretendToBeVisual: true });
     const restoreGlobals = installDomGlobals(dom.window);
@@ -17,7 +17,7 @@ describe("Painel no DOM", () => {
       if (path === "/api/dashboard") return jsonResponse(dashboardPayload(2040, { populated: true }));
       if (path === "/api/dashboard?ano=2041") {
         year2041Attempts += 1;
-        if (year2041Attempts === 1) return jsonResponse({ error: "Falha temporaria do painel." }, 503);
+        if (year2041Attempts === 1) return jsonResponse({ error: "Falha temporaria dos gráficos." }, 503);
         return jsonResponse(dashboardPayload(2041));
       }
       throw new Error(`Requisicao inesperada no teste: ${path}`);
@@ -27,7 +27,8 @@ describe("Painel no DOM", () => {
       await import(`${new URL("../public/app.js", import.meta.url).href}?dashboard-test=${Date.now()}`);
 
       const dashboard = dom.window.document.querySelector("#dashboardView");
-      assert.equal(dashboard.querySelector("#dashboardYearSelect").value, "2040");
+      assert.equal(dashboard.querySelector("h1").textContent, "Gráficos");
+      assert.equal(dashboard.querySelector("#dashboardYearSelect"), null);
       assert.deepEqual([...dashboard.querySelectorAll(".metric strong")].map((item) => item.textContent.trim()), ["2", "1", "1", "0"]);
       assert.equal(dashboard.querySelector(".external-pie"), null);
       assert.match(dashboard.textContent, /Aguardando entrega/);
@@ -43,18 +44,29 @@ describe("Painel no DOM", () => {
       monthlyTable.open = true;
       assert.equal(monthlyTable.querySelectorAll("tbody tr").length, 12);
 
-      const yearSelect = dashboard.querySelector("#dashboardYearSelect");
+      const settingsNavigation = dom.window.document.querySelector('[data-section="settings"]');
+      settingsNavigation.click();
+      await waitFor(() => settingsNavigation.getAttribute("aria-current") === "page");
+      const settings = dom.window.document.querySelector("#settingsView");
+      const yearSelect = settings.querySelector("#settingsDashboardYear");
+      assert.equal(yearSelect.value, "2040");
+
       yearSelect.value = "2041";
       yearSelect.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
-      await waitFor(() => dashboard.querySelector(".section-error"));
+      await waitFor(() => /Falha temporaria dos gráficos/.test(settings.querySelector("#settingsAccountMessage")?.textContent || ""));
 
       assert.equal(year2041Attempts, 1);
-      assert.match(dashboard.textContent, /Falha temporaria do painel/);
-      dashboard.querySelector(".section-error button").click();
-      await waitFor(() => dashboard.querySelector("#dashboardYearSelect")?.value === "2041");
+      assert.equal(yearSelect.value, "2040");
+      yearSelect.value = "2041";
+      yearSelect.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+      await waitFor(() => yearSelect.value === "2041" && /Ano dos gráficos atualizado/.test(settings.querySelector("#settingsAccountMessage")?.textContent || ""));
 
       assert.equal(year2041Attempts, 2);
-      assert.equal(dom.window.document.activeElement, dashboard.querySelector("#dashboardYearSelect"));
+      assert.equal(dom.window.localStorage.getItem("almoxDashboardYear:teste@example.com"), "2041");
+
+      const dashboardNavigation = dom.window.document.querySelector('[data-section="dashboard"]');
+      dashboardNavigation.click();
+      await waitFor(() => dashboardNavigation.getAttribute("aria-current") === "page");
       assert.equal(dashboard.querySelectorAll(".chart-empty-state").length, 3);
       assert.match(dashboard.textContent, /Nenhuma movimentacao financeira registrada neste ano/);
       assert.equal(dashboard.querySelector(".bar-fill"), null);

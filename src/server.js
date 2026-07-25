@@ -578,6 +578,41 @@ async function handleAuth(req, res, url) {
     return;
   }
 
+  if (req.method === "PUT" && url.pathname === "/auth/profile") {
+    if (usesCookieSession(req) && !isSameOriginMutation(req)) {
+      sendJson(res, 403, { error: "Origem da requisicao nao autorizada." });
+      return;
+    }
+    const authenticatedUser = await sessionUser(req);
+    if (!authenticatedUser) {
+      sendJson(res, 401, { error: "Faca login para alterar o perfil." });
+      return;
+    }
+    const body = await readJson(req, AUTH_MAX_BODY_BYTES);
+    const nome = String(body.nome || "").trim();
+    if (!nome || nome.length > 100) {
+      sendJson(res, 400, { error: "Informe um nome de ate 100 caracteres." });
+      return;
+    }
+    const store = await readStore();
+    const user = store.usuarios.find((item) => item.id === authenticatedUser.id && item.ativo !== false);
+    if (!user || positiveAuthVersion(user.authVersion) !== positiveAuthVersion(authenticatedUser.authVersion)) {
+      sendJson(res, 401, { error: "Sessao nao encontrada" });
+      return;
+    }
+    const previousName = user.nome;
+    user.nome = nome;
+    user.atualizadoEm = new Date().toISOString();
+    await writeStore(store, [transactionalSecurityEvent("profile_name_changed", {
+      actorUserId: user.id,
+      actorEmail: user.email,
+      targetUserId: user.id,
+      metadata: { previousName, newName: nome }
+    })]);
+    sendJson(res, 200, { user: publicUser(user) });
+    return;
+  }
+
   if (req.method === "PUT" && url.pathname === "/auth/profile-photo") {
     if (usesCookieSession(req) && !isSameOriginMutation(req)) {
       sendJson(res, 403, { error: "Origem da requisicao nao autorizada." });

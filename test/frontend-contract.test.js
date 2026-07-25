@@ -64,6 +64,17 @@ describe("contrato visual e de navegacao", () => {
     }
   });
 
+  it("mantem a tela de login visualmente fixa em qualquer tema", () => {
+    const authTheme = figmaTheme.slice(figmaTheme.indexOf(".auth-screen {"), figmaTheme.indexOf(".sidebar {"));
+    assert.match(authTheme, /login-background\.png/);
+    assert.match(authTheme, /color-scheme:\s*dark/);
+    assert.match(authTheme, /background:\s*rgb\(6 10 24 \/ 70%\)/);
+    assert.match(authTheme, /color:\s*#f8fafc/);
+    assert.match(authTheme, /background:\s*rgb\(14 21 40 \/ 90%\)/);
+    assert.doesNotMatch(authTheme, /var\(--theme-/);
+    assert.doesNotMatch(figmaTheme, /html\[data-theme="light"\] \.auth-form \.password-toggle\s*\{[\s\S]*?filter:/);
+  });
+
   it("define conjuntos completos de tokens claros e escuros para todas as superficies", () => {
     const lightStart = figmaTheme.indexOf(":root,");
     const darkStart = figmaTheme.indexOf('html[data-theme="dark"]');
@@ -139,7 +150,7 @@ describe("contrato visual e de navegacao", () => {
   it("restaura a ultima secao no boot sem carregar processos antecipadamente", () => {
     const boot = app.slice(app.indexOf("async function boot()"), app.indexOf("async function loadDashboardData"));
     assert.match(boot, /api\("\/api\/meta"\)/);
-    assert.match(boot, /loadDashboardData\(\)/);
+    assert.match(boot, /loadDashboardData\(savedDashboardYear\(\)\)/);
     assert.match(boot, /openSection\(savedActiveSection\(\)\)/);
     assert.doesNotMatch(boot, /\/api\/processes/);
     assert.match(app, /sessionStorage\.getItem\(activeSectionStorageKey\(\)\)/);
@@ -148,6 +159,14 @@ describe("contrato visual e de navegacao", () => {
     assert.match(processView, /class="[^"]*hidden[^"]*"/);
     assert.match(html, /id="dashboardView"/);
     assert.match(html, /id="sectionTitle" class="sr-only"/);
+  });
+
+  it("apresenta a antiga secao Painel com o nome Graficos", () => {
+    assert.match(html, /data-section="dashboard"[\s\S]*?Gráficos<\/a>/);
+    assert.match(app, /dashboard:\s*"Gráficos"/);
+    assert.match(app, /<h1>Gráficos<\/h1>/);
+    assert.doesNotMatch(html, /data-section="dashboard"[^>]*>[\s\S]*?Painel<\/a>/);
+    assert.doesNotMatch(app, /<h1>Painel<\/h1>/);
   });
 
   it("oferece o Quadro como secao persistente, acessivel e responsiva", () => {
@@ -174,7 +193,13 @@ describe("contrato visual e de navegacao", () => {
     assert.match(html, /id="settingsView"/);
     assert.match(html, /data-section="suppliers"[\s\S]*?Fornecedores<\/a>[\s\S]*?data-section="settings"[\s\S]*?Configurações<\/a>/);
     assert.match(app, /class="settings-account-screen"/);
+    assert.match(app, /id="settingsAccountForm"/);
+    assert.match(app, /name="nome"[\s\S]*?maxlength="100"[\s\S]*?required/);
+    assert.doesNotMatch(app, /name="nome"[^>]*readonly/);
+    assert.doesNotMatch(app, /settingsBackButton|settings-back-button/);
     assert.match(app, /id="settingsPasswordButton"/);
+    assert.match(app, /id="settingsDashboardYear"/);
+    assert.match(app, /api\("\/auth\/profile"/);
     assert.doesNotMatch(app, /settingsThemeToggle|settingsThemeLabel/);
     assert.match(app, /id="settingsProfileImageButton"/);
     assert.match(app, /id="settingsProfileImageInput" type="file" accept="image\/png,image\/jpeg,image\/webp"/);
@@ -296,16 +321,19 @@ describe("contrato visual e de navegacao", () => {
   it("organiza os controles de Empenhos sem alterar pesquisa, filtros ou download", () => {
     const processList = html.slice(html.indexOf('id="processListView"'), html.indexOf('id="dashboardView"'));
     assert.match(processList, /<h1>Empenhos<\/h1>/);
-    assert.match(processList, /id="processExportFormat" type="hidden" value="excel"/);
-    assert.doesNotMatch(processList, /<select id="processExportFormat"/);
+    assert.doesNotMatch(processList, /processExportFormat/);
     assert.doesNotMatch(processList, /id="refreshProcessesButton"/);
+    assert.match(processList, /class="process-header-actions"[\s\S]*?id="processThemeSlot"[\s\S]*?id="downloadProcessesButton"[\s\S]*?id="newProcessButton"/);
     assert.match(processList, /id="downloadProcessesButton">Download<\/button>/);
     assert.match(processList, /id="newProcessButton">\+ Novo<\/button>/);
     assert.match(processList, /class="process-search-row"[\s\S]*?id="searchInput"[\s\S]*?class="process-filter-state"[\s\S]*?id="quickFilter"[\s\S]*?id="quickFilterBar"/);
-    assert.doesNotMatch(html, /processThemeSlot/);
-    assert.doesNotMatch(app, /placeThemeToggle|processThemeSlot/);
+    assert.match(html, /id="processExportDialog"[\s\S]*?data-process-export-format="excel"[\s\S]*?data-process-export-format="pdf"[\s\S]*?data-process-export-format="csv"/);
+    assert.match(app, /processExportDialog\?\.showModal\(\)/);
+    assert.match(app, /downloadProcesses\(format\)/);
+    assert.match(app, /function placeThemeToggle\(section\)/);
     assert.match(figmaTheme, /\.process-search-row\s*\{[\s\S]*?margin:[^;]*auto[\s\S]*?max-width:\s*680px/);
     assert.match(figmaTheme, /\.topbar\s*\{[\s\S]*?background:\s*transparent[\s\S]*?height:\s*0[\s\S]*?min-height:\s*0/);
+    assert.match(figmaTheme, /\.theme-toggle\s*\{[\s\S]*?background:\s*var\(--theme-control-bg\)/);
     assert.match(figmaTheme, /\.topbar > \.theme-toggle\s*\{[\s\S]*?position:\s*fixed[\s\S]*?right:\s*18px[\s\S]*?top:\s*12px/);
     assert.match(figmaTheme, /body\[data-app-section="processes"\] \.process-table th\s*\{[\s\S]*?background:\s*var\(--theme-table-head\)/);
     const processTableTheme = figmaTheme.slice(
@@ -387,7 +415,7 @@ describe("contrato visual e de navegacao", () => {
     assert.match(app, /entrega\.observacao/);
   });
 
-  it("mantem os indicadores do Painel densos em tablets e legiveis no celular", () => {
+  it("mantem os indicadores de Graficos densos em tablets e legiveis no celular", () => {
     const tabletRules = styles.slice(styles.indexOf("@media (max-width: 980px)"), styles.indexOf("@media (prefers-reduced-motion"));
     const mobileRules = styles.slice(styles.indexOf("@media (max-width: 640px)"));
     assert.doesNotMatch(tabletRules, /\.dashboard-grid\s*\{[\s\S]*?grid-template-columns:\s*1fr/);

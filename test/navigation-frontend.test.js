@@ -12,13 +12,23 @@ describe("Navegacao principal no DOM", () => {
     const storageKey = "almoxActiveSection:teste@example.com";
     dom.window.sessionStorage.setItem(storageKey, "suppliers");
     let finishLogout;
+    let profileNameRequest = null;
+    let processDownloadPath = "";
 
-    globalThis.fetch = async (input) => {
+    globalThis.fetch = async (input, options = {}) => {
       const path = String(input);
       if (path === "/auth/session") return jsonResponse({ email: "teste@example.com", nome: "Teste", role: "almoxarifado" });
       if (path === "/api/meta") return jsonResponse({ status: [], filtrosRapidos: [] });
       if (path === "/api/dashboard") return jsonResponse(dashboardPayload());
       if (path === "/api/suppliers" || path === "/api/processes") return jsonResponse([]);
+      if (path.startsWith("/api/processes/download?")) {
+        processDownloadPath = path;
+        return new Response("arquivo", { status: 200, headers: { "content-type": "text/csv" } });
+      }
+      if (path === "/auth/profile") {
+        profileNameRequest = JSON.parse(options.body);
+        return jsonResponse({ user: { email: "teste@example.com", nome: profileNameRequest.nome, role: "almoxarifado" } });
+      }
       if (path === "/auth/logout") return new Promise((resolve) => { finishLogout = () => resolve(jsonResponse({ ok: true })); });
       throw new Error(`Requisicao inesperada no teste: ${path}`);
     };
@@ -36,9 +46,22 @@ describe("Navegacao principal no DOM", () => {
 
       assert.equal(dom.window.document.querySelector("#sectionTitle").textContent, "Empenhos");
       assert.equal(dom.window.sessionStorage.getItem(storageKey), "processes");
-      assert.ok(dom.window.document.querySelector(".topbar").contains(dom.window.document.querySelector("#themeToggle")));
+      assert.ok(dom.window.document.querySelector("#processThemeSlot").contains(dom.window.document.querySelector("#themeToggle")));
       assert.equal(dom.window.document.querySelector("#refreshProcessesButton"), null);
-      assert.equal(dom.window.document.querySelector("#processExportFormat").type, "hidden");
+      assert.equal(dom.window.document.querySelector("#processExportFormat"), null);
+      dom.window.document.querySelector("#downloadProcessesButton").click();
+      const processExportDialog = dom.window.document.querySelector("#processExportDialog");
+      assert.equal(processExportDialog.open, true);
+      assert.deepEqual(
+        [...processExportDialog.querySelectorAll("[data-process-export-format]")].map((button) => button.dataset.processExportFormat),
+        ["excel", "pdf", "csv"]
+      );
+      const originalAnchorClick = dom.window.HTMLAnchorElement.prototype.click;
+      dom.window.HTMLAnchorElement.prototype.click = () => {};
+      processExportDialog.querySelector('[data-process-export-format="csv"]').click();
+      await waitFor(() => processDownloadPath.includes("format=csv"));
+      dom.window.HTMLAnchorElement.prototype.click = originalAnchorClick;
+      assert.equal(processExportDialog.open, false);
 
       const settingsNavigation = dom.window.document.querySelector('[data-section="settings"]');
       assert.equal(settingsNavigation.classList.contains("hidden"), false);
@@ -48,7 +71,16 @@ describe("Navegacao principal no DOM", () => {
       assert.equal(dom.window.document.querySelector("#sectionTitle").textContent, "Configurações");
       assert.ok(dom.window.document.querySelector(".topbar").contains(dom.window.document.querySelector("#themeToggle")));
       assert.equal(dom.window.document.querySelector("#settingsAccountTitle").textContent, "Configurações");
-      assert.equal(dom.window.document.querySelector('#settingsAccountForm input[type="text"]').value, "Teste");
+      assert.equal(dom.window.document.querySelector("#settingsBackButton"), null);
+      const profileName = dom.window.document.querySelector('#settingsAccountForm input[name="nome"]');
+      assert.equal(profileName.value, "Teste");
+      assert.equal(profileName.readOnly, false);
+      assert.ok(dom.window.document.querySelector("#settingsDashboardYear"));
+      profileName.value = "Nome Atualizado";
+      dom.window.document.querySelector("#settingsAccountForm").dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true }));
+      await waitFor(() => dom.window.document.querySelector("#settingsAccountMessage").textContent === "Nome atualizado.");
+      assert.deepEqual(profileNameRequest, { nome: "Nome Atualizado" });
+      assert.equal(dom.window.document.querySelector("#sidebarGreeting").textContent, "Olá, Nome");
       assert.equal(dom.window.document.querySelector(".settings-admin-section"), null);
       const profileImageInput = dom.window.document.querySelector("#settingsProfileImageInput");
       let profilePickerOpened = false;
@@ -159,6 +191,7 @@ function installDomGlobals(window) {
   const values = {
     window,
     document: window.document,
+    FormData: window.FormData,
     localStorage: window.localStorage,
     location: window.location,
     alert: () => {},

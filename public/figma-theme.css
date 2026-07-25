@@ -196,6 +196,8 @@ body[data-app-section="settings"] {
 
 .auth-screen {
   background: #020306 url("/assets/figma/login-background.png") center / cover no-repeat;
+  color: #f8fafc;
+  color-scheme: dark;
   min-height: 100vh;
   padding: 28px;
 }
@@ -209,13 +211,13 @@ body[data-app-section="settings"] {
 html[data-theme="light"] .auth-panel,
 html[data-theme="dark"] .auth-panel {
   backdrop-filter: blur(12px);
-  background: var(--theme-auth-panel);
+  background: rgb(6 10 24 / 70%);
   border: 1px solid rgb(88 199 250 / 25%);
   border-radius: 24px;
   box-shadow:
     0 0 80px rgb(102 178 255 / 20%),
     0 0 40px rgb(77 153 255 / 40%);
-  color: var(--theme-text);
+  color: #f8fafc;
   padding: 40px;
 }
 
@@ -226,7 +228,7 @@ html[data-theme="dark"] .auth-panel {
 }
 
 .auth-heading h1 {
-  color: var(--theme-text);
+  color: #f8fafc;
   font-family: "Rethink Sans", Inter, sans-serif;
   font-size: 24px;
   line-height: 1.2;
@@ -234,7 +236,7 @@ html[data-theme="dark"] .auth-panel {
 }
 
 .auth-heading p {
-  color: var(--theme-text-subtle);
+  color: #94a3b8;
   font-size: 14px;
   margin: 0;
 }
@@ -244,7 +246,7 @@ html[data-theme="dark"] .auth-panel {
 }
 
 .auth-form label {
-  color: var(--theme-text-subtle);
+  color: #94a3b8;
   font-size: 12px;
   font-weight: 600;
   gap: 8px;
@@ -256,11 +258,11 @@ html[data-theme="dark"] .auth-panel {
 .password-step input,
 html[data-theme] .email-only input,
 html[data-theme] .password-step input {
-  background: var(--theme-auth-input);
+  background: rgb(14 21 40 / 90%);
   border: 1px solid rgb(77 153 255 / 50%);
   border-radius: 12px;
   box-shadow: 0 0 6px rgb(77 153 255 / 30%);
-  color: var(--theme-text);
+  color: #f8fafc;
   font-size: 14px;
   height: 48px;
   min-height: 48px;
@@ -269,7 +271,7 @@ html[data-theme] .password-step input {
 
 .email-only input::placeholder,
 .password-step input::placeholder {
-  color: var(--theme-text-subtle);
+  color: #94a3b8;
   opacity: 1;
 }
 
@@ -303,7 +305,7 @@ html[data-theme] .password-step input {
 }
 
 .auth-message {
-  color: var(--red) !important;
+  color: #fca5a5 !important;
   margin: 14px 0 0 !important;
 }
 
@@ -392,15 +394,26 @@ html[data-theme] .sidebar-logout {
   color: var(--theme-text);
 }
 
-.topbar > .theme-toggle {
+.theme-toggle {
   backdrop-filter: blur(14px);
   background: var(--theme-control-bg);
   border-color: var(--theme-border);
   box-shadow: 0 8px 24px var(--theme-shadow);
+}
+
+.topbar > .theme-toggle {
   position: fixed;
   right: 18px;
   top: 12px;
   z-index: 40;
+}
+
+.process-theme-slot {
+  display: inline-flex;
+}
+
+.process-theme-slot .theme-toggle {
+  position: static;
 }
 
 .app-shell > main {
@@ -463,10 +476,6 @@ html[data-theme] .auth-form .password-toggle[aria-pressed="true"] {
   background-image: url("/assets/figma/eye.svg");
 }
 
-html[data-theme="light"] .auth-form .password-toggle {
-  filter: brightness(.35);
-}
-
 button:hover {
   border-color: var(--theme-border-strong);
   filter: brightness(1.12);
@@ -479,6 +488,11 @@ select:focus-visible,
 input:focus-visible,
 textarea:focus-visible {
   outline-color: var(--theme-focus);
+}
+
+.auth-screen button:focus-visible,
+.auth-screen input:focus-visible {
+  outline-color: #60a5fa;
 }
 
 button.secondary,
@@ -980,7 +994,7 @@ dialog::backdrop {
 .settings-account-header {
   align-items: center;
   display: grid;
-  grid-template-columns: 40px 1fr 40px;
+  grid-template-columns: 1fr;
   min-height: 56px;
 }
 
@@ -990,24 +1004,6 @@ dialog::backdrop {
   font-size: 18px;
   margin: 0;
   text-align: center;
-}
-
-.settings-back-button,
-html[data-theme] .settings-back-button {
-  align-items: center;
-  background: var(--theme-surface-faint);
-  border: 1px solid var(--theme-border-soft);
-  border-radius: 999px;
-  display: inline-flex;
-  height: 40px;
-  justify-content: center;
-  padding: 0;
-  width: 40px;
-}
-
-.settings-back-button img {
-  height: 18px;
-  width: 18px;
 }
 
 .settings-profile-section {
@@ -1087,8 +1083,14 @@ html[data-theme] .settings-back-button {
 }
 
 .settings-account-form input[type="text"] {
-  cursor: default;
+  cursor: text;
   padding: 0 16px;
+}
+
+.settings-account-form .dashboard-year {
+  height: 48px;
+  max-width: none;
+  width: 100%;
 }
 
 .settings-password-button,
@@ -1107,9 +1109,18 @@ html[data-theme] .settings-password-button {
   width: 20px;
 }
 
-html[data-theme="light"] .settings-back-button img,
 html[data-theme="light"] .settings-password-button img {
   filter: invert(1);
+}
+
+.settings-save-button,
+html[data-theme] .settings-save-button {
+  background: var(--cosmos-cyan);
+  border-color: var(--cosmos-cyan);
+  color: #03131c;
+  font-weight: 700;
+  min-height: 46px;
+  width: 100%;
 }
 
 .settings-account-form .form-message {
@@ -1245,7 +1256,11 @@ html[data-theme="light"] .settings-password-button img {
 
   body[data-app-section="processes"] .process-header-actions {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    width: 100%;
+  }
+
+  body[data-app-section="processes"] .process-theme-slot {
     width: 100%;
   }
 
