@@ -36,7 +36,7 @@ describe("contrato visual e de navegacao", () => {
   it("aplica as superficies do Figma com assets locais e sem alterar os fluxos reais", () => {
     assert.match(html, /href="\/figma-theme\.css"/);
     assert.match(html, /class="auth-heading"[\s\S]*?Acesse sua conta[\s\S]*?Insira suas credenciais abaixo/);
-    assert.match(figmaTheme, /\.auth-screen\s*\{[\s\S]*?login-background\.png/);
+    assert.match(figmaTheme, /\.auth-screen,[\s\S]*?:root\[data-theme="dark"\] \.auth-screen\s*\{[\s\S]*?login-background\.png/);
     assert.match(figmaTheme, /body\[data-app-section="dashboard"\][\s\S]*?dashboard-overlay\.png/);
     assert.match(figmaTheme, /body\[data-app-section="processes"\][\s\S]*?processes-background\.png/);
     assert.match(figmaTheme, /body\[data-app-section="board"\][\s\S]*?board-background\.png/);
@@ -65,8 +65,12 @@ describe("contrato visual e de navegacao", () => {
   });
 
   it("mantem a tela de login visualmente fixa em qualquer tema", () => {
-    const authTheme = figmaTheme.slice(figmaTheme.indexOf(".auth-screen {"), figmaTheme.indexOf(".sidebar {"));
+    const authTheme = figmaTheme.slice(figmaTheme.indexOf(".auth-screen,"), figmaTheme.indexOf(".sidebar {"));
     assert.match(authTheme, /login-background\.png/);
+    assert.match(authTheme, /:root\[data-theme="light"\] \.auth-screen/);
+    assert.match(authTheme, /:root\[data-theme="dark"\] \.auth-screen/);
+    assert.match(authTheme, /:root\[data-theme="light"\] \.auth-panel/);
+    assert.match(authTheme, /:root\[data-theme="dark"\] \.auth-panel/);
     assert.match(authTheme, /color-scheme:\s*dark/);
     assert.match(authTheme, /background:\s*rgb\(6 10 24 \/ 70%\)/);
     assert.match(authTheme, /color:\s*#f8fafc/);
@@ -167,6 +171,7 @@ describe("contrato visual e de navegacao", () => {
     assert.match(app, /<h1>Gráficos<\/h1>/);
     assert.doesNotMatch(html, /data-section="dashboard"[^>]*>[\s\S]*?Painel<\/a>/);
     assert.doesNotMatch(app, /<h1>Painel<\/h1>/);
+    assert.doesNotMatch(app, /Ano definido em Configurações|Processos pelo ano do empenho|dashboardScope/);
   });
 
   it("oferece o Quadro como secao persistente, acessivel e responsiva", () => {
@@ -334,6 +339,7 @@ describe("contrato visual e de navegacao", () => {
     assert.match(figmaTheme, /\.process-search-row\s*\{[\s\S]*?margin:[^;]*auto[\s\S]*?max-width:\s*680px/);
     assert.match(figmaTheme, /\.topbar\s*\{[\s\S]*?background:\s*transparent[\s\S]*?height:\s*0[\s\S]*?min-height:\s*0/);
     assert.match(figmaTheme, /\.theme-toggle\s*\{[\s\S]*?background:\s*var\(--theme-control-bg\)/);
+    assert.match(figmaTheme, /body\[data-app-section="processes"\] \.process-header-actions button,[\s\S]*?background:\s*transparent[\s\S]*?border-color:\s*#fbbf24[\s\S]*?min-height:\s*38px[\s\S]*?padding:\s*8px 14px/);
     assert.match(figmaTheme, /\.topbar > \.theme-toggle\s*\{[\s\S]*?position:\s*fixed[\s\S]*?right:\s*18px[\s\S]*?top:\s*12px/);
     assert.match(figmaTheme, /body\[data-app-section="processes"\] \.process-table th\s*\{[\s\S]*?background:\s*var\(--theme-table-head\)/);
     const processTableTheme = figmaTheme.slice(
