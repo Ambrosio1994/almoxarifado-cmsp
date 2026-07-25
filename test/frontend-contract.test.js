@@ -301,6 +301,8 @@ describe("contrato visual e de navegacao", () => {
     assert.match(app, /function placeThemeToggle\(section\)/);
     assert.match(app, /section === "processes" \? processThemeSlot : topbar/);
     assert.match(figmaTheme, /\.process-search-row\s*\{[\s\S]*?margin:[^;]*auto[\s\S]*?max-width:\s*680px/);
+    assert.match(figmaTheme, /\.topbar\s*\{[\s\S]*?background:\s*transparent[\s\S]*?height:\s*0[\s\S]*?min-height:\s*0/);
+    assert.match(figmaTheme, /\.topbar > \.theme-toggle\s*\{[\s\S]*?position:\s*fixed[\s\S]*?right:\s*18px[\s\S]*?top:\s*12px/);
     assert.match(figmaTheme, /body\[data-app-section="processes"\] \.process-table th\s*\{[\s\S]*?background:\s*var\(--theme-table-head\)/);
     const processTableTheme = figmaTheme.slice(
       figmaTheme.indexOf('body[data-app-section="processes"] .table-wrap'),
