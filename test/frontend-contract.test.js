@@ -34,8 +34,10 @@ describe("contrato visual e de navegacao", () => {
   });
 
   it("aplica as superficies do Figma com assets locais e sem alterar os fluxos reais", () => {
-    assert.match(html, /href="\/figma-theme\.css"/);
-    assert.match(html, /class="auth-heading"[\s\S]*?Acesse sua conta[\s\S]*?Insira suas credenciais abaixo/);
+    assert.match(html, /href="\/figma-theme\.css(?:\?[^"]*)?"/);
+    assert.match(html, /class="auth-heading"[\s\S]*?Acesse sua conta/);
+    assert.doesNotMatch(html, /Insira suas credenciais abaixo/);
+    assert.match(figmaTheme, /\.auth-heading\s*\{[\s\S]*?text-align:\s*center/);
     assert.match(figmaTheme, /\.auth-screen,[\s\S]*?:root\[data-theme="dark"\] \.auth-screen\s*\{[\s\S]*?login-background\.png/);
     assert.match(figmaTheme, /body\[data-app-section="dashboard"\][\s\S]*?dashboard-overlay\.png/);
     assert.match(figmaTheme, /body\[data-app-section="processes"\][\s\S]*?processes-background\.png/);
@@ -174,7 +176,7 @@ describe("contrato visual e de navegacao", () => {
   });
 
   it("apresenta a antiga secao Painel com o nome Graficos", () => {
-    assert.match(html, /data-section="dashboard"[\s\S]*?Gráficos<\/a>/);
+    assert.match(html, /data-section="dashboard"[\s\S]*?Gráficos\s*<\/a>/);
     assert.match(app, /dashboard:\s*"Gráficos"/);
     assert.match(app, /<h1>Gráficos<\/h1>/);
     assert.doesNotMatch(html, /data-section="dashboard"[^>]*>[\s\S]*?Painel<\/a>/);
@@ -183,7 +185,7 @@ describe("contrato visual e de navegacao", () => {
   });
 
   it("oferece o Quadro como secao persistente, acessivel e responsiva", () => {
-    assert.match(html, /data-section="board"[\s\S]*?Quadro<\/a>/);
+    assert.match(html, /data-section="board"[\s\S]*?Quadro\s*<\/a>/);
     assert.match(html, /<section class="module-view hidden board-view" id="boardView"/);
     assert.match(html, /id="boardMessage"[^>]*aria-live="polite"/);
     assert.match(html, /id="kanbanBoard"[^>]*aria-label="Quadro de Empenhos"/);
@@ -194,17 +196,18 @@ describe("contrato visual e de navegacao", () => {
     assert.match(app, /state\.detailReturnSection = returnSection/);
     assert.match(styles, /\.kanban-board\s*\{[\s\S]*?overflow-x:\s*auto/);
     assert.match(styles, /\.kanban-column\s*\{[\s\S]*?width:\s*clamp\(280px, 28vw, 360px\)/);
+    assert.match(figmaTheme, /\.kanban-column:not\(\.is-drag-over\):hover\s*\{[\s\S]*?transform:\s*translateY\(-2px\)/);
     assert.match(styles, /\[data-theme="dark"\] \.kanban-card/);
     const mobileRules = styles.slice(styles.indexOf("@media (max-width: 640px)"));
     assert.match(mobileRules, /\.kanban-column\s*\{[\s\S]*?width:\s*calc\(100vw - 42px\)/);
   });
 
   it("mantem Configuracoes acessivel e Templates como subseção administrativa", () => {
-    assert.match(html, /data-section="users"[^>]*>[^<]*<span[^>]*>[\s\S]*?Usuarios e permissoes<\/a>/);
-    assert.match(html, /data-section="settings"[^>]*>[^<]*<span[^>]*>[\s\S]*?Configurações<\/a>/);
+    assert.match(html, /data-section="users"[\s\S]*?Usuarios e permissoes\s*<\/a>/);
+    assert.match(html, /data-section="settings"[\s\S]*?Configurações\s*<\/a>/);
     assert.match(html, /id="usersView"/);
     assert.match(html, /id="settingsView"/);
-    assert.match(html, /data-section="suppliers"[\s\S]*?Fornecedores<\/a>[\s\S]*?data-section="settings"[\s\S]*?Configurações<\/a>/);
+    assert.match(html, /data-section="suppliers"[\s\S]*?Fornecedores\s*<\/a>[\s\S]*?data-section="settings"[\s\S]*?Configurações\s*<\/a>/);
     assert.match(app, /class="settings-account-screen"/);
     assert.match(figmaTheme, /#settingsView\s*\{[\s\S]*?margin-inline:\s*auto[\s\S]*?width:\s*50%/);
     assert.match(figmaTheme, /@media \(max-width:\s*760px\)\s*\{[\s\S]*?#settingsView\s*\{[\s\S]*?width:\s*100%/);
@@ -213,7 +216,12 @@ describe("contrato visual e de navegacao", () => {
     assert.doesNotMatch(app, /name="nome"[^>]*readonly/);
     assert.doesNotMatch(app, /settingsBackButton|settings-back-button/);
     assert.match(app, /id="settingsPasswordButton"/);
+    assert.match(app, /id="settingsPasswordButton"[\s\S]*?<svg[\s\S]*?<span>Alterar senha<\/span>/);
+    assert.doesNotMatch(app, /id="settingsPasswordButton"[\s\S]*?••••••••••••/);
+    assert.match(figmaTheme, /\.settings-password-button,[\s\S]*?justify-content:\s*center/);
     assert.match(app, /id="settingsDashboardYear"/);
+    assert.match(app, /<label>Selecionar Ano[\s\S]*?id="settingsDashboardYear"/);
+    assert.doesNotMatch(app, /<option[^>]*>Ano:\s*\$\{year\}<\/option>/);
     assert.match(app, /api\("\/auth\/profile"/);
     assert.doesNotMatch(app, /settingsThemeToggle|settingsThemeLabel/);
     assert.match(app, /id="settingsProfileImageButton"/);
@@ -227,7 +235,9 @@ describe("contrato visual e de navegacao", () => {
     assert.match(html, /<dialog id="changePasswordDialog" class="small-dialog password-settings-dialog"[\s\S]*?name="senhaAtual"[\s\S]*?name="novaSenha"[\s\S]*?name="confirmacao"[\s\S]*?Salvar nova senha/);
     assert.doesNotMatch(html, /id="changePasswordDialog"[\s\S]*?accountThemeToggle/);
     assert.match(figmaTheme, /html\[data-theme\] \.auth-form \.email-submit\s*\{[\s\S]*?background:\s*#fff/);
-    assert.match(figmaTheme, /html\[data-theme\] \.auth-form \.password-toggle\s*\{[\s\S]*?eye-off\.svg/);
+    assert.match(figmaTheme, /html\[data-theme\] \.auth-form \.password-toggle\s*\{[\s\S]*?color:\s*#cbd5e1/);
+    assert.match(figmaTheme, /\.password-toggle svg\s*\{[\s\S]*?opacity:\s*1/);
+    assert.doesNotMatch(figmaTheme, /\.password-toggle\s*\{[\s\S]*?background:[^;]*eye-off\.svg/);
   });
 
   it("preserva os campos, limites e rotulos de aceite", () => {
@@ -362,7 +372,7 @@ describe("contrato visual e de navegacao", () => {
     assert.match(html, /id="processExportDialog"[\s\S]*?data-process-export-format="excel"[\s\S]*?data-process-export-format="pdf"[\s\S]*?data-process-export-format="csv"/);
     assert.match(app, /processExportDialog\?\.showModal\(\)/);
     assert.match(app, /downloadProcesses\(format\)/);
-    assert.match(app, /function placeThemeToggle\(section\)/);
+    assert.match(app, /function placeThemeToggle\(section\)[\s\S]*?section === "processes" \? processThemeSlot : topbar/);
     assert.match(figmaTheme, /\.process-search-row\s*\{[\s\S]*?margin:[^;]*auto[\s\S]*?max-width:\s*680px/);
     assert.match(figmaTheme, /\.topbar\s*\{[\s\S]*?background:\s*transparent[\s\S]*?height:\s*0[\s\S]*?min-height:\s*0/);
     const themeToggleRules = figmaTheme.slice(
@@ -382,7 +392,7 @@ describe("contrato visual e de navegacao", () => {
     assert.match(themeToggleRules, /\.theme-toggle:focus-visible\s*\{[\s\S]*?outline:\s*2px solid var\(--theme-focus\)/);
     const processActionRules = figmaTheme.slice(
       figmaTheme.indexOf('body[data-app-section="processes"] .process-header-actions button,'),
-      figmaTheme.indexOf('body[data-app-section="processes"] .process-header-actions .theme-toggle strong')
+      figmaTheme.indexOf("\ninput,")
     );
     assert.match(processActionRules, /align-items:\s*center/);
     assert.match(processActionRules, /background:\s*transparent/);
@@ -395,7 +405,20 @@ describe("contrato visual e de navegacao", () => {
     assert.match(processActionRules, /margin:\s*0/);
     assert.match(processActionRules, /padding:\s*8px 14px/);
     assert.doesNotMatch(processActionRules, /transform|translateY|vertical-align|position:\s*relative|margin-(?:top|bottom)/);
-    assert.match(figmaTheme, /\.topbar > \.theme-toggle\s*\{[\s\S]*?position:\s*fixed[\s\S]*?right:\s*18px[\s\S]*?top:\s*12px/);
+    assert.match(figmaTheme, /body\[data-app-section="processes"\] \.process-header-actions \.process-theme-slot\s*\{[\s\S]*?display:\s*inline-flex[\s\S]*?margin:\s*0/);
+    assert.match(figmaTheme, /@media \(max-width:\s*760px\)\s*\{[\s\S]*?body\[data-app-section="processes"\] \.process-header-actions\s*\{[\s\S]*?grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/);
+    assert.match(figmaTheme, /\.sidebar-toggle,[\s\S]*?position:\s*absolute[\s\S]*?top:\s*12px/);
+    assert.match(styles, /:root\s*\{[\s\S]*?--sidebar-width:\s*252px/);
+    assert.match(app, /Math\.min\(360,\s*Math\.max\(208,\s*event\.clientX\)\)/);
+    assert.match(app, /document\.documentElement\.style\.setProperty\("--sidebar-width",\s*`\$\{width\}px`\)/);
+    assert.match(html, /class="nav-icon"[\s\S]*?<svg[\s\S]*?data-section="processes"[\s\S]*?class="nav-icon"[\s\S]*?<svg/);
+    assert.doesNotMatch(html, /<span aria-hidden="true">[▦▱▥▤⚙◫♙]<\/span>/);
+    const topbarThemePositionRules = figmaTheme.slice(
+      figmaTheme.indexOf(".topbar > .theme-toggle"),
+      figmaTheme.indexOf(".process-theme-slot")
+    );
+    assert.match(topbarThemePositionRules, /position:\s*absolute[\s\S]*?right:\s*18px[\s\S]*?top:\s*12px/);
+    assert.doesNotMatch(topbarThemePositionRules, /position:\s*fixed/);
     assert.match(figmaTheme, /body\[data-app-section="processes"\] \.process-table th\s*\{[\s\S]*?background:\s*var\(--theme-table-head\)/);
     assert.match(html, /<th>Nº Processo<\/th>[\s\S]*?<th>Data Envio fornecedor<\/th>[\s\S]*?<th>Requisitante<\/th>/);
     assert.match(app, /\["Empenhos do ano", data\.processosAtivos\][\s\S]*?\["Atrasados", data\.atrasados[\s\S]*?\["Liquidação Pendente", data\.pendentesLiquidacao\]/);

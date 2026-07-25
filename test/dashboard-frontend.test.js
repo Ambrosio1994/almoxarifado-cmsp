@@ -57,6 +57,8 @@ describe("Gráficos no DOM", () => {
       const settings = dom.window.document.querySelector("#settingsView");
       const yearSelect = settings.querySelector("#settingsDashboardYear");
       assert.equal(yearSelect.value, "2040");
+      assert.match(yearSelect.closest("label").textContent, /Selecionar Ano/);
+      assert.deepEqual([...yearSelect.options].map((option) => option.textContent), ["2041", "2040"]);
 
       yearSelect.value = "2041";
       yearSelect.dispatchEvent(new dom.window.Event("change", { bubbles: true }));

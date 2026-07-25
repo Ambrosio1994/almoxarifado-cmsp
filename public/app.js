@@ -3145,7 +3145,7 @@ function dashboardMetricsMarkup(data = {}) {
 
 function dashboardYearOptions(selected, years = state.dashboardYears) {
   const options = years.length ? years : [Number(selected) || new Date().getFullYear()];
-  return options.map((year) => `<option value="${year}" ${Number(year) === Number(selected) ? "selected" : ""}>Ano: ${year}</option>`).join("");
+  return options.map((year) => `<option value="${year}" ${Number(year) === Number(selected) ? "selected" : ""}>${year}</option>`).join("");
 }
 
 function executionGroupedChart(rows = []) {
@@ -3746,11 +3746,14 @@ function renderAccountSettings() {
         <div class="settings-account-field">
           <span>Senha</span>
           <button type="button" class="settings-password-button" id="settingsPasswordButton" aria-label="Alterar senha">
-            <span aria-hidden="true">••••••••••••</span>
-            <img src="/assets/figma/eye.svg" alt="">
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <rect x="5" y="10" width="14" height="11" rx="2"></rect>
+              <path d="M8 10V7a4 4 0 0 1 8 0v3M12 15v2"></path>
+            </svg>
+            <span>Alterar senha</span>
           </button>
         </div>
-        <label>Ano dos gráficos
+        <label>Selecionar Ano
           <select class="dashboard-year" id="settingsDashboardYear">
             ${dashboardYearOptions(dashboardYear, state.dashboardYears)}
           </select>

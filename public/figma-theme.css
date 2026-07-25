@@ -229,6 +229,7 @@ body[data-app-section="settings"] {
   display: grid;
   gap: 8px;
   margin-bottom: 32px;
+  text-align: center;
 }
 
 .auth-heading h1 {
@@ -236,12 +237,6 @@ body[data-app-section="settings"] {
   font-family: "Rethink Sans", Inter, sans-serif;
   font-size: 24px;
   line-height: 1.2;
-  margin: 0;
-}
-
-.auth-heading p {
-  color: #94a3b8;
-  font-size: 14px;
   margin: 0;
 }
 
@@ -286,13 +281,13 @@ body[data-app-section="settings"] {
 }
 
 .password-toggle {
-  background: url("/assets/figma/eye-off.svg") center / 20px 20px no-repeat;
-  color: transparent;
+  background: transparent;
+  color: #cbd5e1;
   right: 12px;
 }
 
 .password-toggle svg {
-  opacity: 0;
+  opacity: 1;
 }
 
 .email-submit {
@@ -327,6 +322,14 @@ body[data-app-section="settings"] {
   border-color: var(--theme-border-soft);
 }
 
+.sidebar-header {
+  position: relative;
+}
+
+.brand {
+  padding-right: 52px;
+}
+
 .sidebar-avatar {
   background: var(--theme-control-hover);
   border-color: var(--theme-border-soft);
@@ -354,6 +357,9 @@ html[data-theme] .sidebar-toggle {
   background: var(--theme-control-bg);
   border-color: var(--theme-border);
   color: var(--theme-text);
+  position: absolute;
+  right: 10px;
+  top: 12px;
 }
 
 .nav-item {
@@ -365,6 +371,26 @@ html[data-theme] .sidebar-toggle {
 
 .nav-item span {
   color: currentColor;
+}
+
+.nav-item .nav-icon {
+  align-items: center;
+  display: inline-flex;
+  flex: 0 0 18px;
+  height: 18px;
+  justify-content: center;
+  margin: 0;
+  width: 18px;
+}
+
+.nav-item .nav-icon svg {
+  fill: none;
+  height: 18px;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
+  width: 18px;
 }
 
 .nav-item.active {
@@ -471,7 +497,7 @@ html[data-theme] .theme-toggle {
 }
 
 .topbar > .theme-toggle {
-  position: fixed;
+  position: absolute;
   right: 18px;
   top: 12px;
   z-index: 40;
@@ -493,6 +519,13 @@ html[data-theme] .theme-toggle {
 
 body[data-app-section="processes"] .process-header-actions {
   align-items: center;
+}
+
+body[data-app-section="processes"] .process-header-actions .process-theme-slot {
+  align-items: center;
+  display: inline-flex;
+  height: 38px;
+  margin: 0;
 }
 
 .app-shell > main {
@@ -546,13 +579,13 @@ html[data-theme] .auth-form .email-submit {
 }
 
 html[data-theme] .auth-form .password-toggle {
-  background: transparent url("/assets/figma/eye-off.svg") center / 20px 20px no-repeat;
+  background: transparent;
   border: 0;
-  color: transparent;
+  color: #cbd5e1;
 }
 
 html[data-theme] .auth-form .password-toggle[aria-pressed="true"] {
-  background-image: url("/assets/figma/eye.svg");
+  color: #f8fafc;
 }
 
 button:hover {
@@ -601,11 +634,6 @@ html[data-theme] body[data-app-section="processes"] .process-header-actions butt
   margin: 0;
   min-height: 38px;
   padding: 8px 14px;
-}
-
-body[data-app-section="processes"] .process-header-actions .theme-toggle strong {
-  font-size: inherit;
-  font-weight: inherit;
 }
 
 input,
@@ -1032,6 +1060,12 @@ html[data-theme] .kanban-column {
   border-radius: 8px;
 }
 
+.kanban-column:not(.is-drag-over):hover {
+  border-color: rgb(59 130 246 / 48%);
+  box-shadow: 0 10px 28px rgb(0 0 0 / 18%), 0 0 0 1px rgb(59 130 246 / 18%);
+  transform: translateY(-2px);
+}
+
 .kanban-column-header {
   border-color: var(--theme-border);
 }
@@ -1257,20 +1291,21 @@ dialog::backdrop {
 html[data-theme] .settings-password-button {
   align-items: center;
   display: flex;
-  font-weight: 400;
-  justify-content: space-between;
+  font-weight: 600;
+  gap: 10px;
+  justify-content: center;
   padding: 0 16px;
-  text-align: left;
+  text-align: center;
 }
 
-.settings-password-button img {
-  height: 20px;
-  opacity: .7;
-  width: 20px;
-}
-
-html[data-theme="light"] .settings-password-button img {
-  filter: invert(1);
+.settings-password-button svg {
+  fill: none;
+  height: 18px;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+  width: 18px;
 }
 
 .settings-save-button,
