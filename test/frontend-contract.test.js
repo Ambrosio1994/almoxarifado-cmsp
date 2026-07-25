@@ -153,8 +153,8 @@ describe("contrato visual e de navegacao", () => {
     assert.match(darkTheme, /--theme-page-overlay:\s*rgb\(6 7 9 \/ 50%\)/);
     assert.match(darkTheme, /--theme-main-overlay:\s*rgb\(6 7 9 \/ 50%\)/);
     assert.match(darkTheme, /color-scheme:\s*dark/);
-    assert.match(figmaTheme, /\.dashboard-grid \.metric,[\s\S]*?backdrop-filter:\s*blur\(3px\)[\s\S]*?background:\s*var\(--theme-content-glass\)/);
-    assert.match(figmaTheme, /\.chart-card,[\s\S]*?backdrop-filter:\s*blur\(3px\)[\s\S]*?background:\s*var\(--theme-content-glass\)/);
+    assert.match(figmaTheme, /body\[data-app-section="dashboard"\] \.dashboard-grid \.metric,[\s\S]*?html\[data-theme\] body\[data-app-section="dashboard"\] \.dashboard-grid \.metric[\s\S]*?backdrop-filter:\s*blur\(3px\)[\s\S]*?background:\s*var\(--theme-content-glass\)/);
+    assert.match(figmaTheme, /body\[data-app-section="dashboard"\] \.chart-card,[\s\S]*?html\[data-theme\] body\[data-app-section="dashboard"\] \.chart-card[\s\S]*?backdrop-filter:\s*blur\(3px\)[\s\S]*?background:\s*var\(--theme-content-glass\)/);
     assert.match(figmaTheme, /\.settings-account-screen\s*\{[\s\S]*?background:\s*var\(--theme-content-glass\)/);
     assert.match(figmaTheme, /dialog,[\s\S]*?background:\s*var\(--theme-dialog-bg\)/);
   });

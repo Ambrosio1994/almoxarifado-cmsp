@@ -870,8 +870,8 @@ body[data-app-section="processes"] .empty-table-row:hover {
   gap: 16px;
 }
 
-.dashboard-grid .metric,
-html[data-theme] .dashboard-grid .metric {
+body[data-app-section="dashboard"] .dashboard-grid .metric,
+html[data-theme] body[data-app-section="dashboard"] .dashboard-grid .metric {
   backdrop-filter: blur(3px);
   background: var(--theme-content-glass);
   border-color: var(--theme-border);
@@ -909,8 +909,8 @@ html[data-theme] .dashboard-grid .metric {
   gap: 16px;
 }
 
-.chart-card,
-html[data-theme] .chart-card {
+body[data-app-section="dashboard"] .chart-card,
+html[data-theme] body[data-app-section="dashboard"] .chart-card {
   backdrop-filter: blur(3px);
   background: var(--theme-content-glass);
   border-color: var(--theme-border);
