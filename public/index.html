@@ -87,7 +87,6 @@
                 <input id="processExportFormat" type="hidden" value="excel">
                 <button type="button" class="secondary" id="downloadProcessesButton">Download</button>
                 <button type="button" id="newProcessButton">+ Novo</button>
-                <span class="process-theme-slot" id="processThemeSlot"></span>
               </div>
             </div>
 
@@ -428,37 +427,18 @@
       </form>
     </dialog>
 
-    <dialog id="changePasswordDialog" class="small-dialog account-settings-dialog" aria-labelledby="changePasswordDialogTitle">
+    <dialog id="changePasswordDialog" class="small-dialog password-settings-dialog" aria-labelledby="changePasswordDialogTitle">
       <form method="dialog" class="dialog-header">
-        <button type="submit" class="secondary account-back-button" id="changePasswordCloseButton" aria-label="Fechar configurações">←</button>
-        <strong id="changePasswordDialogTitle">Configurações</strong>
-        <span class="account-header-spacer" aria-hidden="true"></span>
+        <strong id="changePasswordDialogTitle">Alterar senha</strong>
+        <button type="submit" class="secondary" id="changePasswordCloseButton" aria-label="Fechar alteração de senha">Fechar</button>
       </form>
-      <form id="changePasswordForm" class="process-form">
-        <div class="account-profile-hero">
-          <div class="account-profile-avatar">
-            <img id="accountProfileImage" src="/assets/figma/settings-avatar.png" alt="">
-            <span class="account-camera-badge" aria-hidden="true"></span>
-          </div>
-          <span>Alterar foto de perfil</span>
-        </div>
-        <label>Nome <input id="accountProfileName" type="text" readonly></label>
+      <form id="changePasswordForm" class="process-form password-settings-form">
         <label>Senha atual <input name="senhaAtual" type="password" autocomplete="current-password" maxlength="256" required></label>
         <label>Nova senha <input name="novaSenha" type="password" autocomplete="new-password" minlength="8" maxlength="256" required title="Minimo de 8 caracteres, com maiuscula, numero e caractere especial que nao seja espaco"></label>
         <label>Confirmar nova senha <input name="confirmacao" type="password" autocomplete="new-password" minlength="8" maxlength="256" required></label>
-        <label class="account-theme-row">Tema
-          <span>
-            <strong>Escuro</strong>
-            <input id="accountThemeToggle" type="checkbox" role="switch" aria-label="Usar tema escuro">
-          </span>
-        </label>
-        <div class="actions"><button type="submit">Salvar alterações</button></div>
+        <div class="actions"><button type="submit">Salvar nova senha</button></div>
         <p class="form-message" id="changePasswordMessage" role="status" aria-live="polite"></p>
       </form>
-    </dialog>
-
-    <dialog id="profileImageDialog" class="profile-image-dialog" aria-label="Foto do perfil">
-      <img id="profileImagePreview" src="/assets/figma/settings-avatar.png" alt="Foto do perfil ampliada">
     </dialog>
 
     <dialog id="adminPasswordDialog" class="small-dialog" aria-labelledby="adminPasswordDialogTitle">

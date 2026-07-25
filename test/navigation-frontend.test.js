@@ -36,7 +36,7 @@ describe("Navegacao principal no DOM", () => {
 
       assert.equal(dom.window.document.querySelector("#sectionTitle").textContent, "Empenhos");
       assert.equal(dom.window.sessionStorage.getItem(storageKey), "processes");
-      assert.equal(dom.window.document.querySelector("#themeToggle").parentElement.id, "processThemeSlot");
+      assert.ok(dom.window.document.querySelector(".topbar").contains(dom.window.document.querySelector("#themeToggle")));
       assert.equal(dom.window.document.querySelector("#refreshProcessesButton"), null);
       assert.equal(dom.window.document.querySelector("#processExportFormat").type, "hidden");
 
@@ -50,20 +50,25 @@ describe("Navegacao principal no DOM", () => {
       assert.equal(dom.window.document.querySelector("#settingsAccountTitle").textContent, "Configurações");
       assert.equal(dom.window.document.querySelector('#settingsAccountForm input[type="text"]').value, "Teste");
       assert.equal(dom.window.document.querySelector(".settings-admin-section"), null);
+      const profileImageInput = dom.window.document.querySelector("#settingsProfileImageInput");
+      let profilePickerOpened = false;
+      profileImageInput.addEventListener("click", () => { profilePickerOpened = true; }, { once: true });
       dom.window.document.querySelector("#settingsProfileImageButton").click();
-      const profileImageDialog = dom.window.document.querySelector("#profileImageDialog");
-      assert.equal(profileImageDialog.open, true);
-      assert.equal(profileImageDialog.children.length, 1);
-      assert.equal(profileImageDialog.firstElementChild.tagName, "IMG");
-      profileImageDialog.click();
-      assert.equal(profileImageDialog.open, false);
-      const settingsThemeToggle = dom.window.document.querySelector("#settingsThemeToggle");
-      settingsThemeToggle.checked = false;
-      dom.window.document.querySelector("#settingsAccountForm").dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true }));
+      assert.equal(profilePickerOpened, true);
+      assert.equal(profileImageInput.accept, "image/png,image/jpeg,image/webp");
+      assert.equal(dom.window.document.querySelector("#settingsThemeToggle"), null);
+      dom.window.document.querySelector("#settingsPasswordButton").click();
+      const passwordDialog = dom.window.document.querySelector("#changePasswordDialog");
+      assert.equal(passwordDialog.open, true);
+      assert.equal(passwordDialog.classList.contains("password-settings-dialog"), true);
+      assert.ok(passwordDialog.querySelector('[name="senhaAtual"]'));
+      assert.ok(passwordDialog.querySelector('[name="novaSenha"]'));
+      assert.ok(passwordDialog.querySelector('[name="confirmacao"]'));
+      passwordDialog.close();
+      dom.window.document.querySelector("#themeToggle").click();
       assert.equal(dom.window.localStorage.getItem("almoxTheme"), "light");
       assert.equal(dom.window.document.documentElement.dataset.theme, "light");
       assert.equal(dom.window.document.querySelector("#themeToggle").getAttribute("aria-label"), "Alternar para modo escuro");
-      assert.match(dom.window.document.querySelector("#settingsAccountMessage").textContent, /sucesso/);
 
       const logoutButton = dom.window.document.querySelector("#logoutButton");
       logoutButton.click();

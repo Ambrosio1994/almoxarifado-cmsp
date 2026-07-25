@@ -225,9 +225,7 @@ const sidebarToggle = document.querySelector("#sidebarToggle");
 const sidebarResizer = document.querySelector("#sidebarResizer");
 const mobileMenuToggle = document.querySelector("#mobileMenuToggle");
 const sidebarBackdrop = document.querySelector("#sidebarBackdrop");
-const topbar = document.querySelector(".topbar");
 const themeToggle = document.querySelector("#themeToggle");
-const processThemeSlot = document.querySelector("#processThemeSlot");
 const documentMetadataDialog = document.querySelector("#documentMetadataDialog");
 const documentMetadataForm = document.querySelector("#documentMetadataForm");
 const processCreatorName = document.querySelector("#processCreatorName");
@@ -237,11 +235,6 @@ const changePasswordDialog = document.querySelector("#changePasswordDialog");
 const changePasswordForm = document.querySelector("#changePasswordForm");
 const changePasswordMessage = document.querySelector("#changePasswordMessage");
 const changePasswordCloseButton = document.querySelector("#changePasswordCloseButton");
-const accountProfileName = document.querySelector("#accountProfileName");
-const accountProfileImage = document.querySelector("#accountProfileImage");
-const accountThemeToggle = document.querySelector("#accountThemeToggle");
-const profileImageDialog = document.querySelector("#profileImageDialog");
-const profileImagePreview = document.querySelector("#profileImagePreview");
 const adminPasswordDialog = document.querySelector("#adminPasswordDialog");
 const adminPasswordForm = document.querySelector("#adminPasswordForm");
 const adminPasswordUser = document.querySelector("#adminPasswordUser");
@@ -321,11 +314,6 @@ function initTheme() {
     applyTheme(nextTheme);
     localStorage.setItem("almoxTheme", nextTheme);
   });
-  accountThemeToggle?.addEventListener("change", () => {
-    const nextTheme = accountThemeToggle.checked ? "dark" : "light";
-    applyTheme(nextTheme);
-    localStorage.setItem("almoxTheme", nextTheme);
-  });
 }
 
 function applyTheme(theme) {
@@ -336,11 +324,6 @@ function applyTheme(theme) {
     themeToggle.querySelector("span").textContent = isDark ? "☼" : "◐";
     themeToggle.querySelector("strong").textContent = isDark ? "Claro" : "Escuro";
   }
-  if (accountThemeToggle) accountThemeToggle.checked = isDark;
-  const settingsThemeToggle = settingsView?.querySelector("#settingsThemeToggle");
-  if (settingsThemeToggle) settingsThemeToggle.checked = isDark;
-  const settingsThemeLabel = settingsView?.querySelector("#settingsThemeLabel");
-  if (settingsThemeLabel) settingsThemeLabel.textContent = isDark ? "Escuro" : "Claro";
 }
 
 async function initAuth() {
@@ -548,7 +531,6 @@ function clearClientSession() {
     documentMetadataDialog,
     supplierInfoDialog,
     changePasswordDialog,
-    profileImageDialog,
     adminPasswordDialog
   ].forEach((modal) => {
     if (modal?.open) modal.close();
@@ -719,11 +701,6 @@ function renderSidebarProfile() {
     sidebarAvatarImage.hidden = true;
   }
   sidebarAvatar.classList.toggle("has-image", Boolean(currentUser.foto));
-  if (accountProfileName) accountProfileName.value = currentUser.name || currentUser.email || "";
-  if (accountProfileImage) {
-    accountProfileImage.src = currentUser.foto || "/assets/figma/settings-avatar.png";
-    accountProfileImage.alt = currentUser.name ? `Foto de ${currentUser.name}` : "Foto do perfil";
-  }
 }
 
 function applyRoleVisibility() {
@@ -741,8 +718,6 @@ sidebarAvatarImage?.addEventListener("error", () => {
   sidebarAvatarImage.removeAttribute("src");
   sidebarAvatar?.classList.remove("has-image");
 });
-
-profileImageDialog?.addEventListener("click", () => profileImageDialog.close());
 
 function displayFirstName(name = "") {
   return String(name).trim().split(/\s+/)[0] || "Usuario";
@@ -3064,7 +3039,6 @@ function activateSectionShell(section) {
   cancelStandardDocumentUpload();
   state.activeSection = section;
   document.body.dataset.appSection = section;
-  placeThemeToggle(section);
   navItems.forEach((item) => {
     const active = item.dataset.section === section;
     item.classList.toggle("active", active);
@@ -3082,12 +3056,6 @@ function activateSectionShell(section) {
   settingsView.classList.toggle("hidden", section !== "settings");
   processDetailView.classList.add("hidden");
   state.selectedProcess = null;
-}
-
-function placeThemeToggle(section) {
-  if (!themeToggle || !topbar || !processThemeSlot) return;
-  const destination = section === "processes" ? processThemeSlot : topbar;
-  if (themeToggle.parentElement !== destination) destination.append(themeToggle);
 }
 
 function renderDashboardView() {
@@ -3743,7 +3711,6 @@ async function renderSettingsView(message = "", messageType = "success") {
 function renderAccountSettings() {
   const profileName = currentUser?.name || currentUser?.email || "";
   const profileImage = currentUser?.foto || "/assets/figma/settings-avatar.png";
-  const darkTheme = document.documentElement.dataset.theme === "dark";
   return `
     <section class="settings-account-screen" aria-labelledby="settingsAccountTitle">
       <header class="settings-account-header">
@@ -3754,13 +3721,14 @@ function renderAccountSettings() {
         <span aria-hidden="true"></span>
       </header>
       <div class="settings-profile-section">
-        <button type="button" class="settings-profile-avatar" id="settingsProfileImageButton" aria-label="Visualizar foto do perfil">
+        <button type="button" class="settings-profile-avatar" id="settingsProfileImageButton" aria-label="Escolher nova foto do perfil">
           <img src="${escapeAttribute(profileImage)}" alt="${escapeAttribute(profileName ? `Foto de ${profileName}` : "Foto do perfil")}">
           <span class="settings-camera-badge" aria-hidden="true"></span>
         </button>
-        <span>Foto de perfil</span>
+        <input id="settingsProfileImageInput" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+        <span>Alterar foto de perfil</span>
       </div>
-      <form class="settings-account-form" id="settingsAccountForm">
+      <div class="settings-account-form" id="settingsAccountForm">
         <label>Nome
           <input type="text" value="${escapeAttribute(profileName)}" readonly>
         </label>
@@ -3771,15 +3739,8 @@ function renderAccountSettings() {
             <img src="/assets/figma/eye.svg" alt="">
           </button>
         </div>
-        <label>Tema
-          <span class="settings-theme-row">
-            <strong id="settingsThemeLabel">${darkTheme ? "Escuro" : "Claro"}</strong>
-            <input id="settingsThemeToggle" type="checkbox" role="switch" aria-label="Usar tema escuro" ${darkTheme ? "checked" : ""}>
-          </span>
-        </label>
-        <button type="submit" class="settings-save-button">Salvar Alterações</button>
         <p class="form-message" id="settingsAccountMessage" role="status" aria-live="polite"></p>
-      </form>
+      </div>
     </section>
   `;
 }
@@ -3950,8 +3911,9 @@ function bindSettingsHandlers() {
     if (!changePasswordDialog?.open) changePasswordDialog?.showModal();
     changePasswordForm?.elements.senhaAtual?.focus();
   });
-  settingsView.querySelector("#settingsProfileImageButton")?.addEventListener("click", showProfileImage);
-  settingsView.querySelector("#settingsAccountForm")?.addEventListener("submit", saveAccountSettings);
+  const profileInput = settingsView.querySelector("#settingsProfileImageInput");
+  settingsView.querySelector("#settingsProfileImageButton")?.addEventListener("click", () => profileInput?.click());
+  profileInput?.addEventListener("change", changeProfileImage);
   settingsView.querySelectorAll("[data-settings-panel]").forEach((button) => {
     button.addEventListener("click", () => {
       state.settingsPanel = button.dataset.settingsPanel;
@@ -3973,27 +3935,97 @@ function bindSettingsHandlers() {
   });
 }
 
-function showProfileImage() {
-  if (!profileImageDialog || !profileImagePreview) return;
-  const profileName = currentUser?.name || currentUser?.email || "";
-  profileImagePreview.src = currentUser?.foto || "/assets/figma/settings-avatar.png";
-  profileImagePreview.alt = profileName ? `Foto de ${profileName}` : "Foto do perfil";
-  if (!profileImageDialog.open) profileImageDialog.showModal();
+async function changeProfileImage(event) {
+  const input = event.currentTarget;
+  const file = input.files?.[0];
+  if (!file) return;
+  const button = settingsView.querySelector("#settingsProfileImageButton");
+  const preview = button?.querySelector("img");
+  const message = settingsView.querySelector("#settingsAccountMessage");
+  if (message) {
+    message.className = "form-message";
+    message.textContent = "Preparando nova foto...";
+  }
+  if (button) {
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+  }
+  try {
+    const foto = await resizeProfileImage(file);
+    const response = await api("/auth/profile-photo", {
+      method: "PUT",
+      body: JSON.stringify({ foto })
+    });
+    if (response.user) setCurrentUser(response.user);
+    if (preview) {
+      preview.src = currentUser?.foto || foto;
+      preview.alt = currentUser?.name ? `Foto de ${currentUser.name}` : "Foto do perfil";
+    }
+    if (message) {
+      message.className = "form-message success";
+      message.textContent = "Foto de perfil atualizada.";
+    }
+  } catch (error) {
+    if (message) {
+      message.className = "form-message error";
+      message.textContent = error.message || "Nao foi possivel atualizar a foto.";
+    }
+  } finally {
+    input.value = "";
+    if (button) {
+      button.disabled = false;
+      button.removeAttribute("aria-busy");
+    }
+  }
 }
 
-function saveAccountSettings(event) {
-  event.preventDefault();
-  const themeToggle = event.currentTarget.querySelector("#settingsThemeToggle");
-  const nextTheme = themeToggle?.checked ? "dark" : "light";
-  applyTheme(nextTheme);
-  localStorage.setItem("almoxTheme", nextTheme);
-  const themeLabel = event.currentTarget.querySelector("#settingsThemeLabel");
-  if (themeLabel) themeLabel.textContent = nextTheme === "dark" ? "Escuro" : "Claro";
-  const message = event.currentTarget.querySelector("#settingsAccountMessage");
-  if (message) {
-    message.className = "form-message success";
-    message.textContent = "Preferências salvas com sucesso.";
+function resizeProfileImage(file) {
+  const acceptedTypes = new Set(["image/png", "image/jpeg", "image/webp"]);
+  if (!acceptedTypes.has(file.type)) {
+    return Promise.reject(new Error("Escolha uma imagem PNG, JPEG ou WebP."));
   }
+  if (file.size > 8 * 1024 * 1024) {
+    return Promise.reject(new Error("A imagem original deve ter no maximo 8 MB."));
+  }
+  return readFileAsDataUrl(file).then((source) => loadProfileImage(source).then((image) => {
+    const canvas = document.createElement("canvas");
+    const size = 320;
+    canvas.width = size;
+    canvas.height = size;
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("Este navegador nao conseguiu preparar a imagem.");
+    const sourceSize = Math.min(image.naturalWidth, image.naturalHeight);
+    const sourceX = Math.max(0, (image.naturalWidth - sourceSize) / 2);
+    const sourceY = Math.max(0, (image.naturalHeight - sourceSize) / 2);
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, size, size);
+    context.drawImage(image, sourceX, sourceY, sourceSize, sourceSize, 0, 0, size, size);
+    return canvas.toDataURL("image/jpeg", .86);
+  }));
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener("load", () => resolve(String(reader.result || "")), { once: true });
+    reader.addEventListener("error", () => reject(new Error("Nao foi possivel ler a imagem escolhida.")), { once: true });
+    reader.readAsDataURL(file);
+  });
+}
+
+function loadProfileImage(source) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.addEventListener("load", () => {
+      if (!image.naturalWidth || !image.naturalHeight) {
+        reject(new Error("A imagem escolhida nao possui dimensoes validas."));
+        return;
+      }
+      resolve(image);
+    }, { once: true });
+    image.addEventListener("error", () => reject(new Error("A imagem escolhida esta corrompida.")), { once: true });
+    image.src = source;
+  });
 }
 
 function bindUserHandlers(root) {

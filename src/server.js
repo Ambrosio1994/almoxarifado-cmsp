@@ -124,6 +124,11 @@ const AUTH_MAX_BODY_BYTES = Math.min(
   MAX_JSON_BODY_BYTES,
   positiveRuntimeInteger(process.env.AUTH_MAX_BODY_BYTES, 4 * 1024)
 );
+const PROFILE_PHOTO_MAX_BYTES = 384 * 1024;
+const PROFILE_PHOTO_MAX_BODY_BYTES = Math.min(
+  MAX_JSON_BODY_BYTES,
+  Math.ceil(PROFILE_PHOTO_MAX_BYTES * 4 / 3) + 2 * 1024
+);
 const ADMIN_MAX_BODY_BYTES = Math.min(
   MAX_JSON_BODY_BYTES,
   positiveRuntimeInteger(process.env.ADMIN_MAX_BODY_BYTES, 64 * 1024)
@@ -569,6 +574,40 @@ async function handleAuth(req, res, url) {
     await recordSecurityEventSafely("login_succeeded", { actorUserId: user.id, actorEmail: user.email, metadata: { ip: clientIp(req) } });
     const token = await createSession(user);
     setSessionCookie(res, token);
+    sendJson(res, 200, { user: publicUser(user) });
+    return;
+  }
+
+  if (req.method === "PUT" && url.pathname === "/auth/profile-photo") {
+    if (usesCookieSession(req) && !isSameOriginMutation(req)) {
+      sendJson(res, 403, { error: "Origem da requisicao nao autorizada." });
+      return;
+    }
+    const authenticatedUser = await sessionUser(req);
+    if (!authenticatedUser) {
+      sendJson(res, 401, { error: "Faca login para alterar a foto do perfil." });
+      return;
+    }
+    const body = await readJson(req, PROFILE_PHOTO_MAX_BODY_BYTES);
+    const profilePhoto = normalizeProfilePhotoDataUrl(body.foto);
+    if (!profilePhoto) {
+      sendJson(res, 400, { error: "Envie uma imagem PNG, JPEG ou WebP valida de ate 384 KB." });
+      return;
+    }
+    const store = await readStore();
+    const user = store.usuarios.find((item) => item.id === authenticatedUser.id && item.ativo !== false);
+    if (!user || positiveAuthVersion(user.authVersion) !== positiveAuthVersion(authenticatedUser.authVersion)) {
+      sendJson(res, 401, { error: "Sessao nao encontrada" });
+      return;
+    }
+    user.foto = profilePhoto;
+    user.atualizadoEm = new Date().toISOString();
+    await writeStore(store, [transactionalSecurityEvent("profile_photo_changed", {
+      actorUserId: user.id,
+      actorEmail: user.email,
+      targetUserId: user.id,
+      metadata: { mimeType: profilePhoto.slice(5, profilePhoto.indexOf(";")) }
+    })]);
     sendJson(res, 200, { user: publicUser(user) });
     return;
   }
@@ -2127,6 +2166,23 @@ function publicUser(user) {
     role: resolveRole(user),
     precisaDefinirSenha: Boolean(user.precisaDefinirSenha)
   };
+}
+
+function normalizeProfilePhotoDataUrl(value = "") {
+  const match = String(value).match(/^data:image\/(png|jpeg|webp);base64,([A-Za-z0-9+/]+={0,2})$/);
+  if (!match) return "";
+  const [, imageType, encoded] = match;
+  const buffer = Buffer.from(encoded, "base64");
+  if (!buffer.length || buffer.length > PROFILE_PHOTO_MAX_BYTES) return "";
+  const validSignature = imageType === "png"
+    ? buffer.length >= 8 && buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+    : imageType === "jpeg"
+      ? buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff
+      : buffer.length >= 12
+        && buffer.subarray(0, 4).toString("ascii") === "RIFF"
+        && buffer.subarray(8, 12).toString("ascii") === "WEBP";
+  if (!validSignature) return "";
+  return `data:image/${imageType};base64,${buffer.toString("base64")}`;
 }
 
 function normalizeEmail(email = "") {
