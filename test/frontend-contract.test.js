@@ -144,9 +144,13 @@ describe("contrato visual e de navegacao", () => {
     }
     assert.match(lightTheme, /--theme-text:\s*#0f172a/);
     assert.match(lightTheme, /--theme-content-glass:\s*rgb\(246 248 244 \/ 62%\)/);
+    assert.match(lightTheme, /--theme-page-overlay:\s*rgb\(236 242 246 \/ 20%\)/);
+    assert.match(lightTheme, /--theme-main-overlay:\s*rgb\(248 250 252 \/ 10%\)/);
     assert.match(lightTheme, /color-scheme:\s*light/);
     assert.match(darkTheme, /--theme-text:\s*#f0f4f8/);
     assert.match(darkTheme, /--theme-content-glass:\s*rgb\(13 15 20 \/ 42%\)/);
+    assert.match(darkTheme, /--theme-page-overlay:\s*rgb\(6 7 9 \/ 50%\)/);
+    assert.match(darkTheme, /--theme-main-overlay:\s*rgb\(6 7 9 \/ 50%\)/);
     assert.match(darkTheme, /color-scheme:\s*dark/);
     assert.match(figmaTheme, /\.dashboard-grid \.metric,[\s\S]*?background:\s*var\(--theme-surface\)/);
     assert.match(figmaTheme, /\.settings-account-screen\s*\{[\s\S]*?background:\s*var\(--theme-content-glass\)/);
@@ -200,6 +204,8 @@ describe("contrato visual e de navegacao", () => {
     assert.match(html, /id="settingsView"/);
     assert.match(html, /data-section="suppliers"[\s\S]*?Fornecedores<\/a>[\s\S]*?data-section="settings"[\s\S]*?Configurações<\/a>/);
     assert.match(app, /class="settings-account-screen"/);
+    assert.match(figmaTheme, /#settingsView\s*\{[\s\S]*?margin-inline:\s*auto[\s\S]*?width:\s*50%/);
+    assert.match(figmaTheme, /@media \(max-width:\s*760px\)\s*\{[\s\S]*?#settingsView\s*\{[\s\S]*?width:\s*100%/);
     assert.match(app, /id="settingsAccountForm"/);
     assert.match(app, /name="nome"[\s\S]*?maxlength="100"[\s\S]*?required/);
     assert.doesNotMatch(app, /name="nome"[^>]*readonly/);
