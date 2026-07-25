@@ -37,6 +37,7 @@ html[data-theme="light"] {
   --theme-surface-faint: rgb(248 250 252 / 54%);
   --theme-content-glass: rgb(246 248 244 / 62%);
   --theme-content-glass-faint: rgb(246 248 244 / 52%);
+  --theme-suppliers-container: rgb(246 248 244 / 10%);
   --theme-control-bg: rgb(241 245 249 / 92%);
   --theme-control-hover: #e2e8f0;
   --theme-input-bg: rgb(255 255 255 / 90%);
@@ -114,6 +115,7 @@ html[data-theme="dark"] {
   --theme-surface-faint: rgb(17 20 28 / 48%);
   --theme-content-glass: rgb(13 15 20 / 42%);
   --theme-content-glass-faint: rgb(17 20 28 / 34%);
+  --theme-suppliers-container: rgb(17 20 28 / 8%);
   --theme-control-bg: rgb(31 41 55 / 88%);
   --theme-control-hover: #374151;
   --theme-input-bg: #1a202c;
@@ -398,11 +400,54 @@ html[data-theme] .sidebar-logout {
   color: var(--theme-text);
 }
 
-.theme-toggle {
+.theme-toggle,
+html[data-theme] .theme-toggle {
+  align-items: center;
   backdrop-filter: blur(14px);
   background: var(--theme-control-bg);
-  border-color: var(--theme-border);
-  box-shadow: 0 8px 24px var(--theme-shadow);
+  border: 1px solid var(--theme-border);
+  border-radius: 8px;
+  box-shadow: none;
+  box-sizing: border-box;
+  color: var(--theme-text);
+  display: inline-flex;
+  gap: 8px;
+  height: 38px;
+  justify-content: center;
+  line-height: 1;
+  min-height: 38px;
+  padding: 8px 14px;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.theme-toggle > span {
+  align-items: center;
+  color: currentColor;
+  display: inline-flex;
+  flex: 0 0 18px;
+  font-family: Arial, sans-serif;
+  font-size: 17px;
+  height: 18px;
+  justify-content: center;
+  line-height: 1;
+  opacity: 1;
+  width: 18px;
+}
+
+.theme-toggle > strong {
+  display: inline;
+  font-size: 13px;
+  line-height: 1;
+}
+
+.theme-toggle:focus {
+  outline: none;
+}
+
+.theme-toggle:focus-visible {
+  outline: 2px solid var(--theme-focus);
+  outline-offset: 2px;
 }
 
 .topbar > .theme-toggle {
@@ -510,14 +555,22 @@ html[data-theme] .icon-button {
 
 body[data-app-section="processes"] .process-header-actions button,
 html[data-theme] body[data-app-section="processes"] .process-header-actions button {
+  align-items: center;
   background: transparent;
-  border-color: #fbbf24;
-  box-shadow: 0 0 0 1px rgb(251 191 36 / 34%);
+  border: 1px solid #fbbf24;
+  border-radius: 8px;
+  box-shadow: none;
+  box-sizing: border-box;
   color: var(--theme-text);
+  display: inline-flex;
   font-size: 13px;
   font-weight: 700;
+  height: 38px;
+  justify-content: center;
+  line-height: 1;
   min-height: 38px;
   padding: 8px 14px;
+  vertical-align: middle;
 }
 
 body[data-app-section="processes"] .process-header-actions .theme-toggle strong {
@@ -728,6 +781,33 @@ body[data-app-section="processes"] .process-table tbody tr:hover {
   background: var(--theme-table-hover);
 }
 
+@media (min-width: 641px) {
+  body[data-app-section="processes"] .process-table {
+    border-collapse: separate;
+    border-spacing: 0 12px;
+  }
+
+  body[data-app-section="processes"] .process-table tbody td {
+    background: var(--theme-surface-faint);
+    border-bottom: 1px solid var(--theme-border-soft);
+    border-top: 1px solid var(--theme-border-soft);
+  }
+
+  body[data-app-section="processes"] .process-table tbody td:first-child {
+    border-left: 1px solid var(--theme-border-soft);
+    border-radius: 10px 0 0 10px;
+  }
+
+  body[data-app-section="processes"] .process-table tbody td:last-child {
+    border-radius: 0 10px 10px 0;
+    border-right: 1px solid var(--theme-border-soft);
+  }
+
+  body[data-app-section="processes"] .process-table tbody tr:hover td {
+    background: var(--theme-table-hover);
+  }
+}
+
 body[data-app-section="processes"] .empty-table-row,
 body[data-app-section="processes"] .empty-table-row:hover {
   background: var(--theme-content-glass-faint);
@@ -923,7 +1003,7 @@ html[data-theme] .kanban-card {
 
 .module-view#suppliersView {
   backdrop-filter: blur(12px);
-  background: var(--theme-content-glass-faint);
+  background: var(--theme-suppliers-container);
   border: 1px solid var(--theme-border-glass);
   border-radius: 16px;
   margin: 20px;
