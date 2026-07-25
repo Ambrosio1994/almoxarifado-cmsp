@@ -27,8 +27,8 @@ html[data-theme="light"] {
   --green: var(--cosmos-green);
   --red: var(--cosmos-red);
   --search-bg: rgb(255 255 255 / 90%);
-  --theme-page-overlay: rgb(236 242 246 / 34%);
-  --theme-main-overlay: rgb(248 250 252 / 14%);
+  --theme-page-overlay: rgb(236 242 246 / 20%);
+  --theme-main-overlay: rgb(248 250 252 / 10%);
   --theme-sidebar-bg: rgb(248 250 252 / 94%);
   --theme-topbar-bg: rgb(248 250 252 / 78%);
   --theme-surface: rgb(255 255 255 / 86%);
@@ -105,8 +105,8 @@ html[data-theme="dark"] {
   --green: var(--cosmos-green);
   --red: var(--cosmos-red);
   --search-bg: #1a202c;
-  --theme-page-overlay: rgb(6 7 9 / 68%);
-  --theme-main-overlay: rgb(6 7 9 / 54%);
+  --theme-page-overlay: rgb(6 7 9 / 50%);
+  --theme-main-overlay: rgb(6 7 9 / 50%);
   --theme-sidebar-bg: rgb(9 12 19 / 94%);
   --theme-topbar-bg: rgb(7 8 11 / 74%);
   --theme-surface: rgb(17 20 28 / 86%);
@@ -1108,6 +1108,8 @@ dialog::backdrop {
 #settingsView {
   display: grid;
   gap: 22px;
+  margin-inline: auto;
+  width: 50%;
 }
 
 #settingsView.hidden {
@@ -1425,6 +1427,10 @@ html[data-theme] .settings-save-button {
 
   .supplier-search {
     max-width: none;
+    width: 100%;
+  }
+
+  #settingsView {
     width: 100%;
   }
 
