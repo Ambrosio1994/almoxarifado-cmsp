@@ -36,17 +36,20 @@ describe("contrato visual e de navegacao", () => {
   it("aplica as superficies do Figma com assets locais e sem alterar os fluxos reais", () => {
     assert.match(html, /href="\/figma-theme\.css"/);
     assert.match(html, /class="auth-heading"[\s\S]*?Acesse sua conta[\s\S]*?Insira suas credenciais abaixo/);
-    assert.match(figmaTheme, /\.auth-screen\s*\{[\s\S]*?login-background\.png/);
+    assert.match(figmaTheme, /\.auth-screen\s*\{[\s\S]*?login-background\.webp/);
     assert.match(figmaTheme, /body\[data-app-section="dashboard"\][\s\S]*?dashboard-overlay\.png/);
     assert.match(figmaTheme, /body\[data-app-section="processes"\][\s\S]*?processes-background\.png/);
     assert.match(figmaTheme, /body\[data-app-section="board"\][\s\S]*?board-background\.png/);
     assert.match(figmaTheme, /body\[data-app-section="suppliers"\][\s\S]*?suppliers-background\.png/);
+    assert.match(figmaTheme, /body\[data-app-section="processes"\] \.table-wrap\s*\{[\s\S]*?background:\s*rgb\(17 20 28 \/ 62%\)/);
+    assert.match(figmaTheme, /\.board-view\s*\{[\s\S]*?background:\s*rgb\(13 15 20 \/ 62%\)/);
+    assert.match(figmaTheme, /\.module-view#suppliersView\s*\{[\s\S]*?background:\s*rgb\(11 13 19 \/ 62%\)/);
     assert.match(app, /document\.body\.dataset\.appSection = section/);
     assert.match(app, /localStorage\.getItem\("almoxTheme"\) \|\| "dark"/);
     assert.match(html, /id="accountProfileName"[^>]*readonly/);
     assert.match(html, /id="accountThemeToggle"[^>]*role="switch"/);
     for (const asset of [
-      "login-background.png",
+      "login-background.webp",
       "dashboard-overlay.png",
       "processes-background.png",
       "board-background.png",
@@ -90,11 +93,17 @@ describe("contrato visual e de navegacao", () => {
     assert.match(mobileRules, /\.kanban-column\s*\{[\s\S]*?width:\s*calc\(100vw - 42px\)/);
   });
 
-  it("mantem Usuarios e permissoes separado de Templates", () => {
+  it("mantem Configuracoes acessivel e Templates como subseção administrativa", () => {
     assert.match(html, /data-section="users"[^>]*>[^<]*<span[^>]*>[\s\S]*?Usuarios e permissoes<\/a>/);
-    assert.match(html, /data-section="settings"[^>]*>[^<]*<span[^>]*>[\s\S]*?Templates<\/a>/);
+    assert.match(html, /data-section="settings"[^>]*>[^<]*<span[^>]*>[\s\S]*?Configurações<\/a>/);
     assert.match(html, /id="usersView"/);
     assert.match(html, /id="settingsView"/);
+    assert.match(app, /class="settings-account-screen"/);
+    assert.match(app, /id="settingsPasswordButton"/);
+    assert.match(app, /id="settingsThemeToggle"/);
+    assert.match(app, /Configurações administrativas/);
+    assert.match(app, /const isAdmin = currentUser\?\.role === "admin"/);
+    assert.match(app, /if \(section === "users" && currentUser\?\.role !== "admin"\)/);
   });
 
   it("preserva os campos, limites e rotulos de aceite", () => {

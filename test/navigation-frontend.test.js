@@ -36,6 +36,21 @@ describe("Navegacao principal no DOM", () => {
       assert.equal(dom.window.document.querySelector("#sectionTitle").textContent, "Empenhos");
       assert.equal(dom.window.sessionStorage.getItem(storageKey), "processes");
 
+      const settingsNavigation = dom.window.document.querySelector('[data-section="settings"]');
+      assert.equal(settingsNavigation.classList.contains("hidden"), false);
+      settingsNavigation.click();
+      await waitFor(() => settingsNavigation.getAttribute("aria-current") === "page");
+
+      assert.equal(dom.window.document.querySelector("#sectionTitle").textContent, "Configurações");
+      assert.equal(dom.window.document.querySelector("#settingsAccountTitle").textContent, "Configurações");
+      assert.equal(dom.window.document.querySelector('#settingsAccountForm input[type="text"]').value, "Teste");
+      assert.equal(dom.window.document.querySelector(".settings-admin-section"), null);
+      const settingsThemeToggle = dom.window.document.querySelector("#settingsThemeToggle");
+      settingsThemeToggle.checked = false;
+      dom.window.document.querySelector("#settingsAccountForm").dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true }));
+      assert.equal(dom.window.localStorage.getItem("almoxTheme"), "light");
+      assert.match(dom.window.document.querySelector("#settingsAccountMessage").textContent, /sucesso/);
+
       const logoutButton = dom.window.document.querySelector("#logoutButton");
       logoutButton.click();
       await waitFor(() => logoutButton.textContent === "Saindo...");
@@ -46,6 +61,48 @@ describe("Navegacao principal no DOM", () => {
       await waitFor(() => !dom.window.document.querySelector("#authScreen").classList.contains("hidden"));
       assert.equal(dom.window.document.querySelector("#authMessage").textContent, "");
       assert.equal(logoutButton.textContent, "Sair");
+    } finally {
+      restoreGlobals();
+      dom.window.close();
+    }
+  });
+
+  it("preserva templates e prazos dentro das configuracoes administrativas", async () => {
+    const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
+    const dom = new JSDOM(html, { url: "http://localhost/", pretendToBeVisual: true });
+    const restoreGlobals = installDomGlobals(dom.window);
+    dom.window.sessionStorage.setItem("almoxActiveSection:admin@example.com", "settings");
+
+    globalThis.fetch = async (input) => {
+      const path = String(input);
+      if (path === "/auth/session") return jsonResponse({ email: "admin@example.com", nome: "Admin", role: "admin" });
+      if (path === "/api/meta") return jsonResponse({ status: [], filtrosRapidos: [] });
+      if (path === "/api/dashboard") return jsonResponse(dashboardPayload());
+      if (path === "/api/settings") {
+        return jsonResponse({
+          emailTemplates: {
+            avisoPrazos: { assunto: "Aviso", corpo: "Corpo", anexos: [] },
+            oficioFornecedor: { assunto: "Ofício", corpo: "Corpo", anexos: [] }
+          },
+          notificationRules: { diasAvisoInterno: [7, 14], diaOficioFornecedor: 30 },
+          responsaveis: [],
+          status: [],
+          filtrosRapidos: [],
+          usuarios: []
+        });
+      }
+      throw new Error(`Requisicao inesperada no teste: ${path}`);
+    };
+
+    try {
+      await import(`${new URL("../public/app.js", import.meta.url).href}?settings-admin-test=${Date.now()}`);
+      await waitFor(() => dom.window.document.querySelector('[data-section="settings"]')?.getAttribute("aria-current") === "page");
+      await waitFor(() => Boolean(dom.window.document.querySelector(".settings-admin-section")));
+
+      assert.equal(dom.window.document.querySelector(".settings-admin-section").open, true);
+      assert.match(dom.window.document.querySelector(".settings-admin-section").textContent, /Templates de e-mail/);
+      assert.match(dom.window.document.querySelector(".settings-admin-section").textContent, /Prazos para notificacoes/);
+      assert.ok(dom.window.document.querySelector("#emailTemplatesForm"));
     } finally {
       restoreGlobals();
       dom.window.close();
