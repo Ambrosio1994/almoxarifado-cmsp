@@ -6,18 +6,25 @@
     <title>Almoxarifado</title>
     <link rel="icon" type="image/png" href="/new_favicon.png">
     <link rel="stylesheet" href="/styles.css">
+    <link rel="stylesheet" href="/figma-theme.css">
   </head>
   <body class="auth-pending">
     <section class="auth-screen" id="authScreen">
       <main class="auth-card">
         <section class="auth-panel" id="loginPanel">
+          <div class="auth-heading">
+            <h1>Acesse sua conta</h1>
+            <p>Insira suas credenciais abaixo</p>
+          </div>
           <form id="loginForm" class="auth-form">
-            <label class="email-only"><span class="sr-only">E-mail</span><input name="email" type="email" autocomplete="email" placeholder="Digite seu e-mail" required></label>
-            <label class="password-step" id="passwordStep"><span class="sr-only">Senha</span><input name="senha" type="password" autocomplete="current-password" maxlength="256" placeholder="Digite sua senha" required></label>
+            <label class="email-only"><span>E-mail</span><input name="email" type="email" autocomplete="email" placeholder="Digite seu e-mail" required></label>
+            <label class="password-step" id="passwordStep"><span>Senha</span><input name="senha" type="password" autocomplete="current-password" maxlength="256" placeholder="Digite sua senha" required></label>
             <button type="submit" class="email-submit" id="emailSubmitButton">Entrar</button>
           </form>
-          <p class="auth-note">Ao continuar, voce reconhece a Politica de Privacidade do Almoxarifado.</p>
-          <p class="auth-note">O acesso deve ser cadastrado previamente por um administrador.</p>
+          <div class="auth-supporting-copy">
+            <p class="auth-note">Ao continuar, voce reconhece a Politica de Privacidade do Almoxarifado.</p>
+            <p class="auth-note">O acesso deve ser cadastrado previamente por um administrador.</p>
+          </div>
           <p class="auth-message" id="authMessage" role="alert" aria-live="assertive"></p>
         </section>
 
@@ -423,16 +430,31 @@
       </form>
     </dialog>
 
-    <dialog id="changePasswordDialog" class="small-dialog" aria-labelledby="changePasswordDialogTitle">
+    <dialog id="changePasswordDialog" class="small-dialog account-settings-dialog" aria-labelledby="changePasswordDialogTitle">
       <form method="dialog" class="dialog-header">
-        <strong id="changePasswordDialogTitle">Alterar minha senha</strong>
-        <button type="submit" class="secondary" id="changePasswordCloseButton">Fechar</button>
+        <button type="submit" class="secondary account-back-button" id="changePasswordCloseButton" aria-label="Fechar configurações">←</button>
+        <strong id="changePasswordDialogTitle">Configurações</strong>
+        <span class="account-header-spacer" aria-hidden="true"></span>
       </form>
       <form id="changePasswordForm" class="process-form">
+        <div class="account-profile-hero">
+          <div class="account-profile-avatar">
+            <img id="accountProfileImage" src="/assets/figma/settings-avatar.png" alt="">
+            <span class="account-camera-badge" aria-hidden="true"></span>
+          </div>
+          <span>Alterar foto de perfil</span>
+        </div>
+        <label>Nome <input id="accountProfileName" type="text" readonly></label>
         <label>Senha atual <input name="senhaAtual" type="password" autocomplete="current-password" maxlength="256" required></label>
         <label>Nova senha <input name="novaSenha" type="password" autocomplete="new-password" minlength="8" maxlength="256" required title="Minimo de 8 caracteres, com maiuscula, numero e caractere especial que nao seja espaco"></label>
         <label>Confirmar nova senha <input name="confirmacao" type="password" autocomplete="new-password" minlength="8" maxlength="256" required></label>
-        <div class="actions"><button type="submit">Alterar senha</button></div>
+        <label class="account-theme-row">Tema
+          <span>
+            <strong>Escuro</strong>
+            <input id="accountThemeToggle" type="checkbox" role="switch" aria-label="Usar tema escuro">
+          </span>
+        </label>
+        <div class="actions"><button type="submit">Salvar alterações</button></div>
         <p class="form-message" id="changePasswordMessage" role="status" aria-live="polite"></p>
       </form>
     </dialog>

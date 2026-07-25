@@ -1,0 +1,762 @@
+:root {
+  --cosmos-page: #07080b;
+  --cosmos-paper: rgb(17 20 28 / 86%);
+  --cosmos-panel: rgb(22 26 34 / 92%);
+  --cosmos-panel-soft: rgb(30 35 48 / 62%);
+  --cosmos-line: #242936;
+  --cosmos-line-soft: rgb(255 255 255 / 9%);
+  --cosmos-ink: #f0f4f8;
+  --cosmos-muted: #8a94a6;
+  --cosmos-blue: #3b82f6;
+  --cosmos-cyan: #22d3ee;
+  --cosmos-orange: #f97316;
+  --cosmos-green: #10b981;
+  --cosmos-red: #ef4444;
+  color-scheme: dark;
+}
+
+html,
+html[data-theme="light"],
+html[data-theme="dark"] {
+  --page: var(--cosmos-page);
+  --paper: #11141c;
+  --panel: #161a22;
+  --nav: rgb(9 12 19 / 94%);
+  --nav-soft: #1f2937;
+  --ink: var(--cosmos-ink);
+  --muted: var(--cosmos-muted);
+  --line: var(--cosmos-line);
+  --line-dark: #2d3748;
+  --orange: var(--cosmos-orange);
+  --yellow: #f59e0b;
+  --green: var(--cosmos-green);
+  --red: var(--cosmos-red);
+  --search-bg: #1a202c;
+  color-scheme: dark;
+}
+
+body {
+  background-color: var(--cosmos-page);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: cover;
+  color: var(--cosmos-ink);
+  font-family: Inter, "Segoe UI", Arial, sans-serif;
+  min-height: 100vh;
+}
+
+body::before {
+  background: rgb(6 7 9 / 68%);
+  content: "";
+  inset: 0;
+  pointer-events: none;
+  position: fixed;
+  z-index: -1;
+}
+
+body[data-app-section="dashboard"] {
+  background-image: url("/assets/figma/dashboard-overlay.png");
+}
+
+body[data-app-section="processes"] {
+  background-image: url("/assets/figma/processes-background.png");
+}
+
+body[data-app-section="board"] {
+  background-image: url("/assets/figma/board-background.png");
+}
+
+body[data-app-section="suppliers"] {
+  background-image: url("/assets/figma/suppliers-background.png");
+}
+
+body[data-app-section="audit"],
+body[data-app-section="users"],
+body[data-app-section="settings"] {
+  background-image: url("/assets/figma/settings-background.png");
+}
+
+.auth-screen {
+  background: #020306 url("/assets/figma/login-background.png") center / cover no-repeat;
+  min-height: 100vh;
+  padding: 28px;
+}
+
+.auth-card {
+  max-width: 384px;
+  padding: 0;
+}
+
+.auth-panel,
+html[data-theme="light"] .auth-panel,
+html[data-theme="dark"] .auth-panel {
+  backdrop-filter: blur(12px);
+  background: rgb(6 10 24 / 70%);
+  border: 1px solid rgb(88 199 250 / 25%);
+  border-radius: 24px;
+  box-shadow:
+    0 0 80px rgb(102 178 255 / 20%),
+    0 0 40px rgb(77 153 255 / 40%);
+  color: #f8fafc;
+  padding: 40px;
+}
+
+.auth-heading {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 32px;
+}
+
+.auth-heading h1 {
+  color: #f8fafc;
+  font-family: "Rethink Sans", Inter, sans-serif;
+  font-size: 24px;
+  line-height: 1.2;
+  margin: 0;
+}
+
+.auth-heading p {
+  color: #94a3b8;
+  font-size: 14px;
+  margin: 0;
+}
+
+.auth-form {
+  gap: 20px;
+}
+
+.auth-form label {
+  color: #94a3b8;
+  font-size: 12px;
+  font-weight: 600;
+  gap: 8px;
+  margin: 0;
+  text-transform: uppercase;
+}
+
+.email-only input,
+.password-step input,
+html[data-theme] .email-only input,
+html[data-theme] .password-step input {
+  background: rgb(14 21 40 / 90%);
+  border: 1px solid rgb(77 153 255 / 50%);
+  border-radius: 12px;
+  box-shadow: 0 0 6px rgb(77 153 255 / 30%);
+  color: #f8fafc;
+  font-size: 14px;
+  height: 48px;
+  min-height: 48px;
+  padding: 0 16px;
+}
+
+.email-only input::placeholder,
+.password-step input::placeholder {
+  color: #94a3b8;
+  opacity: 1;
+}
+
+.password-input-wrap input {
+  padding-right: 50px !important;
+}
+
+.password-toggle {
+  background: url("/assets/figma/eye-off.svg") center / 20px 20px no-repeat;
+  color: transparent;
+  right: 12px;
+}
+
+.password-toggle svg {
+  opacity: 0;
+}
+
+.email-submit {
+  background: #fff;
+  border: 0;
+  border-radius: 12px;
+  box-shadow: 0 4px 10px rgb(255 255 255 / 25%);
+  color: #030712;
+  font-size: 16px;
+  height: 52px;
+  margin-top: 12px;
+}
+
+.auth-supporting-copy {
+  display: none;
+}
+
+.auth-message {
+  color: #fca5a5 !important;
+  margin: 14px 0 0 !important;
+}
+
+.sidebar {
+  backdrop-filter: blur(18px);
+  background: rgb(9 12 19 / 94%);
+  border-right: 1px solid var(--cosmos-line-soft);
+  box-shadow: 16px 0 40px rgb(0 0 0 / 22%);
+}
+
+.sidebar-header,
+.sidebar-profile {
+  border-color: var(--cosmos-line-soft);
+}
+
+.brand strong,
+.content-header h1,
+.detail-hero h1 {
+  color: #f8fafc;
+  font-family: "Instrument Sans", Inter, sans-serif;
+}
+
+.brand span,
+.sidebar-profile-text span {
+  color: var(--cosmos-muted);
+}
+
+.nav-item {
+  border-radius: 8px;
+  color: #cbd5e1;
+  margin: 2px 10px;
+  padding: 10px 12px;
+}
+
+.nav-item.active {
+  background: #1f2937;
+  box-shadow: inset 3px 0 0 var(--cosmos-blue);
+  color: #fff;
+}
+
+.sidebar-logout,
+html[data-theme] .sidebar-logout {
+  background: rgb(31 41 55 / 80%);
+  border-color: var(--cosmos-line);
+  color: #f8fafc;
+}
+
+.app-shell {
+  background: transparent;
+}
+
+.topbar {
+  backdrop-filter: blur(14px);
+  background: rgb(7 8 11 / 74%);
+  border-bottom: 1px solid var(--cosmos-line-soft);
+}
+
+.topbar-title,
+.theme-toggle {
+  color: var(--cosmos-ink);
+}
+
+.app-shell > main {
+  min-height: calc(100vh - 64px);
+}
+
+.app-shell > main::before {
+  background: rgb(6 7 9 / 54%);
+  content: "";
+  inset: 64px 0 0 var(--sidebar-width);
+  pointer-events: none;
+  position: fixed;
+  z-index: -1;
+}
+
+.content,
+.module-view,
+.process-detail {
+  position: relative;
+}
+
+.content-header {
+  margin-bottom: 20px;
+}
+
+.content-header h1 {
+  font-size: 32px;
+  line-height: 1.1;
+}
+
+.content-header span,
+.dashboard-scope {
+  color: #94a3b8;
+  font-size: 14px;
+}
+
+button,
+html[data-theme] button {
+  background: #1f2937;
+  border-color: #2d3748;
+  border-radius: 8px;
+  color: #f8fafc;
+}
+
+button:hover {
+  border-color: #475569;
+  filter: brightness(1.12);
+}
+
+button.secondary,
+html[data-theme] button.secondary,
+html[data-theme] #clearForm,
+html[data-theme] .icon-button {
+  background: rgb(31 41 55 / 88%);
+  border-color: #2d3748;
+  color: #f8fafc;
+}
+
+#newProcessButton {
+  background: transparent;
+  border-color: #fbbf24;
+  box-shadow: 0 0 0 1px rgb(251 191 36 / 34%);
+}
+
+input,
+select,
+textarea,
+html[data-theme] input,
+html[data-theme] select,
+html[data-theme] textarea {
+  background-color: #1a202c;
+  border-color: #2d3748;
+  color: #f0f4f8;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: #8a94a6;
+}
+
+.search-box,
+html[data-theme] .search-box,
+html[data-theme] .search-box:focus-within {
+  background: #1a202c;
+  border-color: #2d3748;
+  border-radius: 8px;
+}
+
+.search-box:focus-within {
+  border-color: var(--cosmos-blue);
+  box-shadow: 0 0 0 3px rgb(59 130 246 / 20%);
+}
+
+.filter-chip,
+html[data-theme] .filter-chip {
+  background: rgb(31 41 55 / 72%);
+  border-color: #2d3748;
+  color: #cbd5e1;
+}
+
+.filter-chip.active,
+html[data-theme] .filter-chip.active {
+  background: #374151;
+  border-color: #fbbf24;
+  color: #fff;
+}
+
+.table-wrap,
+html[data-theme] table {
+  background: rgb(17 20 28 / 82%);
+  border-color: var(--cosmos-line);
+}
+
+.table-wrap {
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--cosmos-line);
+  border-radius: 10px;
+}
+
+html[data-theme] th {
+  background: #1f2633;
+  color: #aab4c5;
+}
+
+html[data-theme] tbody td,
+html[data-theme] .strong-cell,
+html[data-theme] .mono-cell,
+html[data-theme] .money-cell {
+  color: #e5e7eb;
+}
+
+html[data-theme] .process-table tbody tr:hover,
+html[data-theme] .clickable-row:hover {
+  background: rgb(37 45 59 / 76%);
+}
+
+.dashboard-grid {
+  gap: 16px;
+}
+
+.dashboard-grid .metric,
+html[data-theme] .dashboard-grid .metric {
+  backdrop-filter: blur(10px);
+  background: var(--cosmos-paper);
+  border-color: var(--cosmos-line);
+  border-radius: 12px;
+  padding: 20px;
+}
+
+.dashboard-grid .metric span {
+  color: #94a3b8;
+  font-size: 13px;
+}
+
+.dashboard-grid .metric strong {
+  color: #f8fafc;
+  font-family: "Instrument Sans", Inter, sans-serif;
+  font-size: 38px;
+}
+
+.dashboard-grid .metric.attention {
+  border-color: var(--cosmos-red);
+}
+
+.dashboard-grid .metric.attention strong {
+  color: var(--cosmos-red);
+}
+
+.dashboard-year {
+  background: rgb(17 20 28 / 86%);
+  border-color: var(--cosmos-line);
+  border-radius: 8px;
+  color: #f8fafc;
+}
+
+.charts-grid {
+  gap: 16px;
+}
+
+.chart-card,
+html[data-theme] .chart-card {
+  backdrop-filter: blur(10px);
+  background: var(--cosmos-paper);
+  border-color: var(--cosmos-line);
+  border-radius: 12px;
+  padding: 24px;
+}
+
+.chart-card h2 {
+  color: #f8fafc;
+  font-family: "Instrument Sans", Inter, sans-serif;
+  font-size: 16px;
+}
+
+.grouped-chart-card {
+  min-height: 334px;
+}
+
+.chart-legend span {
+  color: #94a3b8 !important;
+}
+
+.legend-committed,
+.bar-fill.empenhado,
+.group-bar.empenhado {
+  background: var(--cosmos-blue);
+}
+
+.legend-liquidated,
+.bar-fill.liquidado,
+.group-bar.liquidado {
+  background: var(--cosmos-orange);
+}
+
+.legend-paid,
+.bar-fill.pago,
+.group-bar.pago {
+  background: var(--cosmos-green);
+}
+
+.bar-track {
+  background: rgb(255 255 255 / 8%);
+}
+
+.board-view {
+  backdrop-filter: blur(8px);
+  background: rgb(13 15 20 / 93%);
+  border: 1px solid var(--cosmos-line-soft);
+  border-radius: 16px;
+  margin: 20px;
+  min-height: calc(100vh - 110px);
+  padding: 24px;
+}
+
+.board-heading span {
+  display: none;
+}
+
+.board-toolbar {
+  gap: 12px;
+}
+
+.board-toolbar select,
+.board-toolbar button {
+  border-radius: 6px;
+}
+
+.board-message {
+  color: #8a94a6;
+  text-align: right;
+}
+
+.kanban-board {
+  gap: 16px;
+}
+
+.kanban-column,
+html[data-theme] .kanban-column {
+  background: rgb(30 35 48 / 50%);
+  border-color: #222933;
+  border-radius: 8px;
+}
+
+.kanban-column-header {
+  border-color: #222933;
+}
+
+.kanban-column-header > strong,
+html[data-theme] .kanban-column-header > strong {
+  background: #2e3748;
+  border: 0;
+  color: #f0f4f8;
+}
+
+.kanban-card,
+html[data-theme] .kanban-card {
+  background: #161a22;
+  border-color: #222933;
+  border-left-width: 1px;
+  border-radius: 6px;
+  box-shadow: none;
+}
+
+.kanban-card:focus-visible,
+.kanban-card:hover {
+  border-color: rgb(59 130 246 / 55%);
+  box-shadow: 0 0 0 1px rgb(59 130 246 / 30%);
+}
+
+.kanban-card-line {
+  color: #f0f4f8;
+}
+
+.kanban-card-line b,
+.kanban-card-empenho,
+.kanban-card-meta,
+.kanban-card-indicators {
+  color: #8a94a6;
+}
+
+.module-view#suppliersView {
+  backdrop-filter: blur(12px);
+  background: rgb(11 13 19 / 90%);
+  border: 1px solid var(--cosmos-line-soft);
+  border-radius: 16px;
+  margin: 20px;
+  min-height: calc(100vh - 110px);
+  padding: 48px;
+}
+
+.module-row {
+  background: rgb(17 19 26 / 60%);
+  border-color: rgb(255 255 255 / 6%);
+  border-radius: 10px;
+  padding: 18px 24px;
+}
+
+.module-row strong {
+  color: #fff;
+  font-size: 15px;
+}
+
+.module-row span {
+  color: #8a94a6;
+}
+
+.supplier-actions button:not(.secondary) {
+  background: transparent;
+  border-color: transparent;
+}
+
+.supplier-detail,
+.supplier-history,
+html[data-theme] .supplier-detail,
+html[data-theme] .supplier-history {
+  background: rgb(17 19 26 / 80%);
+  border-color: var(--cosmos-line-soft);
+}
+
+dialog,
+html[data-theme] dialog {
+  backdrop-filter: blur(18px);
+  background: rgb(11 13 19 / 96%);
+  border: 1px solid var(--cosmos-line-soft);
+  border-radius: 16px;
+  color: #f8fafc;
+}
+
+dialog::backdrop {
+  background: rgb(0 0 0 / 70%);
+}
+
+.account-settings-dialog {
+  background: rgb(4 5 8 / 70%) url("/assets/figma/settings-background.png") center / cover no-repeat !important;
+  border-radius: 0;
+  height: 100vh;
+  margin: 0;
+  max-height: none;
+  max-width: none;
+  padding: 0 24px 32px;
+  width: 100vw;
+}
+
+.account-settings-dialog .dialog-header {
+  background: transparent;
+  border: 0;
+  display: grid;
+  grid-template-columns: 40px 1fr 40px;
+  padding: 28px 0 12px;
+  text-align: center;
+}
+
+.account-settings-dialog .dialog-header strong {
+  font-size: 18px;
+}
+
+.account-back-button,
+html[data-theme] .account-back-button {
+  align-items: center;
+  background: rgb(255 255 255 / 5%);
+  border: 1px solid rgb(255 255 255 / 15%);
+  border-radius: 999px;
+  display: inline-flex;
+  height: 40px;
+  justify-content: center;
+  padding: 0;
+  width: 40px;
+}
+
+.account-settings-dialog .process-form {
+  gap: 16px;
+  margin: 0 auto;
+  max-width: 1180px;
+  padding: 0;
+}
+
+.account-profile-hero {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+
+.account-profile-avatar {
+  height: 100px;
+  position: relative;
+  width: 100px;
+}
+
+.account-profile-avatar > img {
+  border: 2px solid var(--cosmos-cyan);
+  border-radius: 999px;
+  height: 100%;
+  object-fit: cover;
+  width: 100%;
+}
+
+.account-camera-badge {
+  background: var(--cosmos-cyan) url("/assets/figma/camera.svg") center / 16px no-repeat;
+  border-radius: 999px;
+  bottom: 0;
+  box-shadow: 0 4px 8px rgb(0 0 0 / 35%);
+  height: 32px;
+  position: absolute;
+  right: 0;
+  width: 32px;
+}
+
+.account-profile-hero > span {
+  color: var(--cosmos-cyan);
+  font-size: 14px;
+}
+
+.account-settings-dialog label {
+  color: rgb(255 255 255 / 70%);
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.account-settings-dialog input {
+  background: rgb(255 255 255 / 5%);
+  border-color: rgb(255 255 255 / 15%);
+  border-radius: 12px;
+  color: #fff;
+  height: 48px;
+}
+
+.account-theme-row > span {
+  align-items: center;
+  background: rgb(255 255 255 / 5%);
+  border: 1px solid rgb(255 255 255 / 15%);
+  border-radius: 12px;
+  display: flex;
+  height: 52px;
+  justify-content: space-between;
+  padding: 0 16px;
+}
+
+.account-theme-row strong {
+  color: #fff;
+  font-size: 15px;
+  font-weight: 400;
+  text-transform: none;
+}
+
+#accountThemeToggle {
+  accent-color: var(--cosmos-cyan);
+  height: 26px;
+  min-height: 26px;
+  width: 48px;
+}
+
+.account-settings-dialog .actions button {
+  background: var(--cosmos-cyan);
+  border: 0;
+  border-radius: 14px;
+  box-shadow: 0 8px 16px rgb(34 211 238 / 25%);
+  color: #090514;
+  font-size: 16px;
+  height: 52px;
+  width: 100%;
+}
+
+@media (max-width: 760px) {
+  .auth-screen {
+    background-position: 48% center;
+    padding: 18px;
+  }
+
+  .auth-panel {
+    padding: 30px 24px;
+  }
+
+  .board-view,
+  .module-view#suppliersView {
+    border-radius: 12px;
+    margin: 12px;
+    padding: 20px;
+  }
+
+  .module-view#suppliersView {
+    padding: 24px 20px;
+  }
+
+  .account-settings-dialog {
+    padding-inline: 18px;
+  }
+
+  .account-settings-dialog .dialog-header {
+    padding-top: 16px;
+  }
+}
