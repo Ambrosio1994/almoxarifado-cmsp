@@ -2525,13 +2525,43 @@ textarea {
   grid-template-columns: 1fr 1fr;
 }
 
+.process-primary-grid {
+  align-items: start;
+  column-gap: 12px;
+  row-gap: 12px;
+}
+
+.process-primary-group {
+  --process-primary-control-height: 40px;
+  align-content: start;
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.process-primary-label {
+  align-items: center;
+  display: flex;
+  font-size: 12px;
+  height: 16px;
+  line-height: 16px;
+  margin: 0;
+}
+
+.process-primary-group > input,
+.commitment-number-field {
+  height: var(--process-primary-control-height);
+  min-height: var(--process-primary-control-height);
+  width: 100%;
+}
+
 .commitment-number-field {
   align-items: stretch;
   border: 1px solid var(--line-dark);
   border-radius: 5px;
   display: grid;
   grid-template-columns: minmax(92px, .8fr) auto minmax(90px, 1fr);
-  margin-top: 6px;
+  margin: 0;
   overflow: hidden;
 }
 
@@ -2539,7 +2569,10 @@ textarea {
 .commitment-number-field input {
   border: 0;
   border-radius: 0;
+  height: 100%;
+  line-height: 1;
   min-width: 0;
+  min-height: 0;
 }
 
 .commitment-number-field select {
@@ -2562,7 +2595,9 @@ textarea {
   display: flex;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-weight: 800;
+  height: 100%;
   justify-content: center;
+  line-height: 1;
   padding: 0 10px;
 }
 
@@ -2570,7 +2605,8 @@ textarea {
   color: var(--muted);
   display: block;
   font-size: 11px;
-  margin-top: 5px;
+  line-height: 14px;
+  margin: 0;
 }
 
 .actions {
@@ -3338,5 +3374,9 @@ dialog::backdrop {
   textarea,
   button {
     min-height: 44px;
+  }
+
+  .process-primary-group {
+    --process-primary-control-height: 44px;
   }
 }

@@ -55,6 +55,7 @@ const state = {
   dashboardYear: "",
   supplierSearch: "",
   supplierHistory: "",
+  quickFilters: new Set(),
   settings: null,
   settingsLoading: null,
   settingsPanel: "templates",
@@ -575,6 +576,7 @@ function resetApplicationData() {
   state.dashboardYear = "";
   state.supplierSearch = "";
   state.supplierHistory = "";
+  state.quickFilters = new Set();
   state.settingsPanel = "templates";
   state.activeSection = "dashboard";
   state.detailObservationsError = "";
@@ -1140,7 +1142,7 @@ async function refresh({ reload = true, updateDashboard = reload } = {}) {
 function applyProcessFilters() {
   const query = normalizeText(searchInput?.value || "");
   const status = statusFilter?.value || "";
-  const quick = quickFilter?.value || "";
+  const quickFilters = [...state.quickFilters];
   state.processos = state.allProcesses
     .filter((processo) => !processo.inativo)
     .filter((processo) => !status || processo.status === status)
@@ -1158,7 +1160,8 @@ function applyProcessFilters() {
         ...(processo.materiais || []).map((material) => material.descricao)
       ].some((value) => normalizeText(value).includes(query));
     })
-    .filter((processo) => matchesQuickFilter(processo, quick));
+    .filter((processo) => quickFilters.length === 0
+      || quickFilters.some((quickFilterValue) => matchesQuickFilter(processo, quickFilterValue)));
 }
 
 function matchesQuickFilter(processo, quickFilterValue) {
@@ -1179,7 +1182,7 @@ function processFilterParams() {
   const params = new URLSearchParams();
   if (searchInput.value) params.set("q", searchInput.value);
   if (statusFilter.value) params.set("status", statusFilter.value);
-  if (quickFilter.value) params.set("filtroRapido", quickFilter.value);
+  state.quickFilters.forEach((filter) => params.append("filtroRapido", filter));
   return params;
 }
 
@@ -1337,7 +1340,13 @@ processExportChoices.forEach((button) => {
 });
 searchInput.addEventListener("input", debounce(() => refresh({ reload: false }), 180));
 statusFilter.addEventListener("change", () => refresh({ reload: false }));
-quickFilter.addEventListener("change", () => refresh({ reload: false }));
+quickFilter.addEventListener("change", () => {
+  state.quickFilters = new Set(
+    [...quickFilter.selectedOptions].map((option) => option.value).filter(Boolean)
+  );
+  renderQuickFilters();
+  void refresh({ reload: false });
+});
 documentMetadataForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
   await saveComplementaryDocument();
@@ -4703,23 +4712,39 @@ function fillSelect(select, items, placeholder) {
 
 function renderQuickFilters() {
   const filters = ["Todos", ...state.meta.filtrosRapidos];
-  quickFilterBar.innerHTML = filters.map((label) => `
-    <button type="button" class="filter-chip ${(label === "Todos" ? "" : label) === quickFilter.value ? "active" : ""}" data-filter="${escapeAttribute(label === "Todos" ? "" : label)}" aria-pressed="${String((label === "Todos" ? "" : label) === quickFilter.value)}">
-      ${label === "Todos" ? "▽ " : ""}${escapeHtml(label)}
-    </button>
-  `).join("");
+  quickFilterBar.innerHTML = filters.map((label) => {
+    const filter = label === "Todos" ? "" : label;
+    const active = filter ? state.quickFilters.has(filter) : state.quickFilters.size === 0;
+    return `
+      <button type="button" class="filter-chip ${active ? "active" : ""}" data-filter="${escapeAttribute(filter)}" aria-pressed="${String(active)}">
+        ${label === "Todos" ? "▽ " : ""}${escapeHtml(label)}
+      </button>
+    `;
+  }).join("");
 
+  syncQuickFilterSelect();
   if (quickFilterBar.dataset.bound === "true") return;
   quickFilterBar.dataset.bound = "true";
   quickFilterBar.addEventListener("click", (event) => {
     const chip = event.target.closest(".filter-chip");
     if (!chip) return;
-    quickFilter.value = chip.dataset.filter;
-    quickFilterBar.querySelectorAll(".filter-chip").forEach((button) => {
-      button.classList.toggle("active", button === chip);
-      button.setAttribute("aria-pressed", String(button === chip));
-    });
+    const filter = chip.dataset.filter;
+    if (!filter) {
+      state.quickFilters.clear();
+    } else if (state.quickFilters.has(filter)) {
+      state.quickFilters.delete(filter);
+    } else {
+      state.quickFilters.add(filter);
+    }
+    renderQuickFilters();
     void refresh({ reload: false });
+  });
+}
+
+function syncQuickFilterSelect() {
+  if (!quickFilter) return;
+  [...quickFilter.options].forEach((option) => {
+    option.selected = Boolean(option.value) && state.quickFilters.has(option.value);
   });
 }
 

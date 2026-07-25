@@ -41,7 +41,8 @@ describe("contrato visual e de navegacao", () => {
     assert.match(figmaTheme, /body\[data-app-section="processes"\][\s\S]*?processes-background\.png/);
     assert.match(figmaTheme, /body\[data-app-section="board"\][\s\S]*?board-background\.png/);
     assert.match(figmaTheme, /body\[data-app-section="suppliers"\][\s\S]*?suppliers-background\.png/);
-    assert.match(figmaTheme, /body\[data-app-section="processes"\] \.table-wrap,[\s\S]*?background:\s*var\(--theme-table-bg\)/);
+    assert.match(figmaTheme, /body\[data-app-section="processes"\] \.table-wrap\s*\{[\s\S]*?background:\s*var\(--theme-content-glass\)[\s\S]*?backdrop-filter:\s*blur\(3px\)/);
+    assert.match(figmaTheme, /body\[data-app-section="processes"\] \.process-table\s*\{[\s\S]*?background:\s*transparent/);
     assert.match(figmaTheme, /\.board-view\s*\{[\s\S]*?background:\s*var\(--theme-content-glass\)/);
     assert.match(figmaTheme, /\.module-view#suppliersView\s*\{[\s\S]*?background:\s*var\(--theme-suppliers-container\)/);
     assert.match(figmaTheme, /\.module-row\s*\{[\s\S]*?background:\s*var\(--theme-surface-faint\)/);
@@ -152,7 +153,8 @@ describe("contrato visual e de navegacao", () => {
     assert.match(darkTheme, /--theme-page-overlay:\s*rgb\(6 7 9 \/ 50%\)/);
     assert.match(darkTheme, /--theme-main-overlay:\s*rgb\(6 7 9 \/ 50%\)/);
     assert.match(darkTheme, /color-scheme:\s*dark/);
-    assert.match(figmaTheme, /\.dashboard-grid \.metric,[\s\S]*?background:\s*var\(--theme-surface\)/);
+    assert.match(figmaTheme, /\.dashboard-grid \.metric,[\s\S]*?backdrop-filter:\s*blur\(3px\)[\s\S]*?background:\s*var\(--theme-content-glass\)/);
+    assert.match(figmaTheme, /\.chart-card,[\s\S]*?backdrop-filter:\s*blur\(3px\)[\s\S]*?background:\s*var\(--theme-content-glass\)/);
     assert.match(figmaTheme, /\.settings-account-screen\s*\{[\s\S]*?background:\s*var\(--theme-content-glass\)/);
     assert.match(figmaTheme, /dialog,[\s\S]*?background:\s*var\(--theme-dialog-bg\)/);
   });
@@ -241,6 +243,19 @@ describe("contrato visual e de navegacao", () => {
     assert.match(html, /name="cnpj"[^>]*maxlength="18"/);
     assert.match(html, /name="dataProcesso"[\s\S]*?data-date-input[\s\S]*?placeholder="DDMMAAAA"[\s\S]*?maxlength="10"/);
     assert.match(html, /name="conteudo"[^>]*minlength="1"[^>]*maxlength="350"/);
+  });
+
+  it("alinha a primeira linha do modal de processo sem compensacoes manuais", () => {
+    assert.match(html, /class="split process-primary-grid"[\s\S]*?class="process-primary-group"[\s\S]*?for="processNumber"[\s\S]*?id="processNumber"[\s\S]*?class="process-primary-group"[\s\S]*?id="commitmentNumberLabel"[\s\S]*?role="group" aria-labelledby="commitmentNumberLabel"/);
+    assert.match(styles, /\.process-primary-grid\s*\{[\s\S]*?align-items:\s*start[\s\S]*?column-gap:\s*12px[\s\S]*?row-gap:\s*12px/);
+    assert.match(styles, /\.process-primary-group\s*\{[\s\S]*?--process-primary-control-height:\s*40px[\s\S]*?display:\s*grid[\s\S]*?gap:\s*6px/);
+    assert.match(styles, /\.process-primary-label\s*\{[\s\S]*?height:\s*16px[\s\S]*?line-height:\s*16px[\s\S]*?margin:\s*0/);
+    assert.match(styles, /\.process-primary-group > input,[\s\S]*?\.commitment-number-field\s*\{[\s\S]*?height:\s*var\(--process-primary-control-height\)[\s\S]*?min-height:\s*var\(--process-primary-control-height\)/);
+    const commitmentRules = styles.slice(styles.indexOf(".commitment-number-field {"), styles.indexOf(".actions {", styles.indexOf(".commitment-number-field {")));
+    assert.match(commitmentRules, /margin:\s*0/);
+    assert.doesNotMatch(commitmentRules, /margin-(?:top|bottom)/);
+    assert.match(commitmentRules, /#commitmentNumberPreview\s*\{[\s\S]*?line-height:\s*14px[\s\S]*?margin:\s*0/);
+    assert.match(styles, /@media \(max-width:\s*640px\)[\s\S]*?\.process-primary-group\s*\{[\s\S]*?--process-primary-control-height:\s*44px/);
   });
 
   it("formata datas digitadas somente com numeros", () => {
@@ -340,6 +355,10 @@ describe("contrato visual e de navegacao", () => {
     assert.match(processList, /id="downloadProcessesButton">Download<\/button>/);
     assert.match(processList, /id="newProcessButton">\+ Novo<\/button>/);
     assert.match(processList, /class="process-search-row"[\s\S]*?id="searchInput"[\s\S]*?class="process-filter-state"[\s\S]*?id="quickFilter"[\s\S]*?id="quickFilterBar"/);
+    assert.match(processList, /id="quickFilter"[^>]*multiple/);
+    assert.match(processList, /id="quickFilterBar"[^>]*role="group"[^>]*aria-label="Filtros de empenhos\. Selecione um ou mais\."/);
+    assert.match(app, /state\.quickFilters\.forEach\(\(filter\) => params\.append\("filtroRapido", filter\)\)/);
+    assert.match(app, /quickFilters\.some\(\(quickFilterValue\) => matchesQuickFilter\(processo, quickFilterValue\)\)/);
     assert.match(html, /id="processExportDialog"[\s\S]*?data-process-export-format="excel"[\s\S]*?data-process-export-format="pdf"[\s\S]*?data-process-export-format="csv"/);
     assert.match(app, /processExportDialog\?\.showModal\(\)/);
     assert.match(app, /downloadProcesses\(format\)/);
@@ -385,7 +404,8 @@ describe("contrato visual e de navegacao", () => {
     assert.match(app, /class="secondary" data-supplier-history=[\s\S]*?>Histórico de Empenhos<\/button>/);
     assert.match(app, /class="secondary" data-supplier-info=/);
     assert.match(figmaTheme, /@media \(min-width:\s*641px\)\s*\{[\s\S]*?body\[data-app-section="processes"\] \.process-table\s*\{[\s\S]*?border-spacing:\s*0 12px/);
-    assert.match(figmaTheme, /body\[data-app-section="processes"\] \.process-table tbody td\s*\{[\s\S]*?background:\s*var\(--theme-surface-faint\)[\s\S]*?border-bottom:\s*1px solid var\(--theme-border-soft\)/);
+    assert.match(figmaTheme, /body\[data-app-section="processes"\] \.process-table tbody td\s*\{[\s\S]*?background:\s*transparent[\s\S]*?border-bottom:\s*1px solid var\(--theme-border-soft\)/);
+    assert.match(figmaTheme, /@media \(max-width:\s*760px\)\s*\{[\s\S]*?body\[data-app-section="processes"\] \.process-table tbody tr\s*\{[\s\S]*?background:\s*transparent/);
     const processTableTheme = figmaTheme.slice(
       figmaTheme.indexOf('body[data-app-section="processes"] .table-wrap'),
       figmaTheme.indexOf(".dashboard-grid")

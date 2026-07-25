@@ -287,6 +287,63 @@ describe("rotas http", () => {
     assert.match(excel.text(), /<table>/);
   });
 
+  it("aplica varios filtros rapidos ao mesmo download", async () => {
+    const { token } = await authenticatedAs("almoxarifado");
+    const marker = `MULTIFILTRO-${Date.now()}`;
+    const ids = ["liquidado", "pago", "anulado"].map((status) => `${marker}-${status}`);
+    const store = await readStore();
+    store.processos.push(
+      {
+        id: ids[0],
+        numeroProcesso: `${marker}-LIQUIDADO`,
+        numeroEmpenho: testCommitmentNumber(),
+        fornecedor: "Fornecedor Liquidado",
+        status: "Liquidado",
+        materiais: []
+      },
+      {
+        id: ids[1],
+        numeroProcesso: `${marker}-PAGO`,
+        numeroEmpenho: testCommitmentNumber(),
+        fornecedor: "Fornecedor Pago",
+        status: "Pago",
+        materiais: []
+      },
+      {
+        id: ids[2],
+        numeroProcesso: `${marker}-ANULADO`,
+        numeroEmpenho: testCommitmentNumber(),
+        fornecedor: "Fornecedor Anulado",
+        status: "Anulado",
+        materiais: []
+      }
+    );
+    await writeStore(store);
+
+    try {
+      const params = new URLSearchParams({
+        format: "csv",
+        q: marker
+      });
+      params.append("filtroRapido", "Liquidado");
+      params.append("filtroRapido", "Pago");
+      const response = await invokeRequest({
+        method: "GET",
+        path: `/api/processes/download?${params}`,
+        headers: { authorization: `Bearer ${token}` }
+      });
+
+      assert.equal(response.statusCode, 200);
+      assert.match(response.text(), new RegExp(`${marker}-LIQUIDADO`));
+      assert.match(response.text(), new RegExp(`${marker}-PAGO`));
+      assert.doesNotMatch(response.text(), new RegExp(`${marker}-ANULADO`));
+    } finally {
+      const cleanupStore = await readStore();
+      cleanupStore.processos = cleanupStore.processos.filter((processo) => !ids.includes(processo.id));
+      await writeStore(cleanupStore);
+    }
+  });
+
   it("neutraliza formulas nas exportacoes CSV e Excel", async () => {
     const { token } = await authenticatedAs("almoxarifado");
     const suffix = Date.now().toString().slice(-6);
