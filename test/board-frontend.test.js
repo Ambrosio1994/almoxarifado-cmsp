@@ -4,7 +4,6 @@ import { readFile } from "node:fs/promises";
 import { JSDOM } from "jsdom";
 
 const STATUSES = [
-  "Criado",
   "Enviado para SALC",
   "Empenho enviado ao fornecedor",
   "Entrega parcial",
@@ -78,6 +77,10 @@ describe("Quadro kanban no DOM", () => {
       assert.equal(dom.window.document.querySelector('[data-section="board"]').getAttribute("aria-current"), "page");
       assert.equal(dom.window.document.querySelector("#sectionTitle").textContent, "Quadro de Empenhos");
       assert.equal(board.querySelectorAll(".kanban-column").length, STATUSES.length);
+      assert.equal(columnFor(board, "Criado"), null);
+      assert.equal(dom.window.document.querySelector("#boardResponsibleFilter").getAttribute("aria-label"), "Requisitante");
+      assert.equal(dom.window.document.querySelector("#boardResponsibleFilter").options[0].textContent, "Todos os requisitantes");
+      assert.equal(dom.window.document.querySelector("#boardHideEmptyColumns").closest(".board-toolbar-actions")?.parentElement?.classList.contains("board-toolbar"), true);
       assert.ok([...dom.window.document.querySelector("#boardResponsibleFilter").options].some((option) => option.value === "Carla"));
       assert.ok([...dom.window.document.querySelector("#boardSupplierFilter").options].some((option) => option.value === "Beta"));
       assert.match(columnFor(board, "Entregue").textContent, /Nenhum processo neste status/);
@@ -89,7 +92,7 @@ describe("Quadro kanban no DOM", () => {
       const hideEmpty = dom.window.document.querySelector("#boardHideEmptyColumns");
       hideEmpty.checked = true;
       hideEmpty.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
-      assert.equal(board.querySelectorAll(".kanban-column").length, 5);
+      assert.equal(board.querySelectorAll(".kanban-column").length, 4);
       assert.equal(JSON.parse(dom.window.localStorage.getItem("almoxBoardPreferences:admin-1")).hideEmptyColumns, true);
       hideEmpty.checked = false;
       hideEmpty.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
@@ -99,7 +102,7 @@ describe("Quadro kanban no DOM", () => {
       assert.equal(firstCard.getAttribute("role"), "button");
       assert.equal(firstCard.getAttribute("tabindex"), "0");
       assert.equal(firstCard.draggable, true);
-      assert.deepEqual([...firstCard.querySelectorAll("[data-board-move] option")].slice(1).map((item) => item.value), ["Enviado para SALC"]);
+      assert.deepEqual([...firstCard.querySelectorAll("[data-board-move] option")].slice(1).map((item) => item.value), ["Empenho enviado ao fornecedor"]);
 
       firstCard.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
       await waitFor(() => !dom.window.document.querySelector("#processDetailView").classList.contains("hidden"));
@@ -135,10 +138,10 @@ describe("Quadro kanban no DOM", () => {
       assert.equal(putRequests.length, requestCountBeforeInvalid);
 
       const p1Move = board.querySelector('[data-process-id="p1"] [data-board-move]');
-      p1Move.value = "Enviado para SALC";
+      p1Move.value = "Empenho enviado ao fornecedor";
       p1Move.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
       await waitFor(() => dom.window.document.querySelector("#processStepDialog").open);
-      assert.equal(dom.window.document.querySelector("#processStepDateLabel").textContent, "Data do envio para SALC");
+      assert.equal(dom.window.document.querySelector("#processStepDateLabel").textContent, "Data do envio ao fornecedor");
       assert.equal(putRequests.length, requestCountBeforeInvalid);
       dom.window.document.querySelector("#cancelProcessStep").click();
       await waitFor(() => !dom.window.document.querySelector("#processStepDialog").open);
@@ -274,7 +277,7 @@ describe("Quadro kanban no DOM", () => {
 
 function processFixtures() {
   return [
-    processFixture({ id: "p1", numeroProcesso: "PROC-1", status: "Criado", fornecedor: "Alpha", criadoPor: "Ana", valorTotal: 100, dataEnvioSalc: "", dataEnvioFornecedor: "", dataReferenciaPrazo: "", diasDecorridos: 0 }),
+    processFixture({ id: "p1", numeroProcesso: "PROC-1", status: "Enviado para SALC", fornecedor: "Alpha", criadoPor: "Ana", valorTotal: 100, dataEnvioFornecedor: "", dataReferenciaPrazo: "", diasDecorridos: 0 }),
     processFixture({ id: "p2", numeroProcesso: "PROC-2", status: "Empenho enviado ao fornecedor", fornecedor: "Beta", criadoPor: "Bruno", valorTotal: 200, diasDecorridos: 31 }),
     processFixture({ id: "p3", numeroProcesso: "PROC-3", status: "Pago", fornecedor: "Gamma", criadoPor: "Ana", valorTotal: 300, dataEntrega: "2026-06-10", dataEnvioLiquidacao: "2026-06-20", dataLiquidacao: "2026-06-25", dataPagamento: "2026-06-30" }),
     processFixture({ id: "p4", numeroProcesso: "PROC-4", status: "Enviado para SALC", fornecedor: "Delta", criadoPor: "Carla", valorTotal: 150 }),

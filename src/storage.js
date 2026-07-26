@@ -103,6 +103,22 @@ export async function readProcessesStore() {
   return { ...emptyStore(), processos: processes.rows.map(deserializeRecord) };
 }
 
+export async function readProcessById(processId) {
+  const id = String(processId || "");
+  if (!id) return null;
+  if (!(await requireConfiguredDatabase())) {
+    const store = await readStore();
+    return (store.processos || []).find((processo) => processo.id === id) || null;
+  }
+  const result = await query(`
+    SELECT data
+    FROM app_processes
+    WHERE id = $1
+    LIMIT 1
+  `, [id]);
+  return result.rows[0] ? deserializeRecord(result.rows[0]) : null;
+}
+
 export async function readSuppliersStore() {
   if (!(await requireConfiguredDatabase())) return readStore();
   const suppliers = await query(`

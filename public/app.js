@@ -23,6 +23,11 @@ import {
   parseCurrencyInput,
   parseCommitmentNumber
 } from "./process-fields.js";
+import {
+  parseAppRoute,
+  processPath,
+  sectionPath
+} from "./app-routes.js";
 
 const state = {
   meta: { status: [], filtrosRapidos: [], transicoes: {} },
@@ -102,6 +107,7 @@ let refreshSequence = 0;
 let dashboardSequence = 0;
 let detailController = null;
 let detailSequence = 0;
+let routeSequence = 0;
 let handlingUnauthorized = false;
 let sessionGeneration = 0;
 let timelinePreviewSequence = 0;
@@ -157,6 +163,8 @@ const observationsDialogTitle = document.querySelector("#observationsDialogTitle
 const observationsList = document.querySelector("#observationsList");
 const observationForm = document.querySelector("#observationForm");
 const observationMessage = document.querySelector("#observationMessage");
+const closeObservationsHeader = document.querySelector("#closeObservationsHeader");
+const closeObservationsForm = document.querySelector("#closeObservationsForm");
 const editObservationDialog = document.querySelector("#editObservationDialog");
 const editObservationForm = document.querySelector("#editObservationForm");
 const editObservationMessage = document.querySelector("#editObservationMessage");
@@ -224,6 +232,10 @@ const suppliersView = document.querySelector("#suppliersView");
 const auditView = document.querySelector("#auditView");
 const usersView = document.querySelector("#usersView");
 const settingsView = document.querySelector("#settingsView");
+const routeNotFoundView = document.querySelector("#routeNotFoundView");
+const routeNotFoundTitle = document.querySelector("#routeNotFoundTitle");
+const routeNotFoundMessage = document.querySelector("#routeNotFoundMessage");
+const routeNotFoundBack = document.querySelector("#routeNotFoundBack");
 const navItems = document.querySelectorAll(".nav-item");
 const sectionTitle = document.querySelector("#sectionTitle");
 const topbar = document.querySelector(".topbar");
@@ -281,7 +293,7 @@ function initCommitmentFields() {
 function updateCommitmentNumberPreview() {
   if (!commitmentNumberPreview) return;
   const formatted = formatCommitmentNumber(commitmentYear?.value, commitmentSequence?.value);
-  commitmentNumberPreview.textContent = formatted ? `Empenho: ${formatted}` : `Exemplo: ${commitmentYear?.value || new Date().getFullYear()}NE00010`;
+  commitmentNumberPreview.textContent = formatted ? `Empenho: ${formatted}` : "";
 }
 
 function configureCommitmentFields(numeroEmpenho = "") {
@@ -596,6 +608,7 @@ function resetApplicationData() {
   auditView?.replaceChildren();
   usersView?.replaceChildren();
   settingsView?.replaceChildren();
+  routeNotFoundView?.classList.add("hidden");
   if (detailProcessNumber) detailProcessNumber.textContent = "Processo";
   if (detailStatusBadges) detailStatusBadges.replaceChildren();
   if (detailSubtitle) detailSubtitle.textContent = "";
@@ -759,7 +772,7 @@ async function boot() {
   fillSelect(statusFilter, state.meta.status, "Todos os status");
   fillSelect(quickFilter, state.meta.filtrosRapidos, "Filtros rapidos");
   renderQuickFilters();
-  await openSection(savedActiveSection());
+  await applyLocationRoute();
 }
 
 async function loadDashboardData(year = state.dashboardYear) {
@@ -912,7 +925,7 @@ function createKanbanCard(process) {
       <div class="kanban-card-meta">
         ${Number.isFinite(Number(process.diasDecorridos)) ? `<span>${escapeHtml(String(Number(process.diasDecorridos)))} dias</span>` : ""}
         ${deadline ? `<span>Prazo: ${escapeHtml(formatDate(deadline))}</span>` : '<span>Sem prazo</span>'}
-        ${responsible ? `<span>Responsável: ${escapeHtml(responsible)}</span>` : ""}
+        ${responsible ? `<span>Requisitante: ${escapeHtml(responsible)}</span>` : ""}
       </div>
       ${(documents || observations) ? `<div class="kanban-card-indicators">
         ${documents ? `<span aria-label="${documents} documentos">▤ ${documents}</span>` : ""}
@@ -954,7 +967,7 @@ function syncBoardControls() {
   if (!options.responsibles.includes(state.boardFilters.responsible)) state.boardFilters.responsible = "";
   if (!options.suppliers.includes(state.boardFilters.supplier)) state.boardFilters.supplier = "";
   if (!(state.meta.status || []).includes(state.boardFilters.status)) state.boardFilters.status = "";
-  fillBoardSelect(boardResponsibleFilter, options.responsibles, "Todos os responsáveis", state.boardFilters.responsible);
+  fillBoardSelect(boardResponsibleFilter, options.responsibles, "Todos os requisitantes", state.boardFilters.responsible);
   fillBoardSelect(boardSupplierFilter, options.suppliers, "Todos os fornecedores", state.boardFilters.supplier);
   fillBoardSelect(boardStatusFilter, state.meta.status || [], "Todos os status", state.boardFilters.status);
   if (boardSearchInput) boardSearchInput.value = state.boardFilters.search;
@@ -1284,7 +1297,7 @@ processForm.addEventListener("submit", async (event) => {
     return;
   }
   if (data.dataProcesso && !normalizeDateInput(data.dataProcesso)) {
-    formMessage.textContent = "Informe uma data do processo valida no formato DD-MM-AAAA.";
+    formMessage.textContent = "Informe uma data do processo valida.";
     return;
   }
 
@@ -1481,20 +1494,7 @@ kanbanBoard?.addEventListener("dragend", cleanupBoardDragState);
 
 detailTabs.forEach((tab) => {
   tab.addEventListener("click", async () => {
-    state.detailTab = tab.dataset.detailTab;
-    detailTabs.forEach((item) => setTabActive(item, item === tab));
-    detailPanel.setAttribute("aria-busy", "true");
-    try {
-      if (state.detailTab === "emails" && !state.emailHistoryLoaded && ["admin", "auditor"].includes(currentUser.role)) {
-        state.emailHistory = await api("/api/emails/history");
-        state.emailHistoryLoaded = true;
-      }
-      renderDetailPanel();
-    } catch (error) {
-      renderInlineError(detailPanel, error.message || "Nao foi possivel carregar este modulo.");
-    } finally {
-      detailPanel.removeAttribute("aria-busy");
-    }
+    await activateDetailTab(tab.dataset.detailTab);
   });
   tab.addEventListener("keydown", (event) => {
     if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
@@ -1510,6 +1510,40 @@ detailTabs.forEach((tab) => {
     available[nextIndex]?.click();
   });
 });
+
+async function activateDetailTab(requestedTab, { historyMode = "replace" } = {}) {
+  const allowedTabs = new Set(["general", "documents", "timeline", "deliveries", "observations", "emails"]);
+  let tab = allowedTabs.has(requestedTab) ? requestedTab : "general";
+  if (tab === "emails" && !["admin", "auditor"].includes(currentUser?.role)) tab = "general";
+  state.detailTab = tab;
+  detailTabs.forEach((item) => setTabActive(item, item.dataset.detailTab === tab));
+  if (state.selectedProcess && historyMode !== "none") {
+    const previousState = window.history.state?.appRoute ? window.history.state : {};
+    writeBrowserRoute(processPath(state.selectedProcess.id, tab), historyMode, {
+      ...previousState,
+      appRoute: true,
+      kind: "process",
+      processId: state.selectedProcess.id,
+      tab,
+      returnSection: state.detailReturnSection || "processes"
+    });
+  }
+  detailPanel.setAttribute("aria-busy", "true");
+  try {
+    if (tab === "emails") await ensureEmailHistoryLoaded();
+    renderDetailPanel();
+  } catch (error) {
+    renderInlineError(detailPanel, error.message || "Nao foi possivel carregar este modulo.");
+  } finally {
+    detailPanel.removeAttribute("aria-busy");
+  }
+}
+
+async function ensureEmailHistoryLoaded() {
+  if (state.emailHistoryLoaded || !["admin", "auditor"].includes(currentUser?.role)) return;
+  state.emailHistory = await api("/api/emails/history");
+  state.emailHistoryLoaded = true;
+}
 
 function setTabActive(tab, active) {
   tab.classList.toggle("active", active);
@@ -1580,10 +1614,20 @@ cancelSupplierInfo?.addEventListener("click", () => {
 
 navItems.forEach((item) => {
   item.addEventListener("click", (event) => {
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     event.preventDefault();
     void openSection(item.dataset.section);
     closeMobileMenu();
   });
+});
+
+routeNotFoundBack?.addEventListener("click", () => {
+  void openSection("processes");
+});
+
+window.addEventListener("popstate", () => {
+  if (!currentUser) return;
+  void applyLocationRoute();
 });
 
 function setMobileMenu(open) {
@@ -1804,6 +1848,9 @@ observationForm.addEventListener("submit", async (event) => {
   }
 });
 
+closeObservationsHeader?.addEventListener("click", () => dialog?.close());
+closeObservationsForm?.addEventListener("click", () => dialog?.close());
+
 async function openObservationsDialog(processId, { focusComposer = false } = {}) {
   state.observationProcessId = processId;
   observationMessage.textContent = "";
@@ -1811,6 +1858,7 @@ async function openObservationsDialog(processId, { focusComposer = false } = {})
   const processo = processById(processId);
   const canCompose = canEditGeneralInUi(processo);
   observationForm.classList.toggle("hidden", !canCompose);
+  closeObservationsHeader?.classList.toggle("hidden", canCompose);
   observationsDialogTitle.textContent = focusComposer && canCompose ? "Adicionar observação" : "Observações";
   dialog.showModal();
   if (focusComposer && canCompose) observationForm.elements.conteudo.focus();
@@ -1939,7 +1987,9 @@ function fillForm(processo) {
   for (const [key, value] of Object.entries(processo)) {
     if (processForm.elements[key]) processForm.elements[key].value = value ?? "";
   }
-  if (processForm.elements.dataProcesso) processForm.elements.dataProcesso.value = displayDate(processo.dataProcesso);
+  if (processForm.elements.dataProcesso) {
+    processForm.elements.dataProcesso.value = normalizeDateInput(processo.dataProcesso);
+  }
   if (processCreatorName) processCreatorName.value = processo.criadoPor || processo.criadoPorEmail || "";
   configureCommitmentFields(processo.numeroEmpenho || "");
   if (processForm.elements.dataEnvioFornecedor && !processForm.elements.dataEnvioFornecedor.value) {
@@ -1968,16 +2018,39 @@ function openProcessDialog(processo = null) {
   processDialog.showModal();
 }
 
-async function openProcessDetail(processo, returnSection = "processes") {
+async function openProcessDetail(processo, returnSection = "processes", options = {}) {
   if (!processo) return;
+  if (returnSection && typeof returnSection === "object") {
+    options = returnSection;
+    returnSection = options.returnSection || "processes";
+  }
+  const requestedTab = options.tab || "general";
+  const tab = requestedTab === "emails" && !["admin", "auditor"].includes(currentUser?.role)
+    ? "general"
+    : requestedTab;
+  const historyMode = options.historyMode || "push";
+  const canReturnBack = options.canReturnBack ?? historyMode === "push";
+  if (historyMode !== "none") {
+    routeSequence += 1;
+    writeBrowserRoute(processPath(processo.id, tab), historyMode, {
+      appRoute: true,
+      kind: "process",
+      processId: processo.id,
+      tab,
+      returnSection,
+      canReturnBack
+    });
+  }
   cancelStandardDocumentUpload();
   detailController?.abort();
+  activateSectionShell("processes");
   const controller = new AbortController();
   detailController = controller;
   const sequence = ++detailSequence;
   state.selectedProcess = processo;
   state.detailReturnSection = returnSection;
-  state.detailTab = "general";
+  state.detailTab = tab;
+  rememberActiveSection("processes");
   state.detailObservations = [];
   state.detailObservationsLoaded = false;
   state.detailAudit = [];
@@ -1991,13 +2064,14 @@ async function openProcessDetail(processo, returnSection = "processes") {
   auditView.classList.add("hidden");
   processDetailView.classList.remove("hidden");
   if (sectionTitle) sectionTitle.textContent = "Empenhos";
-  detailTabs.forEach((tab) => setTabActive(tab, tab.dataset.detailTab === "general"));
+  detailTabs.forEach((detailTab) => setTabActive(detailTab, detailTab.dataset.detailTab === tab));
   renderProcessDetail();
 
   void ensureSuppliersLoaded().then(() => {
     if (sequence === detailSequence && state.selectedProcess?.id === processo.id) renderProcessDetail();
   }).catch(() => null);
   try {
+    if (tab === "emails") await ensureEmailHistoryLoaded();
     const [observations, auditEntries] = await Promise.all([
       loadDetailObservations(processo.id, { signal: controller.signal }),
       loadDetailAudit(processo.id, { signal: controller.signal })
@@ -2024,7 +2098,11 @@ function closeProcessDetail() {
   detailSequence += 1;
   const returnSection = state.detailReturnSection || "processes";
   state.selectedProcess = null;
-  void openSection(returnSection);
+  if (window.history.state?.appRoute && window.history.state.kind === "process" && window.history.state.canReturnBack) {
+    window.history.back();
+    return;
+  }
+  void openSection(returnSection, { historyMode: "replace" });
 }
 
 async function downloadProcess(processId, format) {
@@ -2115,7 +2193,7 @@ function renderDocumentsModule(processo) {
   return `
     <div class="module-list">
       <div class="detail-actions">
-        <button type="button" class="download-button" data-download-process="true">Baixar processo completo</button>
+        <button type="button" class="download-button" data-download-process="true">Baixar Documentos</button>
       </div>
       <progress class="document-upload-progress hidden" data-document-upload-progress aria-label="Carregando documento"></progress>
       ${documents.map(([key, label, value]) => {
@@ -2927,7 +3005,7 @@ function processUpdatePayloadFor(processo, overrides = {}) {
     dataEnvioLiquidacao: processo.dataEnvioLiquidacao || "",
     dataLiquidacao: processo.dataLiquidacao || "",
     dataPagamento: processo.dataPagamento || "",
-    status: processo.status || "Criado",
+    status: processo.status || "Enviado para SALC",
     versao: processo.versao,
     ...overrides
   };
@@ -2994,14 +3072,142 @@ function escapeHtml(value = "") {
     .replace(/'/g, "&#039;");
 }
 
-async function openSection(section) {
+async function applyLocationRoute() {
+  const sequence = ++routeSequence;
+  const route = parseAppRoute(window.location.pathname);
+
+  if (route.kind === "root") {
+    const section = resolveSectionAccess(savedActiveSection());
+    writeBrowserRoute(sectionPath(section), "replace", {
+      appRoute: true,
+      kind: "section",
+      section
+    });
+    await openSection(section, { historyMode: "none" });
+    return;
+  }
+
+  if (route.kind === "section") {
+    const section = resolveSectionAccess(route.section);
+    writeBrowserRoute(sectionPath(section), "replace", {
+      appRoute: true,
+      kind: "section",
+      section
+    });
+    await openSection(section, { historyMode: "none" });
+    return;
+  }
+
+  if (route.kind === "process") {
+    const tab = route.tab === "emails" && !["admin", "auditor"].includes(currentUser?.role)
+      ? "general"
+      : route.tab;
+    const priorState = window.history.state?.appRoute ? window.history.state : {};
+    const returnSection = resolveReturnSection(priorState.returnSection);
+    writeBrowserRoute(processPath(route.processId, tab), "replace", {
+      ...priorState,
+      appRoute: true,
+      kind: "process",
+      processId: route.processId,
+      tab,
+      returnSection,
+      canReturnBack: Boolean(priorState.canReturnBack)
+    });
+    activateSectionShell("processes");
+    processListView.setAttribute("aria-busy", "true");
+    try {
+      let processo = processById(route.processId);
+      if (!processo) {
+        processo = await api(`/api/processes/${encodeURIComponent(route.processId)}`);
+        cacheProcess(processo);
+      }
+      if (sequence !== routeSequence) return;
+      processListView.removeAttribute("aria-busy");
+      await openProcessDetail(processo, returnSection, {
+        tab,
+        historyMode: "none",
+        canReturnBack: Boolean(priorState.canReturnBack)
+      });
+    } catch (error) {
+      processListView.removeAttribute("aria-busy");
+      if (error.name === "AbortError" || sequence !== routeSequence) return;
+      if (error.status === 404) {
+        showRouteError(
+          "Empenho não encontrado",
+          "O empenho informado não existe ou não está mais disponível."
+        );
+        return;
+      }
+      showRouteError(
+        "Não foi possível abrir o empenho",
+        error.message || "Ocorreu uma falha ao carregar os dados deste empenho."
+      );
+    }
+    return;
+  }
+
+  showRouteError(
+    "Página não encontrada",
+    "O endereço informado não corresponde a uma página disponível."
+  );
+}
+
+function resolveSectionAccess(section) {
+  if (!APP_SECTIONS.has(section)) return "dashboard";
+  if (section === "users" && currentUser?.role !== "admin") return "dashboard";
+  if (section === "audit" && !["admin", "auditor"].includes(currentUser?.role)) return "dashboard";
+  return section;
+}
+
+function resolveReturnSection(section) {
+  if (!APP_SECTIONS.has(section)) return "processes";
+  return resolveSectionAccess(section);
+}
+
+function writeBrowserRoute(path, mode, routeState) {
+  if (mode === "none") return;
+  const target = String(path || sectionPath("dashboard"));
+  const samePath = window.location.pathname === target && !window.location.search && !window.location.hash;
+  const method = mode === "push" && !samePath ? "pushState" : "replaceState";
+  window.history[method](routeState, "", target);
+}
+
+function cacheProcess(processo) {
+  if (!processo?.id) return;
+  const index = state.allProcesses.findIndex((item) => item.id === processo.id);
+  if (index >= 0) state.allProcesses[index] = processo;
+  else state.allProcesses.push(processo);
+}
+
+function showRouteError(title, message) {
+  cancelStandardDocumentUpload();
+  detailController?.abort();
+  detailController = null;
+  detailSequence += 1;
+  state.selectedProcess = null;
+  activateSectionShell("processes");
+  processListView.classList.add("hidden");
+  processDetailView.classList.add("hidden");
+  routeNotFoundTitle.textContent = title;
+  routeNotFoundMessage.textContent = message;
+  routeNotFoundView.classList.remove("hidden");
+  if (sectionTitle) sectionTitle.textContent = title;
+}
+
+async function openSection(section, { historyMode = "push" } = {}) {
   if (state.activeSection === "board" && section !== "board") {
     captureBoardScrollPositions();
     saveBoardPreferences();
   }
-  if (!APP_SECTIONS.has(section)) section = "dashboard";
-  if (section === "users" && currentUser?.role !== "admin") section = "dashboard";
-  if (section === "audit" && !["admin", "auditor"].includes(currentUser?.role)) section = "dashboard";
+  section = resolveSectionAccess(section);
+  if (historyMode !== "none") {
+    routeSequence += 1;
+    writeBrowserRoute(sectionPath(section), historyMode, {
+      appRoute: true,
+      kind: "section",
+      section
+    });
+  }
   state.activeSection = section;
   rememberActiveSection(section);
   detailController?.abort();
@@ -3105,6 +3311,7 @@ function activateSectionShell(section) {
   auditView.classList.toggle("hidden", section !== "audit");
   usersView.classList.toggle("hidden", section !== "users");
   settingsView.classList.toggle("hidden", section !== "settings");
+  routeNotFoundView?.classList.add("hidden");
   processDetailView.classList.add("hidden");
   state.selectedProcess = null;
 }
@@ -4878,7 +5085,13 @@ function formatDateInput(value = "") {
 }
 
 function normalizeDateInput(value) {
-  const digits = String(value || "").replace(/\D/g, "");
+  const text = String(value || "").trim();
+  const isoValue = /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : "";
+  if (isoValue) {
+    const parsed = new Date(`${isoValue}T00:00:00Z`);
+    return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === isoValue ? isoValue : "";
+  }
+  const digits = text.replace(/\D/g, "");
   if (digits.length !== 8) return "";
   const iso = `${digits.slice(4, 8)}-${digits.slice(2, 4)}-${digits.slice(0, 2)}`;
   const parsed = new Date(`${iso}T00:00:00Z`);

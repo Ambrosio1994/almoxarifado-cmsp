@@ -161,14 +161,26 @@ describe("contrato visual e de navegacao", () => {
     assert.match(figmaTheme, /dialog,[\s\S]*?background:\s*var\(--theme-dialog-bg\)/);
   });
 
-  it("restaura a ultima secao no boot sem carregar processos antecipadamente", () => {
+  it("usa URLs reais e restaura a rota no boot sem carregar processos antecipadamente", () => {
     const boot = app.slice(app.indexOf("async function boot()"), app.indexOf("async function loadDashboardData"));
     assert.match(boot, /api\("\/api\/meta"\)/);
     assert.match(boot, /loadDashboardData\(savedDashboardYear\(\)\)/);
-    assert.match(boot, /openSection\(savedActiveSection\(\)\)/);
     assert.doesNotMatch(boot, /\/api\/processes/);
-    assert.match(app, /sessionStorage\.getItem\(activeSectionStorageKey\(\)\)/);
-    assert.match(app, /sessionStorage\.setItem\(activeSectionStorageKey\(\), section\)/);
+    assert.match(app, /from\s+["']\.\/app-routes\.js["']/);
+    assert.match(app, /window\.addEventListener\(\s*["']popstate["']/);
+    const sectionPaths = {
+      dashboard: "/graficos",
+      processes: "/empenhos",
+      board: "/quadro",
+      suppliers: "/fornecedores",
+      settings: "/configuracoes",
+      audit: "/auditoria",
+      users: "/usuarios"
+    };
+    for (const [section, path] of Object.entries(sectionPaths)) {
+      const openingTag = html.match(new RegExp(`<a[^>]*data-section="${section}"[^>]*>`))?.[0] || "";
+      assert.match(openingTag, new RegExp(`href="${path}"`), section);
+    }
     const processView = html.match(/<section[^>]*id="processListView"[^>]*>/)?.[0] || "";
     assert.match(processView, /class="[^"]*hidden[^"]*"/);
     assert.match(html, /id="dashboardView"/);
@@ -190,10 +202,15 @@ describe("contrato visual e de navegacao", () => {
     assert.match(html, /id="boardMessage"[^>]*aria-live="polite"/);
     assert.match(html, /id="kanbanBoard"[^>]*aria-label="Quadro de Empenhos"/);
     assert.match(html, /id="boardHideEmptyColumns"/);
+    assert.match(html, /id="boardResponsibleFilter" aria-label="Requisitante"[\s\S]*?Todos os requisitantes/);
+    assert.match(html, /class="board-toolbar-actions"[\s\S]*?id="clearBoardFilters"[\s\S]*?id="refreshBoardButton"[\s\S]*?id="boardHideEmptyColumns"/);
     assert.match(app, /const APP_SECTIONS = new Set\(\[[\s\S]*?"board"/);
     assert.match(app, /board:\s*\(\) => renderBoardView\(\)/);
+    assert.match(app, /Todos os requisitantes/);
+    assert.match(app, /Requisitante: \$\{escapeHtml\(responsible\)\}/);
     assert.match(app, /openProcessDetail\(process, "board"\)/);
     assert.match(app, /state\.detailReturnSection = returnSection/);
+    assert.match(styles, /\.board-toolbar-actions\s*\{[\s\S]*?flex:\s*1 0 100%/);
     assert.match(styles, /\.kanban-board\s*\{[\s\S]*?overflow-x:\s*auto/);
     assert.match(styles, /\.kanban-column\s*\{[\s\S]*?width:\s*clamp\(280px, 28vw, 360px\)/);
     assert.match(figmaTheme, /\.kanban-column:not\(\.is-drag-over\):hover\s*\{[\s\S]*?transform:\s*translateY\(-2px\)/);
@@ -251,7 +268,7 @@ describe("contrato visual e de navegacao", () => {
     assert.match(app, /formatCommitmentNumber\(commitmentYear\?\.value, commitmentSequence\?\.value\)/);
     assert.match(html, /name="fornecedor" maxlength="100"/);
     assert.match(html, /name="cnpj"[^>]*maxlength="18"/);
-    assert.match(html, /name="dataProcesso"[\s\S]*?data-date-input[\s\S]*?placeholder="DDMMAAAA"[\s\S]*?maxlength="10"/);
+    assert.match(html, /name="dataProcesso" type="date"/);
     assert.match(html, /name="conteudo"[^>]*minlength="1"[^>]*maxlength="350"/);
   });
 
@@ -265,20 +282,34 @@ describe("contrato visual e de navegacao", () => {
     assert.match(commitmentRules, /margin:\s*0/);
     assert.doesNotMatch(commitmentRules, /margin-(?:top|bottom)/);
     assert.match(commitmentRules, /#commitmentNumberPreview\s*\{[\s\S]*?line-height:\s*14px[\s\S]*?margin:\s*0/);
+    assert.match(styles, /#commitmentNumberPreview:empty\s*\{[\s\S]*?display:\s*none/);
+    assert.doesNotMatch(html, /Exemplo:\s*\d{4}NE00010/);
+    assert.match(app, /formatted \? `Empenho: \$\{formatted\}` : ""/);
     assert.match(styles, /@media \(max-width:\s*640px\)[\s\S]*?\.process-primary-group\s*\{[\s\S]*?--process-primary-control-height:\s*44px/);
   });
 
-  it("formata datas digitadas somente com numeros", () => {
+  it("oferece calendario no processo e preserva a digitacao das demais datas", () => {
+    assert.match(html, /name="dataProcesso" type="date"/);
     assert.match(html, /data-date-input/g);
     assert.match(app, /function formatDateInput\(value = ""\)/);
     assert.match(app, /String\(value\)\.replace\(\/\\D\/g, ""\)\.slice\(0, 8\)/);
     assert.match(app, /parts\.join\("-"\)/);
+    assert.match(app, /const isoValue = \/\^\\d\{4\}-\\d\{2\}-\\d\{2\}\$\/\.test\(text\)/);
+    assert.match(app, /dataProcesso\.value = normalizeDateInput\(processo\.dataProcesso\)/);
   });
 
   it("usa dialog acessivel para entregas e nao usa prompt nativo", () => {
     assert.match(html, /<dialog id="deliveryDialog"[^>]*aria-labelledby="deliveryDialogTitle"[^>]*aria-describedby="deliveryDialogDescription"/);
     assert.match(html, /id="deliveryForm"/);
     assert.doesNotMatch(app, /\bprompt\s*\(/);
+  });
+
+  it("mantem Registrar compacto e Fechar ao lado no formulario de observacao", () => {
+    const observationsDialog = html.slice(html.indexOf('<dialog id="observationsDialog"'), html.indexOf("</dialog>", html.indexOf('<dialog id="observationsDialog"')));
+    assert.match(observationsDialog, /id="closeObservationsHeader">Fechar<\/button>/);
+    assert.match(observationsDialog, /class="actions observation-actions"[\s\S]*?type="submit">Registrar<\/button>[\s\S]*?id="closeObservationsForm">Fechar<\/button>/);
+    assert.match(styles, /\.observation-actions button\s*\{[\s\S]*?flex:\s*0 0 auto[\s\S]*?width:\s*auto/);
+    assert.match(app, /closeObservationsHeader\?\.classList\.toggle\("hidden", canCompose\)/);
   });
 
   it("pede confirmacao em dialogo para cada etapa registrada nos dados gerais", () => {
@@ -303,7 +334,7 @@ describe("contrato visual e de navegacao", () => {
   it("abre os dados gerais depois de criar um processo ja enviado para SALC", () => {
     assert.match(app, /const isCreating = !id/);
     assert.match(app, /if \(isCreating\)[\s\S]*?openProcessDetail\(createdProcess, "processes"\)/);
-    assert.match(app, /status: processo\.status \|\| "Criado"/);
+    assert.match(app, /status: processo\.status \|\| "Enviado para SALC"/);
     assert.match(app, /"Enviado para SALC": \["dataEnvioSalc"\]/);
   });
 
@@ -320,6 +351,7 @@ describe("contrato visual e de navegacao", () => {
     const materialsTitle = materialsSection.slice(materialsSection.indexOf('<div class="section-title">'), materialsSection.indexOf("</div>"));
     assert.doesNotMatch(materialsTitle, /Adicionar material/);
     assert.match(materialsSection, /class="process-total-summary"[\s\S]*?id="processMaterialsTotal"[^>]*aria-live="polite"/);
+    assert.match(materialsSection, /Valor Total do Empenho/);
     assert.doesNotMatch(materialsSection, /id="addMaterialButton"/);
     assert.match(app, /data-material-total/);
     assert.match(app, /function updateMaterialTotals\(\)/);
@@ -328,6 +360,7 @@ describe("contrato visual e de navegacao", () => {
     assert.match(app, /class="general-data-row general-data-dates"[\s\S]*?Data de envio para fornecedor[\s\S]*?Data de entrega[\s\S]*?Data de envio para liquidação[\s\S]*?Data da liquidação[\s\S]*?Data do pagamento/);
     assert.match(app, /class="detail-material-table"[\s\S]*?<th scope="col">Material[\s\S]*?Unidades[\s\S]*?Valor unitário[\s\S]*?Valor total/);
     assert.doesNotMatch(app, /Valor unitario medio/);
+    assert.match(styles, /\.material-row\s*\{[\s\S]*?grid-template-columns:\s*minmax\(220px,\s*1fr\)\s+100px\s+105px\s+105px\s+36px\s+82px/);
   });
 
   it("permite redimensionar a tela de criacao do processo", () => {
@@ -352,7 +385,8 @@ describe("contrato visual e de navegacao", () => {
   it("oferece o download completo somente no modulo Documentos", () => {
     assert.doesNotMatch(html, /id="downloadProcessButton"/);
     const documentsModule = app.slice(app.indexOf("function renderDocumentsModule"), app.indexOf("function renderTimelineModule"));
-    assert.match(documentsModule, /data-download-process="true"/);
+    assert.match(documentsModule, /data-download-process="true">Baixar Documentos<\/button>/);
+    assert.doesNotMatch(documentsModule, />Baixar processo completo<\/button>/);
     assert.match(app, /event\.target\.dataset\.downloadProcess/);
   });
 

@@ -61,15 +61,15 @@ describe("regras de processo", () => {
     );
   });
 
-  it("inicia o fluxo em Criado antes do envio para SALC", () => {
+  it("preserva o avanço de registros legados em Criado sem expor retrocesso para esse status", () => {
     assert.equal(isValidStatusTransition("Criado", "Enviado para SALC"), true);
     assert.equal(isValidStatusTransition("Criado", "Empenho enviado ao fornecedor"), false);
     const rolledBack = rollbackProcessStatus({
       status: "Enviado para SALC",
       dataEnvioSalc: "2026-07-01"
     }, "Criado");
-    assert.equal(rolledBack.status, "Criado");
-    assert.equal(rolledBack.dataEnvioSalc, "");
+    assert.equal(rolledBack, null);
+    assert.equal(PROCESS_WORKFLOW.includes("Criado"), false);
   });
 
   it("bloqueia processo pago permanentemente para edicao", () => {
@@ -272,6 +272,7 @@ describe("regras de processo", () => {
     assert.equal(isValidStatusTransition("Entregue", "Aguardando envio para liquidacao"), false);
     assert.equal(isValidStatusTransition("Entregue", "Enviado para liquidacao"), true);
     assert.equal(isValidStatusTransition("Aguardando envio para liquidacao", "Enviado para liquidacao"), true);
+    assert.equal(PROCESS_WORKFLOW.includes("Criado"), false);
     assert.equal(PROCESS_WORKFLOW.includes("Aguardando entrega"), false);
     assert.equal(PROCESS_TRANSITIONS["Empenho enviado ao fornecedor"], "Entrega parcial");
     assert.equal(PROCESS_TRANSITIONS["Aguardando entrega"], "Entrega parcial");

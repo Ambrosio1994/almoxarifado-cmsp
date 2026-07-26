@@ -136,9 +136,11 @@ describe("Documentos no DOM", () => {
       await waitFor(() => !dom.window.document.querySelector("#processDetailView").classList.contains("hidden"));
       await waitFor(() => dom.window.document.querySelector("#detailPanel").textContent.includes("Editar dados do processo"));
       await waitFor(() => auditRequests > 0);
+      assert.equal(dom.window.location.pathname, "/empenhos/p1/dados-gerais");
 
       dom.window.document.querySelector('[data-detail-tab="documents"]').click();
       await waitFor(() => dom.window.document.querySelector('[data-open-document="/uploads/p1/missing.pdf"]'));
+      assert.equal(dom.window.location.pathname, "/empenhos/p1/documentos");
       assert.equal(dom.window.document.querySelector("#documentPreviewContent").hasAttribute("aria-live"), false);
       assert.equal(dom.window.document.querySelector("#documentPreviewStatus").getAttribute("role"), "status");
       assert.ok(dom.window.document.querySelector('[data-remove-document="complementares:1"]'));
@@ -241,6 +243,11 @@ describe("Documentos no DOM", () => {
       assert.equal(dom.window.document.querySelector("#observationsDialogTitle").textContent, "Adicionar observação");
       assert.equal(dom.window.document.activeElement, dom.window.document.querySelector('#observationForm textarea[name="conteudo"]'));
       assert.match(dom.window.document.querySelector('#observationForm textarea[name="conteudo"]').placeholder, /observação.*até 350 caracteres/i);
+      assert.equal(dom.window.document.querySelector("#closeObservationsHeader").classList.contains("hidden"), true);
+      assert.deepEqual(
+        [...dom.window.document.querySelectorAll("#observationForm .observation-actions button")].map((button) => button.textContent.trim()),
+        ["Registrar", "Fechar"]
+      );
       dom.window.document.querySelector("#observationsDialog").close();
 
       dom.window.document.querySelector('[data-detail-tab="documents"]').click();
@@ -270,9 +277,11 @@ describe("Documentos no DOM", () => {
       dom.window.document.querySelector('[data-attach-document="processoSped"]').click();
       await waitFor(() => controlledReader);
       dom.window.document.querySelector("#backToProcesses").click();
-      await waitFor(() => dom.window.document.querySelector('[data-open-process="p2"]'));
+      await waitFor(() => dom.window.location.pathname === "/empenhos");
+      assert.equal(dom.window.location.pathname, "/empenhos");
       dom.window.document.querySelector('[data-open-process="p2"]').click();
       await waitFor(() => dom.window.document.querySelector("#detailProcessNumber").textContent === "PROC-2");
+      assert.equal(dom.window.location.pathname, "/empenhos/p2/dados-gerais");
       assert.equal(readerAborted, true);
       assert.equal(processDocumentPosts, 0);
     } finally {
