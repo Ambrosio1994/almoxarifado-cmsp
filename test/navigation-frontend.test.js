@@ -47,12 +47,14 @@ describe("Navegacao principal no DOM", () => {
       assert.equal(dom.window.document.querySelector("#sectionTitle").textContent, "Fornecedores");
       assert.equal(dom.window.document.querySelector("#suppliersView").classList.contains("hidden"), false);
       assert.equal(dom.window.sessionStorage.getItem(storageKey), "suppliers");
+      assert.equal(dom.window.location.pathname, "/fornecedores");
 
       dom.window.document.querySelector('[data-section="processes"]').click();
       await waitFor(() => dom.window.document.querySelector('[data-section="processes"]')?.getAttribute("aria-current") === "page");
 
       assert.equal(dom.window.document.querySelector("#sectionTitle").textContent, "Empenhos");
       assert.equal(dom.window.sessionStorage.getItem(storageKey), "processes");
+      assert.equal(dom.window.location.pathname, "/empenhos");
       assert.ok(dom.window.document.querySelector("#processThemeSlot").contains(dom.window.document.querySelector("#themeToggle")));
       assert.equal(dom.window.document.querySelector("#themeToggle").dataset.targetTheme, "light");
       assert.equal(dom.window.document.querySelectorAll("#themeToggle [data-theme-icon]").length, 2);
@@ -148,10 +150,11 @@ describe("Navegacao principal no DOM", () => {
       assert.equal(dom.window.document.querySelector('[data-filter=""]').getAttribute("aria-pressed"), "true");
       assert.equal(dom.window.document.querySelectorAll(".filter-chip.active").length, 1);
 
-      for (const section of ["dashboard", "board", "suppliers"]) {
+      for (const [section, pathname] of [["dashboard", "/graficos"], ["board", "/quadro"], ["suppliers", "/fornecedores"]]) {
         const navigation = dom.window.document.querySelector(`[data-section="${section}"]`);
         navigation.click();
         await waitFor(() => navigation.getAttribute("aria-current") === "page");
+        assert.equal(dom.window.location.pathname, pathname);
         assert.ok(dom.window.document.querySelector(".topbar").contains(dom.window.document.querySelector("#themeToggle")));
         assert.equal(dom.window.getComputedStyle(dom.window.document.querySelector("#themeToggle")).position, "absolute");
         for (const [property, expected] of Object.entries(themeStyleAcrossScreens)) {
@@ -176,6 +179,7 @@ describe("Navegacao principal no DOM", () => {
       await waitFor(() => settingsNavigation.getAttribute("aria-current") === "page");
 
       assert.equal(dom.window.document.querySelector("#sectionTitle").textContent, "Configurações");
+      assert.equal(dom.window.location.pathname, "/configuracoes");
       assert.ok(dom.window.document.querySelector(".topbar").contains(dom.window.document.querySelector("#themeToggle")));
       assert.equal(dom.window.getComputedStyle(dom.window.document.querySelector("#themeToggle")).position, "absolute");
       for (const [property, expected] of Object.entries(themeStyleAcrossScreens)) {

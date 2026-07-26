@@ -13,6 +13,7 @@ export const STATUS = [
 ];
 
 export const PROCESS_WORKFLOW = STATUS.filter((status) => ![
+  "Criado",
   "Aguardando entrega",
   "Aguardando envio para liquidacao",
   "Anulado"
@@ -20,6 +21,7 @@ export const PROCESS_WORKFLOW = STATUS.filter((status) => ![
 
 export const PROCESS_TRANSITIONS = Object.fromEntries([
   ...PROCESS_WORKFLOW.map((status, index) => [status, PROCESS_WORKFLOW[index + 1] || ""]),
+  ["Criado", "Enviado para SALC"],
   ["Aguardando entrega", "Entrega parcial"],
   ["Aguardando envio para liquidacao", "Enviado para liquidacao"]
 ]);

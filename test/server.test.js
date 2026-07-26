@@ -195,6 +195,42 @@ describe("rotas http", () => {
     assert.ok(index.headers.etag);
   });
 
+  it("serve rotas limpas da SPA e preserva HEAD, cache e 404 de assets", async () => {
+    const index = await invokeRequest({ method: "GET", path: "/" });
+    for (const path of [
+      "/graficos",
+      "/empenhos",
+      "/quadro",
+      "/fornecedores",
+      "/configuracoes",
+      "/auditoria",
+      "/usuarios",
+      "/empenhos/processo-1/documentos",
+      "/pagina-inexistente"
+    ]) {
+      const response = await invokeRequest({ method: "GET", path });
+      assert.equal(response.statusCode, 200, path);
+      assert.match(response.headers["content-type"] || "", /text\/html/, path);
+      assert.equal(response.headers["cache-control"], "no-cache", path);
+      assert.equal(response.headers.etag, index.headers.etag, path);
+      assert.deepEqual(response.body, index.body, path);
+    }
+
+    const head = await invokeRequest({ method: "HEAD", path: "/empenhos/processo-1/observacoes" });
+    assert.equal(head.statusCode, 200);
+    assert.equal(head.body.length, 0);
+    assert.equal(Number(head.headers["content-length"]), index.body.length);
+    assert.equal(head.headers["cache-control"], "no-cache");
+
+    const unsupported = await invokeRequest({ method: "POST", path: "/empenhos" });
+    assert.equal(unsupported.statusCode, 405);
+    assert.equal(unsupported.headers.allow, "GET, HEAD");
+
+    const missingAsset = await invokeRequest({ method: "GET", path: "/asset-inexistente.js" });
+    assert.equal(missingAsset.statusCode, 404);
+    assert.match(missingAsset.text(), /Arquivo nao encontrado/);
+  });
+
   it("serve o modulo JavaScript do quadro", async () => {
     const response = await invokeRequest({ method: "GET", path: "/kanban-board.js" });
     assert.equal(response.statusCode, 200);
@@ -242,7 +278,7 @@ describe("rotas http", () => {
   });
 
   it("exige autenticacao para consultar ou baixar empenhos", async () => {
-    for (const path of ["/api/meta", "/api/dashboard", "/api/processes", "/api/processes/download"]) {
+    for (const path of ["/api/meta", "/api/dashboard", "/api/processes", "/api/processes/processo-inexistente", "/api/processes/download"]) {
       const anonymous = await invokeRequest({ method: "GET", path });
       assert.equal(anonymous.statusCode, 401, path);
       assert.deepEqual(anonymous.json(), { error: "Faca login para continuar." });
@@ -257,6 +293,60 @@ describe("rotas http", () => {
     assert.equal(response.statusCode, 200);
     assert.match(response.headers["content-type"] || "", /text\/csv/);
     assert.match(response.text(), /"Processo";"Empenho";"Fornecedor";"Materiais"/);
+  });
+
+  it("consulta um empenho por ID com dados enriquecidos e oculta inativos", async () => {
+    const { token } = await authenticatedAs("almoxarifado");
+    const created = await postJson("/api/processes", token, {
+      numeroProcesso: `DETALHE-${crypto.randomUUID().slice(0, 8)}`,
+      numeroEmpenho: testCommitmentNumber(),
+      materiais: [{ descricao: "Material consultado", quantidade: 3, valorUnitario: 12.5 }]
+    });
+    assert.equal(created.statusCode, 201);
+    const processId = created.json().id;
+    const headers = { authorization: `Bearer ${token}` };
+
+    const response = await invokeRequest({
+      method: "GET",
+      path: `/api/processes/${processId}`,
+      headers
+    });
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.headers["cache-control"], "private, no-store");
+    assert.equal(response.json().id, processId);
+    assert.equal(response.json().valorTotal, 37.5);
+    assert.equal(response.json().materiais[0].descricao, "Material consultado");
+
+    const missing = await invokeRequest({
+      method: "GET",
+      path: `/api/processes/${crypto.randomUUID()}`,
+      headers
+    });
+    assert.equal(missing.statusCode, 404);
+    assert.deepEqual(missing.json(), { error: "Processo nao encontrado" });
+
+    const store = await readStore();
+    const original = store.processos.find((processo) => processo.id === processId);
+    store.processos.push({ ...original, id: "processo 42", numeroProcesso: `LEGADO-${crypto.randomUUID().slice(0, 8)}` });
+    await writeStore(store);
+    const encodedId = await invokeRequest({
+      method: "GET",
+      path: "/api/processes/processo%2042",
+      headers
+    });
+    assert.equal(encodedId.statusCode, 200);
+    assert.equal(encodedId.json().id, "processo 42");
+
+    store.processos = store.processos.filter((processo) => processo.id !== "processo 42");
+    store.processos.find((processo) => processo.id === processId).inativo = true;
+    await writeStore(store);
+    const inactive = await invokeRequest({
+      method: "GET",
+      path: `/api/processes/${processId}`,
+      headers
+    });
+    assert.equal(inactive.statusCode, 404);
+    assert.deepEqual(inactive.json(), { error: "Processo nao encontrado" });
   });
 
   it("mantem o alias de download protegido por autenticacao", async () => {
@@ -802,7 +892,9 @@ describe("rotas http", () => {
       headers: { authorization: `Bearer ${token}` }
     });
     assert.equal(meta.statusCode, 200);
+    assert.equal(meta.json().status.includes("Criado"), false);
     assert.equal(meta.json().status.includes("Aguardando entrega"), false);
+    assert.equal(meta.json().transicoes.Criado, "Enviado para SALC");
     assert.equal(meta.json().transicoes["Empenho enviado ao fornecedor"], "Entrega parcial");
     assert.equal(meta.json().transicoes["Aguardando entrega"], "Entrega parcial");
 

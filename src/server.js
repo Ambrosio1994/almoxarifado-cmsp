@@ -42,6 +42,7 @@ import {
 import {
   detectStoreBackend,
   readAuditStore,
+  readProcessById,
   readProcessesSnapshot,
   readProcessesStore,
   readSettingsStore,
@@ -51,6 +52,7 @@ import {
   readUserByEmail,
   writeStore as persistStore
 } from "./storage.js";
+import { isSpaNavigationPath } from "../public/app-routes.js";
 import {
   cleanupExpiredSessions,
   createSession as createSessionRecord,
@@ -417,6 +419,14 @@ function sanitizedRequestPath(req = {}) {
   }
 }
 
+function decodePathSegment(value) {
+  try {
+    return decodeURIComponent(String(value || ""));
+  } catch {
+    return null;
+  }
+}
+
 const server = createServer(requestHandler);
 let applicationStartupComplete = !isMainModule();
 
@@ -769,7 +779,7 @@ async function handleApi(req, res, url) {
 
   if (req.method === "GET" && url.pathname === "/api/meta") {
     sendJson(res, 200, {
-      status: STATUS.filter((status) => !["Aguardando entrega", "Aguardando envio para liquidacao"].includes(status)),
+      status: STATUS.filter((status) => !["Criado", "Aguardando entrega", "Aguardando envio para liquidacao"].includes(status)),
       filtrosRapidos: QUICK_FILTERS,
       transicoes: PROCESS_TRANSITIONS
     });
@@ -828,6 +838,23 @@ async function handleApi(req, res, url) {
     const filtered = filterProcesses(store.processos, Object.fromEntries(url.searchParams));
     const enriched = applyQuickFilter(filtered.map((processo) => enrichProcess(processo)), url.searchParams.getAll("filtroRapido"));
     sendProcessesExport(res, enriched, format);
+    return;
+  }
+
+  const processMatch = url.pathname.match(/^\/api\/processes\/([^/]+)$/);
+  const matchedProcessId = processMatch ? decodePathSegment(processMatch[1]) : "";
+  if (processMatch && matchedProcessId === null) {
+    sendJson(res, 400, { error: "Identificador de processo invalido" });
+    return;
+  }
+  if (processMatch && req.method === "GET") {
+    const processo = await readProcessById(matchedProcessId);
+    if (!processo || processo.inativo) {
+      sendJson(res, 404, { error: "Processo nao encontrado" });
+      return;
+    }
+    res.setHeader("cache-control", "private, no-store");
+    sendJson(res, 200, enrichProcess(processo));
     return;
   }
 
@@ -1322,7 +1349,6 @@ async function handleApi(req, res, url) {
     return;
   }
 
-  const processMatch = url.pathname.match(/^\/api\/processes\/([^/]+)$/);
   if (processMatch && req.method === "PUT") {
     const body = await readJson(req);
     const validationError = validateProcessBody(body);
@@ -1330,7 +1356,7 @@ async function handleApi(req, res, url) {
       sendJson(res, 400, { error: validationError });
       return;
     }
-    const index = store.processos.findIndex((processo) => processo.id === processMatch[1]);
+    const index = store.processos.findIndex((processo) => processo.id === matchedProcessId);
     if (index === -1) {
       sendJson(res, 404, { error: "Processo nao encontrado" });
       return;
@@ -2261,7 +2287,13 @@ function passwordPolicyMessage() {
 }
 
 async function serveStatic(req, res, pathname) {
-  const safePath = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
+  const method = String(req.method || "GET").toUpperCase();
+  if (!["GET", "HEAD"].includes(method)) {
+    res.setHeader("allow", "GET, HEAD");
+    sendJson(res, 405, { error: "Metodo nao permitido para arquivos publicos." });
+    return;
+  }
+  const safePath = isSpaNavigationPath(pathname) ? "index.html" : pathname.replace(/^\/+/, "");
   const fullPath = normalize(join(ROOT, safePath));
 
   if (!isPathWithin(ROOT, fullPath)) {
