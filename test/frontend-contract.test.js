@@ -341,9 +341,9 @@ describe("contrato visual e de navegacao", () => {
   it("exibe quantidade antes de valor unitario nos materiais", () => {
     const materialRow = app.slice(app.indexOf("function addMaterialRow"), app.indexOf("function ensureOneMaterialRow"));
     assert.ok(materialRow.indexOf(">Quantidade <") < materialRow.indexOf(">Valor unitario <"));
-    assert.ok(materialRow.indexOf("data-material-total") < materialRow.indexOf("data-add-material"));
-    assert.ok(materialRow.indexOf("data-add-material") < materialRow.indexOf("data-remove-material"));
-    assert.match(app, /const row = addMaterialRow\(\)[\s\S]*?data-material-field="descricao"[\s\S]*?\.focus\(\)/);
+    assert.ok(materialRow.indexOf("data-material-total") < materialRow.indexOf("data-remove-material"));
+    assert.doesNotMatch(materialRow, /data-add-material|add-material-button/);
+    assert.match(app, /addMaterialButton\?\.addEventListener\("click"[\s\S]*?addMaterialRows\(1, \{ focus: true \}\)/);
   });
 
   it("calcula os totais dos materiais e organiza os dados gerais", () => {
@@ -352,15 +352,36 @@ describe("contrato visual e de navegacao", () => {
     assert.doesNotMatch(materialsTitle, /Adicionar material/);
     assert.match(materialsSection, /class="process-total-summary"[\s\S]*?id="processMaterialsTotal"[^>]*aria-live="polite"/);
     assert.match(materialsSection, /Valor Total do Empenho/);
-    assert.doesNotMatch(materialsSection, /id="addMaterialButton"/);
+    assert.match(materialsSection, /id="addMaterialButton"[^>]*>Adicionar material/);
+    assert.match(materialsSection, /id="addMaterialRowsButton"[\s\S]*?id="copyMaterialDescriptionButton"[\s\S]*?id="materialsSpreadsheetInput"/);
     assert.match(app, /data-material-total/);
+    assert.match(app, /formatUnitPriceInput/);
+    assert.match(app, /data-description-counter/);
     assert.match(app, /function updateMaterialTotals\(\)/);
     assert.match(app, /class="general-data-row general-data-identity"[\s\S]*?detailField\("Fornecedor"[\s\S]*?detailField\("CNPJ"/);
     assert.match(app, /class="general-data-row general-data-process"[\s\S]*?detailField\("Processo"[\s\S]*?detailField\("Empenho"[\s\S]*?detailField\("Requisitante"[\s\S]*?detailField\("Data do processo"[\s\S]*?detailField\("Valor total"/);
     assert.match(app, /class="general-data-row general-data-dates"[\s\S]*?Data de envio para fornecedor[\s\S]*?Data de entrega[\s\S]*?Data de envio para liquidação[\s\S]*?Data da liquidação[\s\S]*?Data do pagamento/);
     assert.match(app, /class="detail-material-table"[\s\S]*?<th scope="col">Material[\s\S]*?Unidades[\s\S]*?Valor unitário[\s\S]*?Valor total/);
     assert.doesNotMatch(app, /Valor unitario medio/);
-    assert.match(styles, /\.material-row\s*\{[\s\S]*?grid-template-columns:\s*minmax\(220px,\s*1fr\)\s+100px\s+105px\s+105px\s+36px\s+82px/);
+    assert.match(styles, /\.material-row\s*\{[\s\S]*?grid-template-columns:\s*minmax\(220px,\s*1fr\)\s+100px\s+130px\s+105px\s+82px/);
+  });
+
+  it("explicita a vinculacao 1:N e confirma o salvamento com ID", () => {
+    assert.match(html, /id="processAssociationMode"[\s\S]*?value="existing"[\s\S]*?value="none"/);
+    assert.match(html, /id="existingProcessSelect"/);
+    assert.match(app, /function populateExistingProcessOptions/);
+    assert.match(app, /associationMode === "existing"[\s\S]*?existingProcessSelect/);
+    assert.match(app, /Empenho salvo com sucesso\. ID: \$\{savedProcess\.id\}/);
+    assert.match(app, /A auditoria foi gravada na mesma operacao[\s\S]*?Recarregar auditoria/);
+    assert.match(app, /processSaveProgress\?\.classList\.toggle\("hidden", !busy\)/);
+  });
+
+  it("destaca busca e filtros ativos e exige confirmacao para liquidacao", () => {
+    assert.match(html, /id="activeProcessFilters"[\s\S]*?id="clearProcessFilters"/);
+    assert.match(app, /function renderActiveProcessFilters/);
+    assert.match(app, /search-box"\)\?\.classList\.toggle\("has-active-filter"/);
+    assert.match(app, /step\.status === "Enviado para liquidacao"[\s\S]*?confirmarEtapaCritica/);
+    assert.match(app, /Confirme a conferência da documentação antes de enviar o empenho para liquidação/);
   });
 
   it("permite redimensionar a tela de criacao do processo", () => {

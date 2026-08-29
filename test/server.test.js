@@ -677,6 +677,38 @@ describe("rotas http", () => {
     }
   });
 
+  it("permite varias notas no mesmo processo e normaliza a numeracao antes de validar", async () => {
+    const { token } = await authenticatedAs("almoxarifado");
+    const formattedProcessNumber = "12345.123456/2026-78";
+    const firstCommitment = testCommitmentNumber();
+    const secondCommitment = testCommitmentNumber();
+    const first = await postJson("/api/processes", token, {
+      numeroProcesso: formattedProcessNumber,
+      numeroEmpenho: firstCommitment,
+      materiais: [{ descricao: "Item A", valorUnitario: 0.7326, quantidade: 10 }]
+    });
+    const second = await postJson("/api/processes", token, {
+      numeroProcesso: "12345123456202678",
+      numeroEmpenho: secondCommitment,
+      materiais: [{ descricao: "Item B", valorUnitario: 47.475, quantidade: 2 }]
+    });
+
+    assert.equal(first.statusCode, 201);
+    assert.equal(second.statusCode, 201);
+    assert.equal(first.json().numeroProcesso, formattedProcessNumber);
+    assert.equal(second.json().numeroProcesso, formattedProcessNumber);
+    assert.equal(first.json().valorTotal, 7.33);
+    assert.equal(second.json().valorTotal, 94.95);
+
+    const duplicateCommitment = await postJson("/api/processes", token, {
+      numeroProcesso: formattedProcessNumber,
+      numeroEmpenho: firstCommitment
+    });
+    assert.equal(duplicateCommitment.statusCode, 409);
+    assert.match(duplicateCommitment.json().error, new RegExp(firstCommitment));
+    assert.match(duplicateCommitment.json().error, /registro/i);
+  });
+
   it("protege anulacao liquidada, exige motivo e impede inativar pagamento", async () => {
     const { token } = await authenticatedAs("almoxarifado");
     const created = await postJson("/api/processes", token, {
@@ -791,6 +823,69 @@ describe("rotas http", () => {
       { materialId: "material-papel", quantidade: 3 },
       { materialId: "material-caneta", quantidade: 3 }
     ]);
+  });
+
+  it("acompanha servico continuado por competencia e percentual sem exigir entrega", async () => {
+    const { token } = await authenticatedAs("almoxarifado");
+    const today = new Date().toISOString().slice(0, 10);
+    const competence = today.slice(0, 7);
+    const created = await postJson("/api/processes", token, {
+      numeroProcesso: `SERV-${crypto.randomUUID().slice(0, 8)}`,
+      numeroEmpenho: testCommitmentNumber(),
+      tipoObjeto: "servico",
+      acompanhamentoServico: "continuado",
+      dataInicioServico: today,
+      materiais: [{ descricao: "Manutencao continuada", quantidade: 12, valorUnitario: 1000 }]
+    });
+    assert.equal(created.statusCode, 201);
+    assert.equal(created.json().tipoObjeto, "servico");
+    assert.equal(created.json().percentualConcluido, 0);
+
+    const sent = await putJson(`/api/processes/${created.json().id}`, token, {
+      numeroProcesso: created.json().numeroProcesso,
+      numeroEmpenho: created.json().numeroEmpenho,
+      tipoObjeto: "servico",
+      acompanhamentoServico: "continuado",
+      dataInicioServico: today,
+      dataEnvioFornecedor: today,
+      materiais: created.json().materiais,
+      status: "Empenho enviado ao fornecedor",
+      versao: created.json().versao
+    });
+    assert.equal(sent.statusCode, 200);
+
+    const first = await postJson(`/api/processes/${created.json().id}/service-executions`, token, {
+      data: today,
+      competencia: competence,
+      percentualExecutado: 40,
+      valorExecutado: 4000,
+      descricao: "Primeira medicao"
+    });
+    assert.equal(first.statusCode, 201);
+    assert.equal(first.json().status, "Em execução");
+    assert.equal(first.json().percentualConcluido, 40);
+    assert.equal(first.json().dataEntrega, "");
+
+    const delivery = await postJson(`/api/processes/${created.json().id}/deliveries`, token, { data: today });
+    assert.equal(delivery.statusCode, 400);
+    assert.match(delivery.json().error, /sem entrega fisica|registros de execucao/i);
+
+    const completed = await postJson(`/api/processes/${created.json().id}/service-executions`, token, {
+      data: today,
+      competencia: competence,
+      percentualExecutado: 60,
+      valorExecutado: 8000,
+      descricao: "Medicao final"
+    });
+    assert.equal(completed.statusCode, 201);
+    assert.equal(completed.json().status, "Serviço concluído");
+    assert.equal(completed.json().percentualConcluido, 100);
+    assert.equal(completed.json().execucoesServico.length, 2);
+
+    const persisted = await readStore();
+    assert.ok(persisted.auditoria.some((entry) => (
+      entry.processoId === created.json().id && entry.acao === "Registro de execucao de servico"
+    )));
   });
 
   it("envia o processo entregue diretamente para liquidacao e reconcilia saldo ao editar materiais", async () => {

@@ -53,6 +53,7 @@ export function allowedBoardTransitions(status = "", transitions = {}, activeSta
 export function getProcessDeadlineState(process = {}) {
   const reference = process.dataReferenciaPrazo || process.dataEnvioFornecedor || process.dataEnvioEmpenho || "";
   if (!reference) return "none";
+  if (process.tipoObjeto === "servico" && process.acompanhamentoServico !== "entrega") return "normal";
   if (["Entregue", "Aguardando envio para liquidacao", "Enviado para liquidacao", "Liquidado", "Pago", "Anulado"].includes(process.status)) {
     return "normal";
   }
@@ -93,6 +94,8 @@ function boardSearchValues(process = {}) {
     process.numeroEmpenho,
     process.numeroNotaFiscal,
     process.fornecedor,
+    process.tipoObjeto,
+    process.acompanhamentoServico,
     boardResponsible(process),
     process.observacao,
     ...(process.materiais || []).map((material) => material.descricao),

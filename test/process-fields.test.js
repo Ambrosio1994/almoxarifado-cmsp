@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   formatCurrencyInput,
+  formatUnitPriceInput,
   formatCommitmentNumber,
   isStandardCommitmentNumber,
   normalizeCommitmentSequence,
@@ -44,5 +45,13 @@ describe("campos monetarios do processo", () => {
   it("formata valores para edicao em reais", () => {
     assert.equal(formatCurrencyInput(1234.56), "1.234,56");
     assert.ok(Number.isNaN(parseCurrencyInput("valor invalido")));
+  });
+
+  it("preserva quatro casas decimais no valor unitario", () => {
+    assert.equal(parseCurrencyInput("0,7326"), 0.7326);
+    assert.equal(parseCurrencyInput("47,4750"), 47.475);
+    assert.equal(formatUnitPriceInput(0.7326), "0,7326");
+    assert.equal(formatUnitPriceInput(47.475), "47,4750");
+    assert.ok(Number.isNaN(parseCurrencyInput("0,12345")));
   });
 });

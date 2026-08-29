@@ -18,6 +18,7 @@ import {
 } from "./kanban-board.js";
 import {
   formatCurrencyInput,
+  formatUnitPriceInput,
   formatCommitmentNumber,
   normalizeCommitmentSequence,
   parseCurrencyInput,
@@ -50,6 +51,7 @@ const state = {
   detailObservationsLoaded: false,
   detailAudit: [],
   deliveryDraft: null,
+  serviceExecutionDraft: null,
   processStepDraft: null,
   timelineDeleteDraft: null,
   observationProcessId: null,
@@ -83,6 +85,7 @@ const APP_SECTIONS = new Set(["dashboard", "processes", "board", "suppliers", "a
 const ACTIVE_SECTION_STORAGE_PREFIX = "almoxActiveSection";
 const DASHBOARD_YEAR_STORAGE_PREFIX = "almoxDashboardYear";
 const PROCESS_EXPORT_FORMATS = new Set(["excel", "pdf", "csv"]);
+const MAX_MATERIAL_ROWS = 200;
 const ALLOWED_DOCUMENT_RESPONSE_MIME_TYPES = new Set([
   "application/pdf",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -144,6 +147,9 @@ const statusFilter = document.querySelector("#statusFilter");
 const quickFilter = document.querySelector("#quickFilter");
 const quickFilterBar = document.querySelector("#quickFilterBar");
 const searchInput = document.querySelector("#searchInput");
+const activeProcessFilters = document.querySelector("#activeProcessFilters");
+const activeProcessFiltersText = document.querySelector("#activeProcessFiltersText");
+const clearProcessFilters = document.querySelector("#clearProcessFilters");
 const processForm = document.querySelector("#processForm");
 const commitmentYear = document.querySelector("#commitmentYear");
 const commitmentSequence = document.querySelector("#commitmentSequence");
@@ -156,6 +162,25 @@ const processExportDialog = document.querySelector("#processExportDialog");
 const processExportChoices = document.querySelectorAll("[data-process-export-format]");
 const processThemeSlot = document.querySelector("#processThemeSlot");
 const materialsList = document.querySelector("#materialsList");
+const processAssociationMode = document.querySelector("#processAssociationMode");
+const existingProcessGroup = document.querySelector("#existingProcessGroup");
+const existingProcessSelect = document.querySelector("#existingProcessSelect");
+const processAssociationHelp = document.querySelector("#processAssociationHelp");
+const processNumberGroup = document.querySelector("#processNumberGroup");
+const processNumber = document.querySelector("#processNumber");
+const addMaterialButton = document.querySelector("#addMaterialButton");
+const materialRowsCount = document.querySelector("#materialRowsCount");
+const addMaterialRowsButton = document.querySelector("#addMaterialRowsButton");
+const copyMaterialDescriptionButton = document.querySelector("#copyMaterialDescriptionButton");
+const materialsSpreadsheetInput = document.querySelector("#materialsSpreadsheetInput");
+const materialsImportHelp = document.querySelector("#materialsImportHelp");
+const processSaveProgress = document.querySelector("#processSaveProgress");
+const processObjectType = document.querySelector("#processObjectType");
+const serviceTrackingGroup = document.querySelector("#serviceTrackingGroup");
+const serviceTrackingMode = document.querySelector("#serviceTrackingMode");
+const servicePeriodFields = document.querySelector("#servicePeriodFields");
+const processKindHelp = document.querySelector("#processKindHelp");
+const processItemsTitle = document.querySelector("#processItemsTitle");
 const formMessage = document.querySelector("#formMessage");
 const table = document.querySelector("#processTable");
 const dialog = document.querySelector("#observationsDialog");
@@ -174,12 +199,18 @@ const deliveryDialogTitle = document.querySelector("#deliveryDialogTitle");
 const deliveryMaterials = document.querySelector("#deliveryMaterials");
 const deliveryMessage = document.querySelector("#deliveryMessage");
 const cancelDelivery = document.querySelector("#cancelDelivery");
+const serviceExecutionDialog = document.querySelector("#serviceExecutionDialog");
+const serviceExecutionForm = document.querySelector("#serviceExecutionForm");
+const serviceExecutionSummary = document.querySelector("#serviceExecutionSummary");
+const serviceExecutionMessage = document.querySelector("#serviceExecutionMessage");
+const cancelServiceExecution = document.querySelector("#cancelServiceExecution");
 const processStepDialog = document.querySelector("#processStepDialog");
 const processStepForm = document.querySelector("#processStepForm");
 const processStepDialogTitle = document.querySelector("#processStepDialogTitle");
 const processStepDialogDescription = document.querySelector("#processStepDialogDescription");
 const processStepDateGroup = document.querySelector("#processStepDateGroup");
 const processStepDateLabel = document.querySelector("#processStepDateLabel");
+const processStepCriticalConfirmation = document.querySelector("#processStepCriticalConfirmation");
 const processStepMessage = document.querySelector("#processStepMessage");
 const cancelProcessStep = document.querySelector("#cancelProcessStep");
 const deleteTimelineDialog = document.querySelector("#deleteTimelineDialog");
@@ -204,6 +235,7 @@ const detailStatusBadges = document.querySelector("#detailStatusBadges");
 const detailSubtitle = document.querySelector("#detailSubtitle");
 const detailPanel = document.querySelector("#detailPanel");
 const detailTabs = document.querySelectorAll(".detail-tab");
+const detailTabDeliveries = document.querySelector('[data-detail-tab="deliveries"]');
 const downloadDialog = document.querySelector("#downloadDialog");
 const downloadChoices = document.querySelectorAll("[data-download-format]");
 const documentPreviewDialog = document.querySelector("#documentPreviewDialog");
@@ -505,6 +537,32 @@ function showAppNotice(message) {
   text.textContent = message;
   appStatus.append(text);
   appStatus.classList.add("success");
+  appStatus.classList.remove("hidden");
+}
+
+function showAppWarning(message, retryLabel, retryAction) {
+  if (!appStatus) return;
+  appStatus.replaceChildren();
+  appStatus.classList.remove("success");
+  const text = document.createElement("span");
+  text.textContent = message;
+  appStatus.append(text);
+  if (retryLabel && typeof retryAction === "function") {
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = "secondary";
+    retry.textContent = retryLabel;
+    retry.addEventListener("click", async () => {
+      setButtonBusy(retry, true, "Tentando...");
+      try {
+        await retryAction();
+      } catch (error) {
+        text.textContent = `${message} Nova tentativa falhou: ${error.message}`;
+        setButtonBusy(retry, false);
+      }
+    });
+    appStatus.append(retry);
+  }
   appStatus.classList.remove("hidden");
 }
 
@@ -836,7 +894,7 @@ async function ensureProcessesLoaded({ force = false } = {}) {
 
 async function renderProcessesView() {
   if (!state.processesLoaded) {
-    table.innerHTML = '<tr class="empty-table-row"><td colspan="10" role="status">Carregando processos...</td></tr>';
+    table.innerHTML = '<tr class="empty-table-row"><td colspan="12" role="status">Carregando processos...</td></tr>';
   }
   await ensureProcessesLoaded({ force: true });
   applyProcessFilters();
@@ -920,7 +978,8 @@ function createKanbanCard(process) {
       </div>
       ${process.numeroEmpenho ? `<span class="kanban-card-empenho">NE ${escapeHtml(process.numeroEmpenho)}</span>` : ""}
       ${process.fornecedor ? `<span class="kanban-card-line"><b>Fornecedor</b>${escapeHtml(process.fornecedor)}</span>` : ""}
-      ${material ? `<span class="kanban-card-line"><b>Material</b>${escapeHtml(material)}</span>` : ""}
+      ${material ? `<span class="kanban-card-line"><b>${isServiceProcess(process) ? "Serviço" : "Material"}</b>${escapeHtml(material)}</span>` : ""}
+      ${!processUsesDeliveryInUi(process) ? `<span class="kanban-card-line"><b>Execução</b>${escapeHtml(formatQuantity(serviceProgressInUi(process)))}% concluído</span>` : ""}
       <strong class="kanban-card-value">${escapeHtml(money(process.valorTotal))}</strong>
       <div class="kanban-card-meta">
         ${Number.isFinite(Number(process.diasDecorridos)) ? `<span>${escapeHtml(String(Number(process.diasDecorridos)))} dias</span>` : ""}
@@ -942,7 +1001,8 @@ function createKanbanCard(process) {
 
 function boardMoveTargets(process) {
   if (!canEditGeneralInUi(process)) return [];
-  return allowedBoardTransitions(process.status, state.meta.transicoes, state.meta.status);
+  const transitions = processUsesDeliveryInUi(process) ? state.meta.transicoes : state.meta.transicoesServico;
+  return allowedBoardTransitions(process.status, transitions, state.meta.status);
 }
 
 function isAllowedBoardTransition(process, targetStatus) {
@@ -1078,6 +1138,16 @@ async function requestBoardTransition(processId, targetStatus) {
     openDeliveryDialog("", targetStatus === "Entregue", "board");
     return;
   }
+  const serviceExecutionTransition = !processUsesDeliveryInUi(process)
+    && ["Empenho enviado ao fornecedor", "Em execução"].includes(process.status)
+    && ["Em execução", "Serviço concluído"].includes(targetStatus);
+  if (serviceExecutionTransition) {
+    state.boardUpdatingProcesses.add(processId);
+    state.selectedProcess = process;
+    renderKanbanBoard();
+    openServiceExecutionDialog("board");
+    return;
+  }
   const step = nextProcessStep(process);
   if (!step || step.status !== targetStatus) {
     setBoardMessage("A próxima etapa mudou. Atualize o quadro e tente novamente.", "error");
@@ -1123,6 +1193,26 @@ function replaceProcessInState(updated) {
   state.allProcesses = state.allProcesses.map((process) => process.id === updated.id ? updated : process);
   state.processos = state.processos.map((process) => process.id === updated.id ? updated : process);
   if (state.selectedProcess?.id === updated.id) state.selectedProcess = updated;
+}
+
+function upsertProcessInState(updated) {
+  const exists = state.allProcesses.some((process) => process.id === updated.id);
+  state.allProcesses = exists
+    ? state.allProcesses.map((process) => process.id === updated.id ? updated : process)
+    : [updated, ...state.allProcesses];
+  replaceProcessInState(updated);
+}
+
+async function retryProcessAudit(processId) {
+  const [detailAudit] = await Promise.all([
+    loadDetailAudit(processId),
+    refreshAudit()
+  ]);
+  if (state.selectedProcess?.id === processId) {
+    state.detailAudit = detailAudit;
+    renderProcessDetail();
+  }
+  showAppNotice(`Auditoria do empenho ${processId} recarregada com sucesso.`);
 }
 
 function cleanupBoardDragState() {
@@ -1175,13 +1265,29 @@ function applyProcessFilters() {
     })
     .filter((processo) => quickFilters.length === 0
       || quickFilters.some((quickFilterValue) => matchesQuickFilter(processo, quickFilterValue)));
+  renderActiveProcessFilters();
+}
+
+function renderActiveProcessFilters() {
+  if (!activeProcessFilters || !activeProcessFiltersText) return;
+  const labels = [];
+  const search = String(searchInput?.value || "").trim();
+  if (search) labels.push(`Busca: “${search}”`);
+  if (statusFilter?.value) labels.push(`Status: ${statusFilter.value}`);
+  state.quickFilters.forEach((filter) => labels.push(filter));
+  const active = labels.length > 0;
+  activeProcessFilters.classList.toggle("hidden", !active);
+  searchInput?.closest(".search-box")?.classList.toggle("has-active-filter", Boolean(search));
+  activeProcessFiltersText.textContent = active
+    ? `${labels.length === 1 ? "Filtro ativo" : "Filtros ativos"}: ${labels.join(" · ")}. ${state.processos.length} ${state.processos.length === 1 ? "resultado" : "resultados"}.`
+    : "";
 }
 
 function matchesQuickFilter(processo, quickFilterValue) {
   if (!quickFilterValue) return true;
   if (["Em atraso", "Mais de 30 dias"].includes(quickFilterValue)) return isOverdue(processo);
   if (quickFilterValue === "Pendentes de liquidacao") {
-    return ["Entregue", "Aguardando envio para liquidacao", "Enviado para liquidacao"].includes(processo.status)
+    return ["Entregue", "Serviço concluído", "Aguardando envio para liquidacao", "Enviado para liquidacao"].includes(processo.status)
       && !processo.dataLiquidacao;
   }
   return processo.status === quickFilterValue;
@@ -1247,16 +1353,28 @@ function renderTable() {
       <td class="strong-cell"><button type="button" class="link-button process-open-button" data-open-process="${escapeAttribute(processo.id)}" aria-label="Abrir ${escapeAttribute(processAccessibleName(processo))}">${empty(processo.numeroProcesso)}</button></td>
       <td class="mono-cell">${documentCell(processo.numeroEmpenho, "Nota de Empenho", processo.documentos?.notaEmpenho)}</td>
       <td>${empty(processo.fornecedor)}</td>
+      <td>${objectTypeBadge(processo)}</td>
       <td>${materialsCell(processo.materiais)}</td>
       <td class="money-cell">${money(processo.valorTotal)}</td>
       <td>${dateCell(deadlineDate(processo))}</td>
       <td>${daysCell(processo)}</td>
-      <td>${dateCell(processo.dataEntrega)}</td>
+      <td>${deliveryOrExecutionCell(processo)}</td>
       <td>${dateCell(processo.dataEnvioLiquidacao)}</td>
       <td>${empty(processo.criadoPor || processo.criadoPorEmail)}</td>
       <td>${statusBadges(processo)}</td>
     </tr>
-  `).join("") : '<tr class="empty-table-row"><td colspan="11">Nenhum processo encontrado.</td></tr>';
+  `).join("") : '<tr class="empty-table-row"><td colspan="12">Nenhum processo encontrado.</td></tr>';
+}
+
+function objectTypeBadge(processo = {}) {
+  const service = isServiceProcess(processo);
+  return `<span class="object-type ${service ? "service" : "material"}">${service ? "Serviço" : "Material"}</span>`;
+}
+
+function deliveryOrExecutionCell(processo = {}) {
+  if (processUsesDeliveryInUi(processo)) return dateCell(processo.dataEntrega);
+  const progress = serviceProgressInUi(processo);
+  return `<span class="service-progress-compact" title="${escapeAttribute(`${progress}% do serviço concluído`)}"><span style="width:${progress}%"></span><b>${escapeHtml(formatQuantity(progress))}%</b></span>`;
 }
 
 function processAccessibleName(processo = {}) {
@@ -1267,6 +1385,7 @@ function processAccessibleName(processo = {}) {
 
 processForm.addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (processForm.dataset.saving === "true") return;
   const editingLegacyCommitment = Boolean(commitmentSequence?.disabled && processForm.elements.numeroEmpenho.value);
   if (!editingLegacyCommitment) {
     const numeroEmpenho = formatCommitmentNumber(commitmentYear?.value, commitmentSequence?.value);
@@ -1278,13 +1397,31 @@ processForm.addEventListener("submit", async (event) => {
     processForm.elements.numeroEmpenho.value = numeroEmpenho;
   }
   const data = Object.fromEntries(new FormData(processForm));
-  data.materiais = readMaterials();
-  if (data.materiais.some((material) => !Number.isFinite(material.valorUnitario))) {
-    formMessage.textContent = "Informe os valores unitarios no formato 1.234,56.";
-    return;
-  }
   const id = data.id;
   const isCreating = !id;
+  if (isCreating) {
+    const associationMode = processAssociationMode?.value || "new";
+    if (associationMode === "existing") data.numeroProcesso = existingProcessSelect?.value || "";
+    if (associationMode === "none") data.numeroProcesso = "";
+    if (associationMode !== "none" && !String(data.numeroProcesso || "").trim()) {
+      formMessage.textContent = associationMode === "existing"
+        ? "Selecione o processo ao qual este empenho sera vinculado."
+        : "Informe o numero do processo ou escolha “Empenho sem processo”.";
+      (associationMode === "existing" ? existingProcessSelect : processNumber)?.focus();
+      return;
+    }
+  }
+  data.numeroProcesso = normalizeProcessNumberInput(data.numeroProcesso);
+  if (data.tipoObjeto !== "servico") {
+    data.acompanhamentoServico = "entrega";
+    data.dataInicioServico = "";
+    data.dataFimServico = "";
+  }
+  data.materiais = readMaterials();
+  if (data.materiais.some((material) => !Number.isFinite(material.valorUnitario))) {
+    formMessage.textContent = "Informe os valores unitarios com ate quatro casas decimais, como 0,7326.";
+    return;
+  }
   delete data.id;
   formMessage.textContent = "";
   if (!String(data.numeroProcesso || "").trim() && !String(data.numeroEmpenho || "").trim()) {
@@ -1301,7 +1438,7 @@ processForm.addEventListener("submit", async (event) => {
     return;
   }
 
-  setFormBusy(processForm, true, "Salvando...");
+  setProcessSaveBusy(true);
   let savedProcess;
   try {
     savedProcess = await api(id ? `/api/processes/${id}` : "/api/processes", {
@@ -1312,30 +1449,43 @@ processForm.addEventListener("submit", async (event) => {
     formMessage.textContent = error.message;
     return;
   } finally {
-    setFormBusy(processForm, false);
+    setProcessSaveBusy(false);
   }
 
   const wasSelected = state.selectedProcess?.id === savedProcess.id;
   if (wasSelected) state.selectedProcess = savedProcess;
+  upsertProcessInState(savedProcess);
+  applyProcessFilters();
+  renderProcessData();
+  const successMessage = `Empenho salvo com sucesso. ID: ${savedProcess.id}.`;
+  showAppNotice(successMessage);
   clearForm();
   processDialog.close();
+  if (isCreating) {
+    void openProcessDetail(savedProcess, "processes");
+  } else if (wasSelected) {
+    renderProcessDetail();
+  }
+
   try {
     await refresh();
+  } catch (error) {
+    showAppWarning(`${successMessage} A lista local ja mostra o registro, mas a sincronizacao com o servidor falhou: ${error.message}`, "Atualizar lista", () => refresh());
+    return;
+  }
+
+  try {
     await refreshAudit();
-    if (isCreating) {
-      const createdProcess = state.allProcesses.find((processo) => processo.id === savedProcess.id) || savedProcess;
-      await openProcessDetail(createdProcess, "processes");
-    } else if (wasSelected) {
-      [state.detailObservations, state.detailAudit] = await Promise.all([
-        loadDetailObservations(savedProcess.id),
-        loadDetailAudit(savedProcess.id)
-      ]);
-      state.detailObservationsLoaded = true;
+    if (state.selectedProcess?.id === savedProcess.id) {
+      state.detailAudit = await loadDetailAudit(savedProcess.id);
       renderProcessDetail();
     }
   } catch (error) {
-    showAppError(`O processo foi salvo, mas a lista nao foi atualizada: ${error.message}`);
-    if (isCreating) await openProcessDetail(savedProcess, "processes");
+    showAppWarning(
+      `${successMessage} A auditoria foi gravada na mesma operacao, mas sua visualizacao nao foi recarregada: ${error.message}`,
+      "Recarregar auditoria",
+      () => retryProcessAudit(savedProcess.id)
+    );
   }
 });
 
@@ -1353,6 +1503,14 @@ processExportChoices.forEach((button) => {
 });
 searchInput.addEventListener("input", debounce(() => refresh({ reload: false }), 180));
 statusFilter.addEventListener("change", () => refresh({ reload: false }));
+clearProcessFilters?.addEventListener("click", () => {
+  searchInput.value = "";
+  statusFilter.value = "";
+  state.quickFilters.clear();
+  renderQuickFilters();
+  void refresh({ reload: false });
+  searchInput.focus();
+});
 quickFilter.addEventListener("change", () => {
   state.quickFilters = new Set(
     [...quickFilter.selectedOptions].map((option) => option.value).filter(Boolean)
@@ -1376,23 +1534,43 @@ documentMetadataDialog?.addEventListener("close", () => {
   if (documentSelectedFile) documentSelectedFile.textContent = "";
 });
 materialsList.addEventListener("click", (event) => {
-  if (event.target.closest("[data-add-material]")) {
-    const row = addMaterialRow();
-    row.querySelector('[data-material-field="descricao"]')?.focus();
-    return;
-  }
   if (event.target.closest("[data-remove-material]")) {
     event.target.closest(".material-row")?.remove();
     ensureOneMaterialRow();
     updateMaterialTotals();
   }
 });
-materialsList.addEventListener("input", updateMaterialTotals);
+materialsList.addEventListener("input", (event) => {
+  if (event.target.dataset.materialField === "descricao") updateMaterialDescriptionCounter(event.target);
+  updateMaterialTotals();
+});
 materialsList.addEventListener("focusout", (event) => {
   if (event.target.dataset.materialField !== "valorUnitario" || !event.target.value.trim()) return;
   const amount = parseCurrencyInput(event.target.value);
-  if (Number.isFinite(amount)) event.target.value = formatCurrencyInput(amount);
+  if (Number.isFinite(amount)) event.target.value = formatUnitPriceInput(amount);
 });
+addMaterialButton?.addEventListener("click", () => addMaterialRows(1, { focus: true }));
+addMaterialRowsButton?.addEventListener("click", () => {
+  const count = Math.max(1, Math.min(100, Number(materialRowsCount?.value || 1)));
+  addMaterialRows(count, { focus: true });
+});
+copyMaterialDescriptionButton?.addEventListener("click", copyFirstMaterialDescription);
+materialsSpreadsheetInput?.addEventListener("change", importMaterialsSpreadsheet);
+processAssociationMode?.addEventListener("change", updateProcessAssociationFields);
+existingProcessSelect?.addEventListener("change", () => {
+  if (processAssociationMode?.value === "existing" && processNumber) {
+    processNumber.value = existingProcessSelect.value;
+  }
+});
+processNumber?.addEventListener("blur", () => {
+  processNumber.value = normalizeProcessNumberInput(processNumber.value);
+});
+processObjectType?.addEventListener("change", () => {
+  const items = readMaterials();
+  updateProcessKindFields();
+  renderMaterialRows(items.length ? items : undefined);
+});
+serviceTrackingMode?.addEventListener("change", updateProcessKindFields);
 
 table.addEventListener("click", async (event) => {
   const editId = event.target.closest("[data-open-process]")?.dataset.openProcess
@@ -1772,6 +1950,11 @@ detailPanel.addEventListener("click", async (event) => {
       await registerPartialDelivery();
     }
 
+    if (event.target.dataset.registerServiceExecution) {
+      openServiceExecutionDialog();
+      return;
+    }
+
     if (event.target.dataset.cancelProcess) {
       cancelProcessForm?.reset();
       if (cancelProcessMessage) cancelProcessMessage.textContent = "";
@@ -1790,6 +1973,10 @@ detailPanel.addEventListener("click", async (event) => {
     if (event.target.dataset.showNewData) {
       const step = nextProcessStep(state.selectedProcess);
       if (!step) return;
+      if (step.serviceExecution) {
+        openServiceExecutionDialog();
+        return;
+      }
       if (["Entrega parcial", "Entregue"].includes(step?.status)) {
         openDeliveryDialog("", step.status === "Entregue");
         return;
@@ -1931,6 +2118,13 @@ deliveryForm?.addEventListener("input", (event) => {
   event.target.removeAttribute("aria-invalid");
   deliveryMessage.textContent = "";
 });
+serviceExecutionForm?.addEventListener("submit", saveServiceExecution);
+cancelServiceExecution?.addEventListener("click", () => serviceExecutionDialog?.close());
+serviceExecutionDialog?.addEventListener("close", resetServiceExecutionDialog);
+serviceExecutionForm?.addEventListener("input", (event) => {
+  event.target.removeAttribute("aria-invalid");
+  if (serviceExecutionMessage) serviceExecutionMessage.textContent = "";
+});
 processStepForm?.addEventListener("submit", saveProcessStep);
 cancelProcessStep?.addEventListener("click", () => processStepDialog?.close());
 processStepDialog?.addEventListener("close", resetProcessStepDialog);
@@ -1991,7 +2185,13 @@ function fillForm(processo) {
     processForm.elements.dataProcesso.value = normalizeDateInput(processo.dataProcesso);
   }
   if (processCreatorName) processCreatorName.value = processo.criadoPor || processo.criadoPorEmail || "";
+  if (processAssociationMode) {
+    processAssociationMode.value = processo.numeroProcesso ? "new" : "none";
+    processAssociationMode.disabled = true;
+  }
+  updateProcessAssociationFields({ editing: true });
   configureCommitmentFields(processo.numeroEmpenho || "");
+  updateProcessKindFields();
   if (processForm.elements.dataEnvioFornecedor && !processForm.elements.dataEnvioFornecedor.value) {
     processForm.elements.dataEnvioFornecedor.value = processo.dataEnvioEmpenho || "";
   }
@@ -2006,6 +2206,15 @@ function clearForm({ preserveIdentity = false } = {}) {
   processForm.elements.id.value = id;
   processForm.elements.versao.value = versao;
   configureCommitmentFields("");
+  if (processObjectType) processObjectType.value = "material";
+  if (serviceTrackingMode) serviceTrackingMode.value = "continuado";
+  if (processAssociationMode) {
+    processAssociationMode.disabled = Boolean(id);
+    processAssociationMode.value = "new";
+  }
+  populateExistingProcessOptions();
+  updateProcessAssociationFields({ editing: Boolean(id) });
+  updateProcessKindFields();
   formMessage.textContent = "";
   renderMaterialRows();
   if (id) formMessage.textContent = "Campos limpos. O salvamento continuara alterando o processo selecionado.";
@@ -2016,6 +2225,59 @@ function openProcessDialog(processo = null) {
   processDialogTitle.textContent = processo ? "Editar processo" : "Novo processo";
   if (processo) fillForm(processo);
   processDialog.showModal();
+}
+
+function populateExistingProcessOptions(selectedValue = "") {
+  if (!existingProcessSelect) return;
+  const grouped = new Map();
+  state.allProcesses
+    .filter((process) => !process.inativo && String(process.numeroProcesso || "").trim())
+    .forEach((process) => {
+      const number = normalizeProcessNumberInput(process.numeroProcesso);
+      const key = normalizeText(number).replace(/[^a-z0-9]/g, "");
+      const current = grouped.get(key) || { number, commitments: 0 };
+      current.commitments += 1;
+      grouped.set(key, current);
+    });
+  const options = [...grouped.values()].sort((a, b) => a.number.localeCompare(b.number, "pt-BR"));
+  existingProcessSelect.innerHTML = '<option value="">Selecione um processo</option>'
+    + options.map(({ number, commitments }) => (
+      `<option value="${escapeAttribute(number)}">${escapeHtml(number)} · ${commitments} ${commitments === 1 ? "empenho" : "empenhos"}</option>`
+    )).join("");
+  if (selectedValue && options.some((option) => option.number === selectedValue)) existingProcessSelect.value = selectedValue;
+}
+
+function updateProcessAssociationFields(options = {}) {
+  const editing = options.editing ?? Boolean(processForm.elements.id.value);
+  const mode = editing ? (processNumber?.value ? "new" : "none") : (processAssociationMode?.value || "new");
+  const selectingExisting = !editing && mode === "existing";
+  const withoutProcess = !editing && mode === "none";
+  existingProcessGroup?.classList.toggle("hidden", !selectingExisting);
+  processNumberGroup?.classList.toggle("hidden", selectingExisting || withoutProcess);
+  if (existingProcessSelect) existingProcessSelect.required = selectingExisting;
+  if (processNumber) {
+    processNumber.required = !editing && mode === "new";
+    if (selectingExisting) processNumber.value = existingProcessSelect?.value || "";
+    if (withoutProcess) processNumber.value = "";
+  }
+  if (processAssociationHelp) {
+    processAssociationHelp.textContent = editing
+      ? "A vinculação atual pode ser corrigida diretamente no número do processo."
+      : selectingExisting
+        ? "Selecione o processo já cadastrado; uma nova nota de empenho será adicionada a ele."
+        : withoutProcess
+          ? "O empenho será cadastrado explicitamente sem vínculo com processo."
+          : "Informe o processo. Depois, outras notas de empenho poderão ser vinculadas à mesma numeração.";
+  }
+}
+
+function normalizeProcessNumberInput(value = "") {
+  const text = String(value || "").trim().toUpperCase().replace(/\s+/g, " ");
+  const digits = text.replace(/\D/g, "");
+  if (digits.length === 17) {
+    return `${digits.slice(0, 5)}.${digits.slice(5, 11)}/${digits.slice(11, 15)}-${digits.slice(15)}`;
+  }
+  return text;
 }
 
 async function openProcessDetail(processo, returnSection = "processes", options = {}) {
@@ -2125,6 +2387,7 @@ function renderProcessDetail() {
   detailProcessNumber.textContent = processo.numeroProcesso || "Processo sem numero";
   detailStatusBadges.innerHTML = statusBadges(processo);
   detailSubtitle.textContent = `${processo.fornecedor || "Fornecedor nao informado"} · Empenho ${processo.numeroEmpenho || "nao informado"}`;
+  if (detailTabDeliveries) detailTabDeliveries.textContent = processUsesDeliveryInUi(processo) ? "Entregas" : "Execução";
   renderDetailPanel();
 }
 
@@ -2156,6 +2419,8 @@ function renderGeneralModule(processo) {
         ${detailField("CNPJ", processo.cnpj || fornecedor?.cnpj)}
       </div>
       <div class="general-data-row general-data-process">
+        ${detailField("Tipo", isServiceProcess(processo) ? "Serviço" : "Material")}
+        ${isServiceProcess(processo) ? detailField("Acompanhamento", serviceTrackingLabel(processo.acompanhamentoServico)) : ""}
         ${detailField("Processo", processo.numeroProcesso)}
         ${detailField("Empenho", processo.numeroEmpenho)}
         ${detailField("Requisitante", processo.criadoPor || processo.criadoPorEmail)}
@@ -2164,12 +2429,15 @@ function renderGeneralModule(processo) {
       </div>
       <div class="general-data-row general-data-dates">
         ${detailField("Data de envio para fornecedor", dateCell(deadlineDate(processo)))}
-        ${detailField("Data de entrega", dateCell(processo.dataEntrega))}
+        ${processUsesDeliveryInUi(processo)
+          ? detailField("Data de entrega", dateCell(processo.dataEntrega))
+          : detailField("Execução concluída", `${formatQuantity(serviceProgressInUi(processo))}%`)}
+        ${isServiceProcess(processo) ? detailField("Vigência", servicePeriodLabel(processo)) : ""}
         ${detailField("Data de envio para liquidação", dateCell(processo.dataEnvioLiquidacao))}
         ${detailField("Data da liquidação", dateCell(processo.dataLiquidacao))}
         ${detailField("Data do pagamento", dateCell(processo.dataPagamento))}
       </div>
-      ${detailMaterialsField(processo.materiais)}
+      ${detailMaterialsField(processo.materiais, isServiceProcess(processo))}
       ${processo.status === "Anulado" ? `<div class="general-data-row general-data-note">${detailField("Motivo da anulação", processo.motivoAnulacao)}</div>` : ""}
     </div>
     <div class="detail-actions">
@@ -2292,6 +2560,7 @@ async function saveTimelineDeletion(event) {
 }
 
 function renderDeliveriesModule(processo) {
+  if (!processUsesDeliveryInUi(processo)) return renderServiceExecutionModule(processo);
   const deliveries = Array.isArray(processo.entregas) ? processo.entregas : [];
   return `
     <div class="module-list">
@@ -2317,6 +2586,48 @@ function renderDeliveriesModule(processo) {
       `).join("")}
     </div>
   `;
+}
+
+function renderServiceExecutionModule(processo) {
+  const executions = Array.isArray(processo.execucoesServico) ? processo.execucoesServico : [];
+  const progress = serviceProgressInUi(processo);
+  const executedValue = executions.reduce((total, item) => total + Number(item.valorExecutado || 0), 0);
+  return `
+    <div class="module-list service-execution-module">
+      <article class="service-progress-card">
+        <div>
+          <span>Execução do serviço</span>
+          <strong>${escapeHtml(formatQuantity(progress))}% concluído</strong>
+          <small>${escapeHtml(serviceTrackingLabel(processo.acompanhamentoServico))} · ${escapeHtml(servicePeriodLabel(processo))}</small>
+        </div>
+        <div class="service-progress-track" role="progressbar" aria-label="Execução concluída" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${progress}">
+          <span style="width:${progress}%"></span>
+        </div>
+        ${executedValue > 0 ? `<small>Valor executado informado: ${escapeHtml(money(executedValue))} · saldo: ${escapeHtml(money(Math.max(0, Number(processo.valorTotal || 0) - executedValue)))}</small>` : ""}
+        ${canRegisterServiceExecutionInUi(processo) ? '<button type="button" class="secondary" data-register-service-execution="true">Registrar execução</button>' : ""}
+      </article>
+      ${executions.length ? executions.slice().reverse().map((execution) => `
+        <article class="module-row service-execution-history-item">
+          <div>
+            <strong>${escapeHtml(execution.competencia || String(execution.data || "").slice(0, 7))} · +${escapeHtml(formatQuantity(execution.percentualExecutado))}%</strong>
+            <span>Data: ${dateCell(execution.data)} · Total após registro: ${escapeHtml(formatQuantity(progressAtExecution(executions, execution.id)))}%</span>
+            ${Number(execution.valorExecutado || 0) > 0 ? `<span>Valor executado: ${escapeHtml(money(execution.valorExecutado))}</span>` : ""}
+            ${execution.descricao ? `<span>${escapeHtml(execution.descricao)}</span>` : ""}
+            <span>Registrado por: ${escapeHtml(execution.registradoPor || execution.registradoPorEmail || "Não informado")}</span>
+          </div>
+        </article>
+      `).join("") : '<p class="empty-state">Nenhuma execução registrada. Use “Registrar execução” para iniciar o acompanhamento.</p>'}
+    </div>
+  `;
+}
+
+function progressAtExecution(executions = [], executionId = "") {
+  let total = 0;
+  for (const execution of executions) {
+    total += Number(execution.percentualExecutado || 0);
+    if (execution.id === executionId) break;
+  }
+  return Math.min(100, total);
 }
 
 function renderObservationsModule(processo) {
@@ -2388,7 +2699,7 @@ function detailField(label, value) {
   `;
 }
 
-function detailMaterialsField(materiais = []) {
+function detailMaterialsField(materiais = [], service = false) {
   const rows = materiais.filter((material) => material.descricao).map((material) => {
     const quantity = Number(material.quantidade || 0);
     const unitValue = Number(material.valorUnitario || 0);
@@ -2404,7 +2715,7 @@ function detailMaterialsField(materiais = []) {
   return `
     <div class="detail-materials-field">
       <table class="detail-material-table">
-        <caption>Materiais</caption>
+        <caption>${service ? "Serviços contratados" : "Materiais"}</caption>
         <thead>
           <tr>
             <th scope="col">Material</th>
@@ -2413,10 +2724,24 @@ function detailMaterialsField(materiais = []) {
             <th scope="col" class="detail-material-number">Valor total</th>
           </tr>
         </thead>
-        <tbody>${rows || '<tr><td colspan="4">Nenhum material informado.</td></tr>'}</tbody>
+        <tbody>${rows || `<tr><td colspan="4">Nenhum ${service ? "serviço" : "material"} informado.</td></tr>`}</tbody>
       </table>
     </div>
   `;
+}
+
+function serviceTrackingLabel(value = "") {
+  return ({
+    continuado: "Contínuo / mensal",
+    sob_demanda: "Sob demanda",
+    entrega: "Com entrega física"
+  })[value] || "Contínuo / mensal";
+}
+
+function servicePeriodLabel(processo = {}) {
+  const start = processo.dataInicioServico ? formatDate(processo.dataInicioServico) : "início não informado";
+  const end = processo.dataFimServico ? formatDate(processo.dataFimServico) : "sem término informado";
+  return `${start} a ${end}`;
 }
 
 function supplierFor(processo) {
@@ -2695,6 +3020,13 @@ function openProcessStepDialog(step, source = "detail") {
   processStepDialogDescription.textContent = step.title;
   processStepDateGroup?.classList.toggle("hidden", !step.field);
   if (processStepDateLabel) processStepDateLabel.textContent = step.dateLabel || "Data";
+  const criticalLiquidation = step.status === "Enviado para liquidacao";
+  processStepCriticalConfirmation?.classList.toggle("hidden", !criticalLiquidation);
+  const criticalConfirmationInput = processStepForm.elements.confirmarEtapaCritica;
+  if (criticalConfirmationInput) {
+    criticalConfirmationInput.required = criticalLiquidation;
+    criticalConfirmationInput.checked = false;
+  }
 
   const dateInput = processStepForm.elements.data;
   if (dateInput) {
@@ -2729,6 +3061,11 @@ async function saveProcessStep(event) {
     if (processStepMessage) processStepMessage.textContent = "Informe uma data valida para salvar.";
     dateInput?.setAttribute("aria-invalid", "true");
     dateInput?.focus();
+    return;
+  }
+  if (step.status === "Enviado para liquidacao" && !processStepForm.elements.confirmarEtapaCritica?.checked) {
+    if (processStepMessage) processStepMessage.textContent = "Confirme a conferência da documentação antes de enviar o empenho para liquidação.";
+    processStepForm.elements.confirmarEtapaCritica?.focus();
     return;
   }
 
@@ -2774,13 +3111,22 @@ function resetProcessStepDialog() {
   processStepForm?.reset();
   processStepForm?.querySelectorAll("[aria-invalid]").forEach((input) => input.removeAttribute("aria-invalid"));
   processStepDateGroup?.classList.remove("hidden");
+  processStepCriticalConfirmation?.classList.add("hidden");
+  if (processStepForm?.elements.confirmarEtapaCritica) processStepForm.elements.confirmarEtapaCritica.required = false;
   if (processStepMessage) processStepMessage.textContent = "";
 }
 
 function previousStatusesInUi(processo) {
-  const workflow = (state.meta.status || []).filter((status) => status !== "Anulado");
+  const workflow = processUsesDeliveryInUi(processo)
+    ? ["Enviado para SALC", "Empenho enviado ao fornecedor", "Entrega parcial", "Entregue", "Enviado para liquidacao", "Liquidado", "Pago"]
+    : ["Enviado para SALC", "Empenho enviado ao fornecedor", "Em execução", "Serviço concluído", "Enviado para liquidacao", "Liquidado", "Pago"];
   const currentIndex = workflow.indexOf(processo?.status);
-  return currentIndex > 0 ? workflow.slice(0, currentIndex) : [];
+  const previous = currentIndex > 0 ? workflow.slice(0, currentIndex) : [];
+  if (processUsesDeliveryInUi(processo)) return previous;
+  const progress = serviceProgressInUi(processo);
+  if (progress >= 100) return previous.filter((status) => workflow.indexOf(status) >= workflow.indexOf("Serviço concluído"));
+  if (progress > 0) return previous.filter((status) => workflow.indexOf(status) >= workflow.indexOf("Em execução"));
+  return previous;
 }
 
 function canRollbackStatusInUi(processo) {
@@ -2828,6 +3174,97 @@ async function saveStatusRollback(event) {
 
 function registerPartialDelivery() {
   openDeliveryDialog(state.selectedProcess?.dataEntrega || "", false);
+}
+
+function openServiceExecutionDialog(source = "detail") {
+  const processo = state.selectedProcess;
+  if (!processo || !serviceExecutionDialog || !serviceExecutionForm || !canRegisterServiceExecutionInUi(processo)) return;
+  resetServiceExecutionDialog();
+  const progress = serviceProgressInUi(processo);
+  state.serviceExecutionDraft = { processId: processo.id, source };
+  serviceExecutionSummary.textContent = `${formatQuantity(progress)}% concluído · saldo disponível: ${formatQuantity(100 - progress)}%.`;
+  const today = new Date();
+  const localDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+  serviceExecutionForm.elements.data.value = displayDate(localDate);
+  serviceExecutionForm.elements.competencia.value = localDate.slice(0, 7);
+  serviceExecutionForm.elements.percentualExecutado.max = String(100 - progress);
+  serviceExecutionDialog.showModal();
+  window.requestAnimationFrame(() => serviceExecutionForm.elements.percentualExecutado.focus());
+}
+
+async function saveServiceExecution(event) {
+  event.preventDefault();
+  const processo = state.selectedProcess;
+  const draft = state.serviceExecutionDraft;
+  if (!processo || !draft || processo.id !== draft.processId) {
+    serviceExecutionMessage.textContent = "O processo selecionado mudou. Feche esta janela e tente novamente.";
+    return;
+  }
+  const data = Object.fromEntries(new FormData(event.currentTarget));
+  const executionDate = normalizeDateInput(data.data);
+  const progress = Number(data.percentualExecutado);
+  const remaining = 100 - serviceProgressInUi(processo);
+  const executedValue = String(data.valorExecutado || "").trim()
+    ? parseCurrencyInput(data.valorExecutado)
+    : 0;
+  if (!executionDate) {
+    serviceExecutionMessage.textContent = "Informe uma data válida no formato DD-MM-AAAA.";
+    serviceExecutionForm.elements.data.setAttribute("aria-invalid", "true");
+    serviceExecutionForm.elements.data.focus();
+    return;
+  }
+  if (!/^\d{4}-\d{2}$/.test(String(data.competencia || ""))) {
+    serviceExecutionMessage.textContent = "Informe a competência do serviço.";
+    serviceExecutionForm.elements.competencia.setAttribute("aria-invalid", "true");
+    serviceExecutionForm.elements.competencia.focus();
+    return;
+  }
+  if (!Number.isFinite(progress) || progress <= 0 || progress > remaining) {
+    serviceExecutionMessage.textContent = `O avanço deve ser maior que zero e de no máximo ${formatQuantity(remaining)}%.`;
+    serviceExecutionForm.elements.percentualExecutado.setAttribute("aria-invalid", "true");
+    serviceExecutionForm.elements.percentualExecutado.focus();
+    return;
+  }
+  if (!Number.isFinite(executedValue) || executedValue < 0) {
+    serviceExecutionMessage.textContent = "Informe o valor executado no formato 1.234,56.";
+    serviceExecutionForm.elements.valorExecutado.setAttribute("aria-invalid", "true");
+    serviceExecutionForm.elements.valorExecutado.focus();
+    return;
+  }
+  setFormBusy(serviceExecutionForm, true, "Salvando...");
+  try {
+    const updated = await api(`/api/processes/${processo.id}/service-executions`, {
+      method: "POST",
+      body: JSON.stringify({
+        data: executionDate,
+        competencia: data.competencia,
+        percentualExecutado: progress,
+        valorExecutado: executedValue,
+        descricao: String(data.descricao || "").trim()
+      })
+    });
+    state.selectedProcess = updated;
+    serviceExecutionDialog.close();
+    renderProcessDetail();
+    await refreshAfterMutation("A execução do serviço foi registrada");
+  } catch (error) {
+    serviceExecutionMessage.textContent = error.message || "Não foi possível registrar a execução do serviço.";
+  } finally {
+    setFormBusy(serviceExecutionForm, false);
+  }
+}
+
+function resetServiceExecutionDialog() {
+  const boardProcessId = state.serviceExecutionDraft?.source === "board" ? state.serviceExecutionDraft.processId : "";
+  state.serviceExecutionDraft = null;
+  if (boardProcessId) {
+    state.boardUpdatingProcesses.delete(boardProcessId);
+    if (processDetailView.classList.contains("hidden")) state.selectedProcess = null;
+    if (state.activeSection === "board") renderKanbanBoard();
+  }
+  serviceExecutionForm?.reset();
+  serviceExecutionForm?.querySelectorAll("[aria-invalid]").forEach((input) => input.removeAttribute("aria-invalid"));
+  if (serviceExecutionMessage) serviceExecutionMessage.textContent = "";
 }
 
 function openDeliveryDialog(date = "", complete = false, source = "detail") {
@@ -2997,6 +3434,12 @@ function processUpdatePayloadFor(processo, overrides = {}) {
     numeroProcesso: processo.numeroProcesso || "",
     numeroEmpenho: processo.numeroEmpenho || "",
     fornecedor: processo.fornecedor || "",
+    criadoPor: processo.criadoPor || processo.criadoPorEmail || "",
+    cnpj: processo.cnpj || "",
+    tipoObjeto: isServiceProcess(processo) ? "servico" : "material",
+    acompanhamentoServico: isServiceProcess(processo) ? (processo.acompanhamentoServico || "continuado") : "entrega",
+    dataInicioServico: processo.dataInicioServico || "",
+    dataFimServico: processo.dataFimServico || "",
     dataProcesso: processo.dataProcesso || "",
     dataEnvioSalc: processo.dataEnvioSalc || "",
     materiais: processo.materiais || [],
@@ -3229,7 +3672,7 @@ async function openSection(section, { historyMode = "push" } = {}) {
   } catch (error) {
     if (error.name === "AbortError") return;
     if (section === "processes") {
-      table.innerHTML = `<tr class="empty-table-row"><td colspan="10" role="alert">${escapeHtml(error.message || "Nao foi possivel carregar os processos.")}</td></tr>`;
+      table.innerHTML = `<tr class="empty-table-row"><td colspan="12" role="alert">${escapeHtml(error.message || "Nao foi possivel carregar os processos.")}</td></tr>`;
       return;
     }
     if (section === "board") {
@@ -3495,6 +3938,14 @@ function newDataButton(processo) {
 
 function nextProcessStep(processo) {
   if (!processo || ["Pago", "Anulado"].includes(processo.status)) return null;
+  if (!processUsesDeliveryInUi(processo) && ["Empenho enviado ao fornecedor", "Em execução"].includes(processo.status)) {
+    return {
+      button: "Registrar execução",
+      title: "Informe a competência e o avanço executado.",
+      status: processo.status === "Em execução" ? "Serviço concluído" : "Em execução",
+      serviceExecution: true
+    };
+  }
   const steps = {
     Criado: {
       button: "Registrar envio para SALC",
@@ -3529,6 +3980,13 @@ function nextProcessStep(processo) {
       field: "dataEntrega"
     },
     "Entregue": {
+      button: "Confirmar envio para liquidação",
+      title: "Informe a data do envio para liquidação.",
+      status: "Enviado para liquidacao",
+      field: "dataEnvioLiquidacao",
+      dateLabel: "Data do envio para liquidação"
+    },
+    "Serviço concluído": {
       button: "Confirmar envio para liquidação",
       title: "Informe a data do envio para liquidação.",
       status: "Enviado para liquidacao",
@@ -3623,16 +4081,24 @@ function canManageObservation(observation, processo = state.selectedProcess) {
 }
 
 function canRegisterDeliveryInUi(processo) {
-  return canEditGeneralInUi(processo)
+  return processUsesDeliveryInUi(processo) && canEditGeneralInUi(processo)
     && ["Empenho enviado ao fornecedor", "Aguardando entrega", "Entrega parcial"].includes(processo.status)
     && Boolean(deadlineDate(processo));
+}
+
+function canRegisterServiceExecutionInUi(processo) {
+  return !processUsesDeliveryInUi(processo)
+    && canEditGeneralInUi(processo)
+    && ["Empenho enviado ao fornecedor", "Em execução"].includes(processo.status)
+    && Boolean(deadlineDate(processo))
+    && serviceProgressInUi(processo) < 100;
 }
 
 function canAttachDocumentInUi(processo, documentKey) {
   if (!processo || processo.inativo || ["Anulado", "Pago"].includes(processo.status) || !documentKey || currentUser.role === "auditor") return false;
   if (processo.status === "Liquidado" && !isCurrentUserAdmin()) return false;
   if (documentKey === "notaFiscal") {
-    return ["Entrega parcial", "Entregue", "Aguardando envio para liquidacao", "Enviado para liquidacao", "Liquidado"].includes(processo.status);
+    return ["Entrega parcial", "Entregue", "Em execução", "Serviço concluído", "Aguardando envio para liquidacao", "Enviado para liquidacao", "Liquidado"].includes(processo.status);
   }
   return true;
 }
@@ -4865,21 +5331,167 @@ function renderMaterialRows(materiais = [{ descricao: "", valorUnitario: "", qua
   ensureOneMaterialRow();
 }
 
+function updateProcessKindFields() {
+  const service = processObjectType?.value === "servico";
+  const deliveryService = service && serviceTrackingMode?.value === "entrega";
+  serviceTrackingGroup?.classList.toggle("hidden", !service);
+  servicePeriodFields?.classList.toggle("hidden", !service);
+  if (serviceTrackingMode) serviceTrackingMode.required = service;
+  if (processItemsTitle) processItemsTitle.textContent = service ? "Serviços contratados" : "Materiais";
+  if (processKindHelp) {
+    processKindHelp.textContent = !service
+      ? "Materiais são acompanhados por quantidades e entregas."
+      : deliveryService
+        ? "Este serviço gera um produto físico e será acompanhado por entregas."
+        : serviceTrackingMode?.value === "sob_demanda"
+          ? "Registre cada demanda atendida e o avanço acumulado do serviço. Não haverá data de entrega."
+          : "Registre mensalmente a execução e o avanço acumulado do serviço. Não haverá data de entrega.";
+  }
+}
+
 function addMaterialRow(material = { descricao: "", valorUnitario: "", quantidade: "" }) {
   const row = document.createElement("div");
   row.className = "material-row";
   row.dataset.materialId = material.id || "";
   row.innerHTML = `
-    <label>Descricao <input data-material-field="descricao" maxlength="100" value="${escapeAttribute(material.descricao || "")}"></label>
+    <label>Descricao <input data-material-field="descricao" maxlength="100" value="${escapeAttribute(material.descricao || "")}"><small class="material-description-counter" data-description-counter aria-live="polite">0/100</small></label>
     <label>Quantidade <input data-material-field="quantidade" type="number" min="0" step="any" value="${Number(material.quantidade || 0) || ""}"></label>
-    <label>Valor unitario <input data-material-field="valorUnitario" type="text" inputmode="decimal" placeholder="0,00" value="${material.valorUnitario ? escapeAttribute(formatCurrencyInput(Number(material.valorUnitario))) : ""}"></label>
+    <label>Valor unitario <input data-material-field="valorUnitario" type="text" inputmode="decimal" placeholder="0,0000" value="${material.valorUnitario ? escapeAttribute(formatUnitPriceInput(Number(material.valorUnitario))) : ""}"></label>
     <div class="material-line-total"><span>Valor total</span><output data-material-total>R$ 0,00</output></div>
-    <button type="button" class="add-material-button" data-add-material="true" aria-label="Adicionar material" title="Adicionar material">+</button>
     <button type="button" class="secondary remove-material" data-remove-material="true">Remover</button>
   `;
   materialsList.append(row);
+  updateMaterialDescriptionCounter(row.querySelector('[data-material-field="descricao"]'));
   updateMaterialTotals();
   return row;
+}
+
+function addMaterialRows(count = 1, options = {}) {
+  const available = Math.max(0, MAX_MATERIAL_ROWS - materialsList.children.length);
+  const total = Math.min(available, Math.max(0, Number(count) || 0));
+  let firstRow = null;
+  for (let index = 0; index < total; index += 1) {
+    const row = addMaterialRow();
+    if (!firstRow) firstRow = row;
+  }
+  if (total < Number(count || 0) && materialsImportHelp) {
+    materialsImportHelp.textContent = `Limite de ${MAX_MATERIAL_ROWS} itens por empenho atingido.`;
+  }
+  if (options.focus) firstRow?.querySelector('[data-material-field="descricao"]')?.focus();
+  return firstRow;
+}
+
+function copyFirstMaterialDescription() {
+  const descriptions = [...materialsList.querySelectorAll('[data-material-field="descricao"]')];
+  const source = descriptions.find((input) => input.value.trim())?.value.trim() || "";
+  if (!source) {
+    if (materialsImportHelp) materialsImportHelp.textContent = "Preencha a primeira descrição antes de copiá-la.";
+    descriptions[0]?.focus();
+    return;
+  }
+  descriptions.forEach((input) => {
+    input.value = source;
+    updateMaterialDescriptionCounter(input);
+  });
+  if (materialsImportHelp) materialsImportHelp.textContent = `Descrição copiada para ${descriptions.length} linhas.`;
+}
+
+function updateMaterialDescriptionCounter(input) {
+  if (!input) return;
+  const counter = input.closest("label")?.querySelector("[data-description-counter]");
+  if (!counter) return;
+  const length = [...input.value].length;
+  counter.textContent = `${length}/100`;
+  counter.classList.toggle("warning", length >= 90);
+}
+
+async function importMaterialsSpreadsheet(event) {
+  const input = event.currentTarget;
+  const file = input.files?.[0];
+  if (!file) return;
+  try {
+    const imported = parseMaterialsSpreadsheet(await file.text());
+    if (!imported.length) throw new Error("A planilha não contém itens válidos.");
+    if (materialsList.children.length + imported.length > MAX_MATERIAL_ROWS) {
+      throw new Error(`A importação ultrapassa o limite de ${MAX_MATERIAL_ROWS} itens por empenho.`);
+    }
+    imported.forEach((material) => addMaterialRow(material));
+    if (materialsImportHelp) materialsImportHelp.textContent = `${imported.length} ${imported.length === 1 ? "item importado" : "itens importados"} de ${file.name}.`;
+  } catch (error) {
+    if (materialsImportHelp) materialsImportHelp.textContent = error.message || "Não foi possível importar a planilha.";
+  } finally {
+    input.value = "";
+  }
+}
+
+function parseMaterialsSpreadsheet(text = "") {
+  const firstLine = String(text).split(/\r?\n/).find((line) => line.trim()) || "";
+  const delimiter = firstLine.includes("\t") ? "\t" : (firstLine.includes(";") ? ";" : ",");
+  const rows = parseDelimitedRows(text, delimiter).filter((row) => row.some((cell) => cell.trim()));
+  if (!rows.length) return [];
+  const normalizedHeader = rows[0].map((cell) => normalizeText(cell).replace(/[^a-z0-9]/g, ""));
+  const descriptionIndex = normalizedHeader.findIndex((cell) => ["descricao", "material", "item", "objeto", "servico"].includes(cell));
+  const quantityIndex = normalizedHeader.findIndex((cell) => ["quantidade", "qtd", "qtde"].includes(cell));
+  const unitValueIndex = normalizedHeader.findIndex((cell) => ["valorunitario", "valorun", "unitario", "preco"].includes(cell));
+  const hasHeader = descriptionIndex >= 0;
+  const indexes = {
+    description: hasHeader ? descriptionIndex : 0,
+    quantity: hasHeader && quantityIndex >= 0 ? quantityIndex : 1,
+    unitValue: hasHeader && unitValueIndex >= 0 ? unitValueIndex : 2
+  };
+  return rows.slice(hasHeader ? 1 : 0).map((row, index) => {
+    const descricao = String(row[indexes.description] || "").trim();
+    const quantidade = parseSpreadsheetNumber(row[indexes.quantity]);
+    const valorUnitario = parseCurrencyInput(row[indexes.unitValue]);
+    if (!descricao) return null;
+    if (descricao.length > 100) throw new Error(`A descrição da linha ${index + 1 + (hasHeader ? 1 : 0)} ultrapassa 100 caracteres.`);
+    if (!Number.isFinite(quantidade) || quantidade < 0 || !Number.isFinite(valorUnitario)) {
+      throw new Error(`Quantidade ou valor unitário inválido na linha ${index + 1 + (hasHeader ? 1 : 0)}.`);
+    }
+    return { descricao, quantidade, valorUnitario };
+  }).filter(Boolean);
+}
+
+function parseDelimitedRows(text, delimiter) {
+  const rows = [];
+  let row = [];
+  let cell = "";
+  let quoted = false;
+  const source = String(text || "").replace(/^\uFEFF/, "");
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+    if (character === '"') {
+      if (quoted && source[index + 1] === '"') {
+        cell += '"';
+        index += 1;
+      } else {
+        quoted = !quoted;
+      }
+    } else if (character === delimiter && !quoted) {
+      row.push(cell);
+      cell = "";
+    } else if ((character === "\n" || character === "\r") && !quoted) {
+      if (character === "\r" && source[index + 1] === "\n") index += 1;
+      row.push(cell);
+      rows.push(row);
+      row = [];
+      cell = "";
+    } else {
+      cell += character;
+    }
+  }
+  if (cell || row.length) {
+    row.push(cell);
+    rows.push(row);
+  }
+  return rows;
+}
+
+function parseSpreadsheetNumber(value = "") {
+  const text = String(value || "").trim().replace(/\s/g, "");
+  if (!text) return 0;
+  const normalized = text.includes(",") ? text.replace(/\./g, "").replace(",", ".") : text;
+  return Number(normalized);
 }
 
 function ensureOneMaterialRow() {
@@ -4903,7 +5515,7 @@ function updateMaterialTotals() {
     const quantity = Number(row.querySelector('[data-material-field="quantidade"]')?.value || 0);
     const unitValue = parseCurrencyInput(row.querySelector('[data-material-field="valorUnitario"]')?.value || "");
     const lineCents = Number.isFinite(quantity) && quantity >= 0 && Number.isFinite(unitValue)
-      ? Math.round((quantity * unitValue + Number.EPSILON) * 100)
+      ? Math.round((Math.round(unitValue * 10_000) * quantity) / 100)
       : 0;
     processTotalCents += lineCents;
     const output = row.querySelector("[data-material-total]");
@@ -4969,11 +5581,19 @@ async function api(path, options = {}) {
   const headers = new Headers(suppliedHeaders);
   if (fetchOptions.body && !headers.has("content-type")) headers.set("content-type", "application/json");
   if (legacyToken) headers.set("authorization", `Bearer ${legacyToken}`);
-  const response = await fetch(path, {
-    ...fetchOptions,
-    credentials: "same-origin",
-    headers
-  });
+  let response;
+  try {
+    response = await fetch(path, {
+      ...fetchOptions,
+      credentials: "same-origin",
+      headers
+    });
+  } catch (error) {
+    if (error.name === "AbortError") throw error;
+    const networkError = new Error("Nao foi possivel conectar ao servidor. Verifique a rede e tente novamente.");
+    networkError.cause = error;
+    throw networkError;
+  }
   const text = await response.text();
   if (requestSessionGeneration !== sessionGeneration) {
     const error = new Error("A requisicao pertence a uma sessao encerrada.");
@@ -4985,11 +5605,13 @@ async function api(path, options = {}) {
     try {
       data = JSON.parse(text);
     } catch {
-      data = { error: response.ok ? "Resposta invalida do servidor." : "Falha na operacao." };
+      data = { error: response.ok
+        ? "O servidor respondeu em um formato invalido. Atualize a pagina e tente novamente."
+        : `O servidor nao explicou a falha (${response.status}). Tente novamente.` };
     }
   }
   if (!response.ok) {
-    const error = new Error(data.error || "Falha na operacao");
+    const error = new Error(data.error || `A operacao falhou (${response.status}).`);
     error.status = response.status;
     if (response.status === 401 && !skipAuthRedirect) handleUnauthorized();
     throw error;
@@ -5036,11 +5658,31 @@ function statusBadges(processo) {
 }
 
 function isOverdue(processo) {
-  return processo.diasDecorridos > 30 && !hasReachedDeliveryInUi(processo) && processo.status !== "Anulado";
+  return processUsesDeliveryInUi(processo)
+    && processo.diasDecorridos > 30 && !hasReachedDeliveryInUi(processo) && processo.status !== "Anulado";
 }
 
 function hasReachedDeliveryInUi(processo = {}) {
+  if (!processUsesDeliveryInUi(processo)) {
+    return ["Serviço concluído", "Enviado para liquidacao", "Liquidado", "Pago"].includes(processo.status);
+  }
   return ["Entregue", "Aguardando envio para liquidacao", "Enviado para liquidacao", "Liquidado", "Pago"].includes(processo.status);
+}
+
+function isServiceProcess(processo = {}) {
+  return processo.tipoObjeto === "servico";
+}
+
+function processUsesDeliveryInUi(processo = {}) {
+  return !isServiceProcess(processo) || processo.acompanhamentoServico === "entrega";
+}
+
+function serviceProgressInUi(processo = {}) {
+  if (Number.isFinite(Number(processo.percentualConcluido))) {
+    return Math.min(100, Math.max(0, Number(processo.percentualConcluido)));
+  }
+  return Math.min(100, Math.max(0, (processo.execucoesServico || [])
+    .reduce((total, entry) => total + Number(entry?.percentualExecutado || 0), 0)));
 }
 
 function overdueDays(processo) {
@@ -5104,6 +5746,7 @@ function passwordPolicyMessage() {
 
 function daysCell(processo) {
   if (!deadlineDate(processo)) return "-";
+  if (!processUsesDeliveryInUi(processo)) return "-";
   if (hasReachedDeliveryInUi(processo) || processo.status === "Anulado") return "-";
   return `<span class="days ${processo.faixaPrazo}">${processo.diasDecorridos}</span>`;
 }
@@ -5456,6 +6099,10 @@ function timelineAuditBusinessDate(processo, entry = {}) {
     const deliveryId = entry.alteracoes?.entregaId?.novo || entry.alteracoes?.entregaId;
     return (processo.entregas || []).find((entrega) => entrega.id === deliveryId)?.data || "";
   }
+  if (entry.acao === "Registro de execucao de servico") {
+    const executionId = entry.alteracoes?.execucaoServicoId?.novo || entry.alteracoes?.execucaoServicoId;
+    return (processo.execucoesServico || []).find((execution) => execution.id === executionId)?.data || "";
+  }
 
   const status = entry.alteracoes?.status?.novo;
   const dateFieldsByStatus = {
@@ -5478,6 +6125,7 @@ function auditLabel(entry) {
   if (entry.acao === "Criacao de processo") return "Processo criado";
   if (entry.acao === "Anulacao de empenho") return "Empenho anulado";
   if (entry.acao === "Carga inicial") return "Registro importado";
+  if (entry.acao === "Registro de execucao de servico") return "Execução do serviço registrada";
   if (entry.acao === "Anexo de documento" || entry.acao === "Remocao de documento") {
     const documentKey = auditDocumentKey(entry);
     const documentLabel = timelineDocumentLabel(documentKey);
@@ -5601,6 +6249,22 @@ function setFormBusy(form, busy, busyLabel = "Salvando...") {
   const submit = form.querySelector('button[type="submit"], button:not([type])');
   setButtonBusy(submit, busy, busyLabel);
   form.setAttribute("aria-busy", String(busy));
+}
+
+function setProcessSaveBusy(busy) {
+  processForm.dataset.saving = String(busy);
+  setFormBusy(processForm, busy, "Salvando...");
+  processSaveProgress?.classList.toggle("hidden", !busy);
+  processSaveProgress?.setAttribute("aria-hidden", String(!busy));
+  processForm.querySelectorAll("button:not([type='submit']), select, input[type='file']").forEach((control) => {
+    if (busy) {
+      control.dataset.disabledBeforeSave = String(control.disabled);
+      control.disabled = true;
+    } else {
+      control.disabled = control.dataset.disabledBeforeSave === "true";
+      delete control.dataset.disabledBeforeSave;
+    }
+  });
 }
 
 function setControlBusy(control, busy) {

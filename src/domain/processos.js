@@ -2,6 +2,8 @@ export const STATUS = [
   "Criado",
   "Enviado para SALC",
   "Empenho enviado ao fornecedor",
+  "Em execução",
+  "Serviço concluído",
   "Aguardando entrega",
   "Entrega parcial",
   "Entregue",
@@ -12,8 +14,13 @@ export const STATUS = [
   "Anulado"
 ];
 
+export const PROCESS_OBJECT_TYPES = ["material", "servico"];
+export const SERVICE_TRACKING_MODES = ["continuado", "sob_demanda", "entrega"];
+
 export const PROCESS_WORKFLOW = STATUS.filter((status) => ![
   "Criado",
+  "Em execução",
+  "Serviço concluído",
   "Aguardando entrega",
   "Aguardando envio para liquidacao",
   "Anulado"
@@ -24,6 +31,21 @@ export const PROCESS_TRANSITIONS = Object.fromEntries([
   ["Criado", "Enviado para SALC"],
   ["Aguardando entrega", "Entrega parcial"],
   ["Aguardando envio para liquidacao", "Enviado para liquidacao"]
+]);
+
+export const SERVICE_WORKFLOW = [
+  "Enviado para SALC",
+  "Empenho enviado ao fornecedor",
+  "Em execução",
+  "Serviço concluído",
+  "Enviado para liquidacao",
+  "Liquidado",
+  "Pago"
+];
+
+export const SERVICE_TRANSITIONS = Object.fromEntries([
+  ...SERVICE_WORKFLOW.map((status, index) => [status, SERVICE_WORKFLOW[index + 1] || ""]),
+  ["Criado", "Enviado para SALC"]
 ]);
 
 export const DEFAULT_BUSINESS_TIME_ZONE = "America/Sao_Paulo";
@@ -80,32 +102,57 @@ export function canCancelProcess(processo, user = {}) {
 }
 
 export function hasProcessReachedDelivery(processo = {}) {
+  if (!processUsesDelivery(processo)) {
+    return ["Serviço concluído", "Enviado para liquidacao", "Liquidado", "Pago"].includes(String(processo.status || ""));
+  }
   return DELIVERY_REACHED_STATUSES.has(String(processo.status || ""));
 }
 
 export function isProcessAwaitingDelivery(processo = {}) {
+  if (!processUsesDelivery(processo)) return false;
   return AWAITING_DELIVERY_STATUSES.has(String(processo.status || ""));
 }
 
-export function isValidStatusTransition(currentStatus = "", nextStatus = "") {
+export function processObjectType(processo = {}) {
+  return processo.tipoObjeto === "servico" ? "servico" : "material";
+}
+
+export function processUsesDelivery(processo = {}) {
+  return processObjectType(processo) === "material" || processo.acompanhamentoServico === "entrega";
+}
+
+export function serviceProgressTotal(processo = {}) {
+  return Math.min(100, (Array.isArray(processo.execucoesServico) ? processo.execucoesServico : [])
+    .reduce((total, entry) => total + Number(entry?.percentualExecutado || 0), 0));
+}
+
+export function isValidStatusTransition(currentStatus = "", nextStatus = "", processo = {}) {
   if (currentStatus === nextStatus) return true;
-  if (["Entrega parcial", "Entregue", "Anulado"].includes(nextStatus)) return false;
-  return Boolean(currentStatus) && PROCESS_TRANSITIONS[currentStatus] === nextStatus;
+  if (["Entrega parcial", "Entregue", "Em execução", "Serviço concluído", "Anulado"].includes(nextStatus)) return false;
+  const transitions = processUsesDelivery(processo) ? PROCESS_TRANSITIONS : SERVICE_TRANSITIONS;
+  return Boolean(currentStatus) && transitions[currentStatus] === nextStatus;
 }
 
-export function previousProcessStatuses(currentStatus = "") {
-  const currentIndex = PROCESS_WORKFLOW.indexOf(currentStatus);
-  return currentIndex > 0 ? PROCESS_WORKFLOW.slice(0, currentIndex) : [];
+export function previousProcessStatuses(currentStatus = "", processo = {}) {
+  const workflow = processUsesDelivery(processo) ? PROCESS_WORKFLOW : SERVICE_WORKFLOW;
+  const currentIndex = workflow.indexOf(currentStatus);
+  const previous = currentIndex > 0 ? workflow.slice(0, currentIndex) : [];
+  if (processUsesDelivery(processo)) return previous;
+  const progress = serviceProgressTotal(processo);
+  if (progress >= 100) return previous.filter((status) => SERVICE_WORKFLOW.indexOf(status) >= SERVICE_WORKFLOW.indexOf("Serviço concluído"));
+  if (progress > 0) return previous.filter((status) => SERVICE_WORKFLOW.indexOf(status) >= SERVICE_WORKFLOW.indexOf("Em execução"));
+  return previous;
 }
 
-export function isValidStatusRollback(currentStatus = "", targetStatus = "") {
-  return previousProcessStatuses(currentStatus).includes(targetStatus);
+export function isValidStatusRollback(currentStatus = "", targetStatus = "", processo = {}) {
+  return previousProcessStatuses(currentStatus, processo).includes(targetStatus);
 }
 
 export function rollbackProcessStatus(processo = {}, targetStatus = "") {
-  if (!isValidStatusRollback(processo.status, targetStatus)) return null;
+  if (!isValidStatusRollback(processo.status, targetStatus, processo)) return null;
 
-  const targetIndex = PROCESS_WORKFLOW.indexOf(targetStatus);
+  const workflow = processUsesDelivery(processo) ? PROCESS_WORKFLOW : SERVICE_WORKFLOW;
+  const targetIndex = workflow.indexOf(targetStatus);
   const updated = { ...processo, status: targetStatus };
   const milestones = [
     ["dataEnvioSalc", "Enviado para SALC"],
@@ -117,7 +164,8 @@ export function rollbackProcessStatus(processo = {}, targetStatus = "") {
     ["dataPagamento", "Pago"]
   ];
   for (const [field, milestoneStatus] of milestones) {
-    if (targetIndex < PROCESS_WORKFLOW.indexOf(milestoneStatus)) updated[field] = "";
+    const milestoneIndex = workflow.indexOf(milestoneStatus);
+    if (milestoneIndex >= 0 && targetIndex < milestoneIndex) updated[field] = "";
   }
   return updated;
 }
@@ -234,7 +282,7 @@ function isMostlyText(buffer) {
 export function canAttachDocument(processo = {}, documentKey = "") {
   if (!processo || processo.inativo || ["Anulado", "Pago"].includes(processo.status) || !documentKey) return false;
   if (documentKey === "notaFiscal") {
-    return ["Entrega parcial", "Entregue", "Aguardando envio para liquidacao", "Enviado para liquidacao", "Liquidado"].includes(processo.status);
+    return ["Entrega parcial", "Entregue", "Em execução", "Serviço concluído", "Aguardando envio para liquidacao", "Enviado para liquidacao", "Liquidado"].includes(processo.status);
   }
   return true;
 }
@@ -283,6 +331,9 @@ export function enrichProcess(processo, now = new Date(), timeZone = DEFAULT_BUS
     ...processo,
     dataReferenciaPrazo,
     materiais,
+    tipoObjeto: processObjectType(processo),
+    acompanhamentoServico: processObjectType(processo) === "servico" ? (processo.acompanhamentoServico || "continuado") : "entrega",
+    percentualConcluido: serviceProgressTotal(processo),
     diasDecorridos,
     faixaPrazo: deadlineBand(diasDecorridos),
     valorTotal: calculateMaterialsTotal(materiais)
@@ -312,9 +363,11 @@ export function normalizeMaterials(processo = {}) {
 export function calculateMaterialsTotal(materiais = []) {
   let totalCents = 0;
   for (const material of materiais) {
-    const lineTotal = Number(material.valorUnitario || 0) * Number(material.quantidade || 0);
-    if (!Number.isFinite(lineTotal)) return 0;
-    const lineCents = Math.round((lineTotal + Number.EPSILON) * 100);
+    const unitValue = Number(material.valorUnitario || 0);
+    const quantity = Number(material.quantidade || 0);
+    if (!Number.isFinite(unitValue) || !Number.isFinite(quantity)) return 0;
+    const unitValueTenThousandths = Math.round(unitValue * 10_000);
+    const lineCents = Math.round((unitValueTenThousandths * quantity) / 100);
     if (!Number.isSafeInteger(lineCents) || !Number.isSafeInteger(totalCents + lineCents)) return 0;
     totalCents += lineCents;
   }
@@ -329,7 +382,8 @@ export function summarizeMaterials(materiais = []) {
 }
 
 export function isProcessOverdue(processo = {}) {
-  return processo.diasDecorridos > 30
+  return processUsesDelivery(processo)
+    && processo.diasDecorridos > 30
     && processo.status !== "Anulado"
     && !hasProcessReachedDelivery(processo);
 }
@@ -374,7 +428,7 @@ export function filterProcesses(processos, query = {}) {
 }
 
 export function isProcessPendingLiquidation(processo = {}) {
-  return ["Entregue", "Aguardando envio para liquidacao", "Enviado para liquidacao"].includes(processo.status)
+  return ["Entregue", "Serviço concluído", "Aguardando envio para liquidacao", "Enviado para liquidacao"].includes(processo.status)
     && !processo.dataLiquidacao;
 }
 

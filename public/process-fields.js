@@ -21,22 +21,32 @@ export function isStandardCommitmentNumber(value = "") {
   return COMMITMENT_NUMBER_PATTERN.test(String(value).trim().toUpperCase());
 }
 
-export function parseCurrencyInput(value = "") {
+export function parseCurrencyInput(value = "", maximumFractionDigits = 4) {
   const raw = String(value ?? "").trim().replace(/\s|R\$/gi, "");
   if (!raw) return 0;
   const normalized = raw.includes(",")
     ? raw.replace(/\./g, "").replace(",", ".")
     : (/^\d{1,3}(?:\.\d{3})+$/.test(raw) ? raw.replace(/\./g, "") : raw);
-  if (!/^\d+(?:\.\d{1,2})?$/.test(normalized)) return Number.NaN;
+  const decimalPattern = new RegExp(`^\\d+(?:\\.\\d{1,${maximumFractionDigits}})?$`);
+  if (!decimalPattern.test(normalized)) return Number.NaN;
   const amount = Number(normalized);
   return Number.isFinite(amount) && amount >= 0 ? amount : Number.NaN;
 }
 
 export function formatCurrencyInput(value = "") {
-  const amount = typeof value === "number" ? value : parseCurrencyInput(value);
+  const amount = typeof value === "number" ? value : parseCurrencyInput(value, 2);
   if (!Number.isFinite(amount)) return "";
   return amount.toLocaleString("pt-BR", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2
+  });
+}
+
+export function formatUnitPriceInput(value = "") {
+  const amount = typeof value === "number" ? value : parseCurrencyInput(value, 4);
+  if (!Number.isFinite(amount)) return "";
+  return amount.toLocaleString("pt-BR", {
+    minimumFractionDigits: 4,
+    maximumFractionDigits: 4
   });
 }
