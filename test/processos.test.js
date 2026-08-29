@@ -27,9 +27,12 @@ import {
   PROCESS_WORKFLOW,
   normalizeMaterials,
   processHasRequiredDocuments,
+  processObjectType,
+  processUsesDelivery,
   previousProcessStatuses,
   rollbackProcessStatus,
   summarizeMaterials,
+  serviceProgressTotal,
   validateDocumentUpload,
   validateProcessDocumentUpload
 } from "../src/domain/processos.js";
@@ -37,6 +40,32 @@ import { closePool } from "../src/db/postgres.js";
 import { createSession, resolveSession, revokeSession } from "../src/repositories/sessions.js";
 
 describe("regras de processo", () => {
+  it("distingue materiais, servicos continuados e servicos com entrega", () => {
+    const legacy = { status: "Empenho enviado ao fornecedor" };
+    const continuous = {
+      tipoObjeto: "servico",
+      acompanhamentoServico: "continuado",
+      execucoesServico: [
+        { percentualExecutado: 25 },
+        { percentualExecutado: 35 }
+      ]
+    };
+    const manufactured = { tipoObjeto: "servico", acompanhamentoServico: "entrega" };
+
+    assert.equal(processObjectType(legacy), "material");
+    assert.equal(processUsesDelivery(legacy), true);
+    assert.equal(processUsesDelivery(continuous), false);
+    assert.equal(processUsesDelivery(manufactured), true);
+    assert.equal(serviceProgressTotal(continuous), 60);
+    assert.equal(isValidStatusTransition("Serviço concluído", "Enviado para liquidacao", continuous), true);
+    assert.equal(isValidStatusTransition("Empenho enviado ao fornecedor", "Entrega parcial", continuous), false);
+    assert.deepEqual(previousProcessStatuses("Em execução", continuous), []);
+    assert.deepEqual(previousProcessStatuses("Enviado para liquidacao", {
+      ...continuous,
+      execucoesServico: [{ percentualExecutado: 100 }]
+    }), ["Serviço concluído"]);
+  });
+
   it("considera enviados ainda nao liquidados como pendentes de liquidacao", () => {
     const processos = [
       { id: "entregue", status: "Entregue" },
@@ -281,6 +310,10 @@ describe("regras de processo", () => {
 
   it("calcula totais monetarios sem propagar valores nao finitos", () => {
     assert.equal(calculateMaterialsTotal([{ valorUnitario: 0.1, quantidade: 3 }]), 0.3);
+    assert.equal(calculateMaterialsTotal([
+      { valorUnitario: 0.7326, quantidade: 10 },
+      { valorUnitario: 47.475, quantidade: 2 }
+    ]), 102.28);
     assert.equal(calculateMaterialsTotal([{ valorUnitario: Infinity, quantidade: 2 }]), 0);
   });
 

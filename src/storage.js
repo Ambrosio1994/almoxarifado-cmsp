@@ -21,7 +21,7 @@ import { recordSecurityEvent } from "./repositories/security-audit.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORE_FILE = fileURLToPath(new URL("../data/store.json", `file://${__dirname}/`));
-const EXPECTED_SCHEMA_MIGRATION = "010_auth_session_version";
+const EXPECTED_SCHEMA_MIGRATION = "011_process_multiple_commitments";
 const STORE_FILE = resolveStoreFilePath();
 let writeQueue = Promise.resolve();
 let databaseReadyConfirmed = false;
@@ -189,6 +189,51 @@ export async function writeStore(store, options = {}) {
     () => persistStore(preparedStore, securityEvents)
   );
   return writeQueue;
+}
+
+export async function writeProcessRecords(store, options = {}) {
+  const preparedStore = prepareStoreForPersistence(store);
+  const processIds = new Set((options.processIds || []).map(textId));
+  const auditIds = new Set((options.auditIds || []).map(textId));
+  if (!processIds.size) throw new TypeError("Informe ao menos um processo para persistir.");
+  const processes = preparedStore.processos.filter((record) => processIds.has(record.id));
+  const auditEntries = preparedStore.auditoria.filter((record) => auditIds.has(record.id));
+  if (processes.length !== processIds.size) throw new Error("Um dos processos selecionados nao existe no estado atual.");
+  if (auditEntries.length !== auditIds.size) throw new Error("Um dos eventos de auditoria selecionados nao existe no estado atual.");
+  writeQueue = writeQueue.then(
+    () => persistProcessRecords(preparedStore, processes, auditEntries),
+    () => persistProcessRecords(preparedStore, processes, auditEntries)
+  );
+  return writeQueue;
+}
+
+async function persistProcessRecords(store, processes, auditEntries) {
+  if (!(await requireConfiguredDatabase())) {
+    await persistStore(store, []);
+    return;
+  }
+  const committedRevision = await transaction(async (client) => {
+    const expectedRevision = Number.isInteger(store.__revision) ? store.__revision : null;
+    const revisionResult = expectedRevision === null
+      ? await client.query("UPDATE app_state_revision SET revision = revision + 1 WHERE id = true RETURNING revision")
+      : await client.query(
+        "UPDATE app_state_revision SET revision = revision + 1 WHERE id = true AND revision = $1 RETURNING revision",
+        [expectedRevision]
+      );
+    if (!revisionResult.rowCount) {
+      const error = new Error("Os dados foram alterados por outro usuario. Atualize a tela e tente novamente.");
+      error.statusCode = 409;
+      throw error;
+    }
+    await insertRecords(client, "app_processes", processes, ["criadoEm", "atualizadoEm"]);
+    await insertRecords(client, "app_process_audit", auditEntries, ["criadoEm"], {
+      processIdKey: "processoId",
+      immutable: true
+    });
+    return Number(revisionResult.rows[0].revision);
+  });
+  store.__revision = committedRevision;
+  localStoreRevision += 1;
 }
 
 async function persistStore(store, securityEvents) {

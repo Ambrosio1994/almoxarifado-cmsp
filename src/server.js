@@ -30,10 +30,16 @@ import {
   LIQUIDATION_DOCUMENT_KEYS,
   processDeadlineDate,
   processHasRequiredDocuments,
+  processObjectType,
+  processUsesDelivery,
   QUICK_FILTERS,
   PROCESS_TRANSITIONS,
+  PROCESS_OBJECT_TYPES,
   REQUIRED_DOCUMENT_KEYS,
   rollbackProcessStatus,
+  SERVICE_TRACKING_MODES,
+  SERVICE_TRANSITIONS,
+  serviceProgressTotal,
   summarizeMaterials,
   STATUS,
   validateDocumentUpload,
@@ -50,6 +56,7 @@ import {
   readStoreRevision,
   readSuppliersStore,
   readUserByEmail,
+  writeProcessRecords as persistProcessRecords,
   writeStore as persistStore
 } from "./storage.js";
 import { isSpaNavigationPath } from "../public/app-routes.js";
@@ -144,6 +151,7 @@ const MAX_TEMPLATE_UPLOAD_BYTES = positiveRuntimeInteger(process.env.MAX_TEMPLAT
 const MAX_EMAIL_ATTACHMENT_BYTES = positiveRuntimeInteger(process.env.MAX_EMAIL_ATTACHMENT_BYTES, 15 * 1024 * 1024);
 const MAX_PROCESS_DOCUMENTS = positiveRuntimeInteger(process.env.MAX_PROCESS_DOCUMENTS, 50);
 const MAX_PROCESS_MATERIALS = positiveRuntimeInteger(process.env.MAX_PROCESS_MATERIALS, 200);
+const MAX_SERVICE_EXECUTIONS = positiveRuntimeInteger(process.env.MAX_SERVICE_EXECUTIONS, 500);
 const MAX_MATERIAL_LINE_CENTS = Number.MAX_SAFE_INTEGER;
 const MAX_TEMPLATE_ATTACHMENTS = positiveRuntimeInteger(process.env.MAX_TEMPLATE_ATTACHMENTS, 20);
 const MAX_UPLOAD_FILENAME_LENGTH = 255;
@@ -266,6 +274,12 @@ export function createWorkLimiter(maxConcurrency = 1, maxQueue = 1) {
 
 async function writeStore(store, securityEvents = []) {
   await persistStore(store, { securityEvents });
+  invalidateDashboardCache();
+  invalidateUploadReferenceCache();
+}
+
+async function writeChangedProcesses(store, processIds, auditIds = []) {
+  await persistProcessRecords(store, { processIds, auditIds });
   invalidateDashboardCache();
   invalidateUploadReferenceCache();
 }
@@ -781,7 +795,10 @@ async function handleApi(req, res, url) {
     sendJson(res, 200, {
       status: STATUS.filter((status) => !["Criado", "Aguardando entrega", "Aguardando envio para liquidacao"].includes(status)),
       filtrosRapidos: QUICK_FILTERS,
-      transicoes: PROCESS_TRANSITIONS
+      transicoes: PROCESS_TRANSITIONS,
+      transicoesServico: SERVICE_TRANSITIONS,
+      tiposObjeto: PROCESS_OBJECT_TYPES,
+      acompanhamentosServico: SERVICE_TRACKING_MODES
     });
     return;
   }
@@ -1242,6 +1259,7 @@ async function handleApi(req, res, url) {
   if (req.method === "POST" && url.pathname === "/api/processes") {
     const initialStatus = "Enviado para SALC";
     const body = await readJson(req);
+    body.numeroProcesso = normalizeProcessNumber(body.numeroProcesso);
     const validationError = validateProcessBody(body);
     if (validationError) {
       sendJson(res, 400, { error: validationError });
@@ -1284,7 +1302,7 @@ async function handleApi(req, res, url) {
       return;
     }
     store.processos.unshift(processo);
-    store.auditoria.unshift(createAuditEntry({
+    const creationAudit = createAuditEntry({
       processoId: processo.id,
       ...auditActor,
       acao: "Criacao de processo",
@@ -1292,8 +1310,9 @@ async function handleApi(req, res, url) {
       alteracoes: {
         status: { anterior: null, novo: initialStatus }
       }
-    }));
-    await writeStore(store);
+    });
+    store.auditoria.unshift(creationAudit);
+    await writeChangedProcesses(store, [processo.id], [creationAudit.id]);
     sendJson(res, 201, enrichProcess(processo));
     return;
   }
@@ -1325,7 +1344,7 @@ async function handleApi(req, res, url) {
       sendJson(res, 409, { error: "O processo foi alterado por outro usuario. Atualize a tela antes de tentar novamente." });
       return;
     }
-    if (!isValidStatusRollback(current.status, targetStatus)) {
+    if (!isValidStatusRollback(current.status, targetStatus, current)) {
       sendJson(res, 400, { error: "Selecione um status anterior ao status atual do processo." });
       return;
     }
@@ -1351,6 +1370,7 @@ async function handleApi(req, res, url) {
 
   if (processMatch && req.method === "PUT") {
     const body = await readJson(req);
+    body.numeroProcesso = normalizeProcessNumber(body.numeroProcesso);
     const validationError = validateProcessBody(body);
     if (validationError) {
       sendJson(res, 400, { error: validationError });
@@ -1383,7 +1403,18 @@ async function handleApi(req, res, url) {
       return;
     }
 
-    if (body.status && !isValidStatusTransition(current.status, body.status)) {
+    const requestedType = String(body.tipoObjeto || processObjectType(current));
+    const requestedTracking = requestedType === "servico"
+      ? String(body.acompanhamentoServico || current.acompanhamentoServico || "continuado")
+      : "entrega";
+    const classificationChanged = requestedType !== processObjectType(current)
+      || requestedTracking !== (processObjectType(current) === "servico" ? (current.acompanhamentoServico || "continuado") : "entrega");
+    if (classificationChanged && !["Criado", "Enviado para SALC"].includes(current.status)) {
+      sendJson(res, 400, { error: "O tipo e a forma de acompanhamento so podem ser alterados antes do envio ao fornecedor." });
+      return;
+    }
+
+    if (body.status && !isValidStatusTransition(current.status, body.status, current)) {
       sendJson(res, 400, { error: "Transicao de status invalida. Avance o processo pela proxima etapa prevista." });
       return;
     }
@@ -1419,11 +1450,11 @@ async function handleApi(req, res, url) {
       sendJson(res, 400, { error: "O Processo SPED ou a Nota de Empenho registrado nao esta disponivel no armazenamento. Anexe o arquivo novamente antes da liquidacao." });
       return;
     }
-    if (deliveryExceedsOrdered(updated.entregas || [], [], updated.materiais || [])) {
+    if (processUsesDelivery(updated) && deliveryExceedsOrdered(updated.entregas || [], [], updated.materiais || [])) {
       sendJson(res, 400, { error: "Os materiais nao podem ficar abaixo das quantidades ja recebidas." });
       return;
     }
-    if ((updated.entregas || []).length) {
+    if (processUsesDelivery(updated) && (updated.entregas || []).length) {
       const deliveryComplete = deliveryIsComplete(updated.entregas, updated.materiais || []);
       if (hasProcessReachedDelivery(current) && !deliveryComplete) {
         if (current.status !== "Entregue" || (body.status && body.status !== current.status)) {
@@ -1491,6 +1522,105 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  const serviceExecutionMatch = url.pathname.match(/^\/api\/processes\/([^/]+)\/service-executions$/);
+  if (serviceExecutionMatch && req.method === "POST") {
+    const body = await readJson(req);
+    const processo = store.processos.find((item) => item.id === serviceExecutionMatch[1]);
+    if (!processo) {
+      sendJson(res, 404, { error: "Processo nao encontrado" });
+      return;
+    }
+    if (!canEditProcess(processo, role)) {
+      sendJson(res, 403, { error: "Este processo nao pode receber registros de execucao neste status." });
+      return;
+    }
+    if (processObjectType(processo) !== "servico" || processUsesDelivery(processo)) {
+      sendJson(res, 400, { error: "Este empenho utiliza acompanhamento por entrega fisica." });
+      return;
+    }
+    if (!["Empenho enviado ao fornecedor", "Em execução"].includes(processo.status)) {
+      sendJson(res, 400, { error: "A execucao so pode ser registrada depois do envio do empenho ao fornecedor." });
+      return;
+    }
+    if (!processDeadlineDate(processo)) {
+      sendJson(res, 400, { error: "Informe a data de envio do empenho ao fornecedor antes de registrar a execucao." });
+      return;
+    }
+    const previousExecutions = Array.isArray(processo.execucoesServico) ? processo.execucoesServico : [];
+    if (previousExecutions.length >= MAX_SERVICE_EXECUTIONS) {
+      sendJson(res, 400, { error: `Cada servico aceita no maximo ${MAX_SERVICE_EXECUTIONS} registros de execucao.` });
+      return;
+    }
+    const data = safeDate(body.data);
+    const competencia = String(body.competencia || "").trim() || data.slice(0, 7);
+    const percentualExecutado = Number(body.percentualExecutado);
+    const valorExecutado = body.valorExecutado === "" || body.valorExecutado === null || body.valorExecutado === undefined
+      ? 0
+      : Number(body.valorExecutado);
+    const descricao = String(body.descricao || "").trim();
+    const today = dateKeyInTimeZone(new Date(), APP_TIME_ZONE);
+    const lastDate = previousExecutions.map((entry) => safeDate(entry.data)).filter(Boolean).sort().at(-1) || "";
+    if (!data || data > today || data < processDeadlineDate(processo) || (lastDate && data < lastDate)) {
+      sendJson(res, 400, { error: "Informe uma data de execucao valida, nao futura e posterior aos registros anteriores." });
+      return;
+    }
+    if (!/^\d{4}-\d{2}$/.test(competencia) || Number(competencia.slice(5, 7)) < 1 || Number(competencia.slice(5, 7)) > 12) {
+      sendJson(res, 400, { error: "Informe a competencia no formato AAAA-MM." });
+      return;
+    }
+    const currentProgress = serviceProgressTotal(processo);
+    if (!Number.isFinite(percentualExecutado) || percentualExecutado <= 0 || percentualExecutado > 100 - currentProgress) {
+      sendJson(res, 400, { error: `Informe um avanco maior que zero e de no maximo ${Math.max(0, 100 - currentProgress)}%.` });
+      return;
+    }
+    if (!Number.isFinite(valorExecutado) || valorExecutado < 0 || !Number.isSafeInteger(Math.round(valorExecutado * 100))) {
+      sendJson(res, 400, { error: "O valor executado deve ser um numero nao negativo valido." });
+      return;
+    }
+    const commitmentValueCents = Math.round(Number(enrichProcess(processo).valorTotal || 0) * 100);
+    const previousExecutedValueCents = previousExecutions
+      .reduce((total, entry) => total + Math.round(Number(entry.valorExecutado || 0) * 100), 0);
+    if (commitmentValueCents > 0 && previousExecutedValueCents + Math.round(valorExecutado * 100) > commitmentValueCents) {
+      sendJson(res, 400, { error: "O valor executado acumulado nao pode superar o valor total do empenho." });
+      return;
+    }
+    if (descricao.length > 500) {
+      sendJson(res, 400, { error: "A descricao da execucao deve ter no maximo 500 caracteres." });
+      return;
+    }
+    const previousStatus = processo.status;
+    const execution = {
+      id: crypto.randomUUID(),
+      data,
+      competencia,
+      percentualExecutado,
+      valorExecutado,
+      descricao,
+      registradoPor: usuario,
+      registradoPorEmail: user.email,
+      criadoEm: new Date().toISOString()
+    };
+    processo.execucoesServico = [...previousExecutions, execution];
+    const totalProgress = serviceProgressTotal(processo);
+    processo.status = totalProgress >= 100 ? "Serviço concluído" : "Em execução";
+    processo.versao = Number(processo.versao || 0) + 1;
+    processo.atualizadoEm = new Date().toISOString();
+    store.auditoria.unshift(createAuditEntry({
+      processoId: processo.id,
+      ...auditActor,
+      acao: "Registro de execucao de servico",
+      detalhes: `Execucao de ${percentualExecutado}% registrada para a competencia ${competencia}. Total concluido: ${totalProgress}%.`,
+      alteracoes: {
+        execucaoServicoId: { anterior: null, novo: execution.id },
+        percentualConcluido: { anterior: currentProgress, novo: totalProgress },
+        ...(previousStatus !== processo.status ? { status: { anterior: previousStatus, novo: processo.status } } : {})
+      }
+    }));
+    await writeStore(store);
+    sendJson(res, 201, enrichProcess(processo));
+    return;
+  }
+
   const deliveryMatch = url.pathname.match(/^\/api\/processes\/([^/]+)\/deliveries$/);
   if (deliveryMatch && req.method === "POST") {
     const body = await readJson(req);
@@ -1501,6 +1631,10 @@ async function handleApi(req, res, url) {
     }
     if (!canEditProcess(processo, role)) {
       sendJson(res, 403, { error: "Este processo nao pode receber entregas neste status." });
+      return;
+    }
+    if (!processUsesDelivery(processo)) {
+      sendJson(res, 400, { error: "Este servico deve ser acompanhado por registros de execucao, sem entrega fisica." });
       return;
     }
     if (!["Empenho enviado ao fornecedor", "Aguardando entrega", "Entrega parcial"].includes(processo.status)) {
@@ -3023,7 +3157,7 @@ function dueEmailCandidates(store, settings, today, options = {}) {
   const fornecedores = Array.isArray(store.fornecedores) ? store.fornecedores : [];
   const active = (store.processos || [])
     .map((processo) => enrichProcess(processo))
-    .filter((processo) => !processo.inativo && processo.status !== "Anulado" && !hasProcessReachedDelivery(processo))
+    .filter((processo) => processUsesDelivery(processo) && !processo.inativo && processo.status !== "Anulado" && !hasProcessReachedDelivery(processo))
     .filter((processo) => !options.processId || processo.id === options.processId);
   const candidates = [];
 
@@ -3640,12 +3774,20 @@ function sanitizeMaterials(input, currentMaterials = []) {
 
 function sanitizeProcessInput(input = {}, current = {}) {
   const value = (key) => Object.prototype.hasOwnProperty.call(input, key) ? input[key] : current[key];
+  const tipoObjeto = PROCESS_OBJECT_TYPES.includes(String(value("tipoObjeto") || "").trim())
+    ? String(value("tipoObjeto")).trim()
+    : processObjectType(current);
+  const requestedTracking = String(value("acompanhamentoServico") || "").trim();
   const result = {
     numeroProcesso: String(value("numeroProcesso") || "").trim().slice(0, 20),
     numeroEmpenho: String(value("numeroEmpenho") || "").trim().slice(0, 20),
     fornecedor: String(value("fornecedor") || "").trim().slice(0, 100),
     cnpj: String(value("cnpj") || "").trim().slice(0, 18),
     criadoPor: String(value("criadoPor") || "").trim().slice(0, 100),
+    tipoObjeto,
+    acompanhamentoServico: tipoObjeto === "servico" && SERVICE_TRACKING_MODES.includes(requestedTracking)
+      ? requestedTracking
+      : (tipoObjeto === "servico" ? "continuado" : "entrega"),
     materiais: sanitizeMaterials(value("materiais") || input, current.materiais || []),
     dataProcesso: safeDate(value("dataProcesso")),
     dataEnvioSalc: safeDate(value("dataEnvioSalc")),
@@ -3656,6 +3798,13 @@ function sanitizeProcessInput(input = {}, current = {}) {
     dataLiquidacao: safeDate(value("dataLiquidacao")),
     dataPagamento: safeDate(value("dataPagamento"))
   };
+  if (tipoObjeto === "servico") {
+    result.dataInicioServico = safeDate(value("dataInicioServico"));
+    result.dataFimServico = safeDate(value("dataFimServico"));
+  } else {
+    result.dataInicioServico = "";
+    result.dataFimServico = "";
+  }
   if (input.status && STATUS.includes(input.status)) result.status = input.status;
   return result;
 }
@@ -3670,12 +3819,19 @@ export function validateProcessBody(input = {}) {
   if (String(input.fornecedor || "").trim().length > 100) return "O fornecedor deve ter no maximo 100 caracteres.";
   if (String(input.cnpj || "").trim().length > 18) return "O CNPJ deve ter no maximo 18 caracteres.";
   if (String(input.criadoPor || "").trim().length > 100) return "O nome de quem criou o processo deve ter no maximo 100 caracteres.";
+  if (Object.prototype.hasOwnProperty.call(input, "tipoObjeto") && !PROCESS_OBJECT_TYPES.includes(String(input.tipoObjeto || "").trim())) {
+    return "Selecione se o empenho e de material ou servico.";
+  }
+  if (String(input.tipoObjeto || "") === "servico"
+      && !SERVICE_TRACKING_MODES.includes(String(input.acompanhamentoServico || "").trim())) {
+    return "Selecione como o servico sera acompanhado.";
+  }
   if (input.numeroProcesso && !normalizeProcessIdentifier(input.numeroProcesso)) return "Informe uma numeracao de processo com letras ou numeros.";
   if (input.numeroEmpenho && !normalizeProcessIdentifier(input.numeroEmpenho)) return "Informe um numero de empenho com letras ou numeros.";
   if (Object.prototype.hasOwnProperty.call(input, "materiais") && !Array.isArray(input.materiais)) {
     return "Materiais deve ser uma lista.";
   }
-  const dateFields = ["dataProcesso", "dataEnvioSalc", "dataEnvioEmpenho", "dataEnvioFornecedor", "dataEntrega", "dataEnvioLiquidacao", "dataLiquidacao", "dataPagamento"];
+  const dateFields = ["dataProcesso", "dataEnvioSalc", "dataEnvioEmpenho", "dataEnvioFornecedor", "dataEntrega", "dataEnvioLiquidacao", "dataLiquidacao", "dataPagamento", "dataInicioServico", "dataFimServico"];
   for (const field of dateFields) {
     if (input[field] && !safeDate(input[field])) return `Data invalida no campo ${field}.`;
   }
@@ -3698,23 +3854,41 @@ export function validateProcessBody(input = {}) {
       if (!Number.isFinite(price) || price < 0 || !Number.isFinite(quantity) || quantity < 0) {
         return "Valores e quantidades dos materiais devem ser numeros nao negativos.";
       }
-      const lineCents = Math.round((price * quantity + Number.EPSILON) * 100);
+      if (!hasAtMostDecimalPlaces(price, 4)) {
+        return "O valor unitario deve ter no maximo quatro casas decimais.";
+      }
+      const lineCents = Math.round((Math.round(price * 10_000) * quantity) / 100);
       if (!Number.isSafeInteger(lineCents) || lineCents > MAX_MATERIAL_LINE_CENTS) {
         return "O valor total de cada material deve ser finito e estar dentro do limite financeiro permitido.";
       }
     }
   }
+  if (String(input.tipoObjeto || "") === "servico"
+      && Array.isArray(input.materiais)
+      && !input.materiais.some((item) => String(item?.descricao || "").trim())) {
+    return "Informe pelo menos um servico no empenho.";
+  }
+  const serviceStart = safeDate(input.dataInicioServico);
+  const serviceEnd = safeDate(input.dataFimServico);
+  if (serviceStart && serviceEnd && serviceEnd < serviceStart) {
+    return "A data final da vigencia nao pode ser anterior a data inicial.";
+  }
   return "";
 }
 
 function validateProcessForStatus(processo = {}) {
-  if (["Empenho enviado ao fornecedor", "Aguardando entrega", "Entrega parcial", "Entregue", "Aguardando envio para liquidacao", "Enviado para liquidacao", "Liquidado", "Pago"].includes(processo.status)
+  if (["Empenho enviado ao fornecedor", "Em execução", "Serviço concluído", "Aguardando entrega", "Entrega parcial", "Entregue", "Aguardando envio para liquidacao", "Enviado para liquidacao", "Liquidado", "Pago"].includes(processo.status)
       && !processDeadlineDate(processo)) {
     return "Informe a data de envio do empenho ao fornecedor antes de avancar.";
   }
-  if (hasProcessReachedDelivery(processo)
+  if (processUsesDelivery(processo) && hasProcessReachedDelivery(processo)
       && !processo.dataEntrega) {
     return "Registre o recebimento antes de avancar.";
+  }
+  if (!processUsesDelivery(processo)
+      && ["Serviço concluído", "Enviado para liquidacao", "Liquidado", "Pago"].includes(processo.status)
+      && serviceProgressTotal(processo) < 100) {
+    return "Registre 100% da execucao antes de concluir o servico.";
   }
   if (["Enviado para liquidacao", "Liquidado", "Pago"].includes(processo.status)
       && !processHasRequiredDocuments(processo)) {
@@ -3746,10 +3920,10 @@ function validateProcessChronology(processo = {}) {
   ].filter(([, value]) => value);
   const today = dateKeyInTimeZone(new Date(), APP_TIME_ZONE);
   const future = datedEvents.find(([, value]) => value > today);
-  if (future) return `A data de ${future[2]} nao pode estar no futuro.`;
+  if (future) return `A data de ${future[2]} (${formatDateForMessage(future[1])}) nao pode estar no futuro.`;
   for (let index = 1; index < datedEvents.length; index += 1) {
     if (datedEvents[index][1] < datedEvents[index - 1][1]) {
-      return `A data de ${datedEvents[index][2]} nao pode ser anterior a ${datedEvents[index - 1][2]}.`;
+      return `A data de ${datedEvents[index][2]} (${formatDateForMessage(datedEvents[index][1])}) nao pode ser anterior a ${datedEvents[index - 1][2]} de ${formatDateForMessage(datedEvents[index - 1][1])}.`;
     }
   }
   return "";
@@ -3757,16 +3931,27 @@ function validateProcessChronology(processo = {}) {
 
 function validateDeliveryDate(processo = {}, deliveryDate = "", previousDeliveries = []) {
   const today = dateKeyInTimeZone(new Date(), APP_TIME_ZONE);
-  if (deliveryDate > today) return "A data de entrega nao pode estar no futuro.";
+  if (deliveryDate > today) return `A data de entrega (${formatDateForMessage(deliveryDate)}) nao pode estar no futuro.`;
   const sentDate = processDeadlineDate(processo);
-  if (sentDate && deliveryDate < sentDate) return "A data de entrega nao pode ser anterior ao envio ao fornecedor.";
+  if (sentDate && deliveryDate < sentDate) {
+    return `A data de entrega (${formatDateForMessage(deliveryDate)}) nao pode ser anterior ao envio ao fornecedor de ${formatDateForMessage(sentDate)}.`;
+  }
   const latestDelivery = previousDeliveries
     .map((delivery) => safeDate(delivery.data))
     .filter(Boolean)
     .sort()
     .at(-1);
-  if (latestDelivery && deliveryDate < latestDelivery) return "A nova entrega nao pode ser anterior a uma entrega ja registrada.";
+  if (latestDelivery && deliveryDate < latestDelivery) {
+    return `A nova entrega (${formatDateForMessage(deliveryDate)}) nao pode ser anterior a entrega ja registrada em ${formatDateForMessage(latestDelivery)}.`;
+  }
   return "";
+}
+
+function formatDateForMessage(value = "") {
+  const date = safeDate(value);
+  if (!date) return String(value || "");
+  const [year, month, day] = date.split("-");
+  return `${day}/${month}/${year}`;
 }
 
 function safeDate(value = "") {
@@ -3915,10 +4100,15 @@ function processExportRow(processo = {}) {
     empenho: processo.numeroEmpenho || "",
     fornecedor: processo.fornecedor || "",
     materiais: summarizeMaterials(processo.materiais || []),
+    tipo: processObjectType(processo) === "servico" ? "Serviço" : "Material",
     valorTotal: Number(processo.valorTotal || 0),
     envioFornecedor: processo.dataEnvioFornecedor || processo.dataEnvioEmpenho || "",
     dias: processo.diasDecorridos || 0,
-    dataEntrega: processo.dataEntrega || "",
+    acompanhamento: processObjectType(processo) === "servico"
+      ? ({ continuado: "Contínuo/mensal", sob_demanda: "Sob demanda", entrega: "Com entrega física" }[processo.acompanhamentoServico] || "Contínuo/mensal")
+      : "Entrega física",
+    progresso: processObjectType(processo) === "servico" && !processUsesDelivery(processo) ? `${serviceProgressTotal(processo)}%` : "",
+    dataEntrega: processUsesDelivery(processo) ? (processo.dataEntrega || "") : "Não se aplica",
     envioLiquidacao: processo.dataEnvioLiquidacao || "",
     status: processo.status || ""
   };
@@ -3930,9 +4120,12 @@ function exportColumns() {
     ["empenho", "Empenho"],
     ["fornecedor", "Fornecedor"],
     ["materiais", "Materiais"],
+    ["tipo", "Tipo"],
     ["valorTotal", "Valor total"],
     ["envioFornecedor", "Envio fornecedor"],
     ["dias", "Dias"],
+    ["acompanhamento", "Acompanhamento"],
+    ["progresso", "Execução concluída"],
     ["dataEntrega", "Data entrega"],
     ["envioLiquidacao", "Envio liquidacao"],
     ["status", "Status"]
@@ -4026,20 +4219,13 @@ function spreadsheetSafeText(value = "") {
 }
 
 function duplicateProcessFields(processos = [], candidate = {}, ignoreId = "") {
-  const numeroProcesso = normalizeProcessIdentifier(candidate.numeroProcesso);
   const numeroEmpenho = normalizeProcessIdentifier(candidate.numeroEmpenho);
   const duplicateProcess = processos
     .filter((processo) => !processo.inativo && processo.id !== ignoreId)
-    .find((processo) => (
-      (numeroProcesso && normalizeProcessIdentifier(processo.numeroProcesso) === numeroProcesso)
-      || (numeroEmpenho && normalizeProcessIdentifier(processo.numeroEmpenho) === numeroEmpenho)
-    ));
+    .find((processo) => numeroEmpenho && normalizeProcessIdentifier(processo.numeroEmpenho) === numeroEmpenho);
 
   if (!duplicateProcess) return "";
-  if (numeroProcesso && normalizeProcessIdentifier(duplicateProcess.numeroProcesso) === numeroProcesso) {
-    return `Ja existe um processo cadastrado com a numeracao ${candidate.numeroProcesso}: ${duplicateProcess.numeroProcesso || duplicateProcess.id}.`;
-  }
-  return `Ja existe um processo cadastrado com o numero de empenho ${candidate.numeroEmpenho}: ${duplicateProcess.numeroProcesso || duplicateProcess.id}.`;
+  return `O empenho ${candidate.numeroEmpenho} ja esta cadastrado no registro ${duplicateProcess.id}${duplicateProcess.numeroProcesso ? `, vinculado ao processo ${duplicateProcess.numeroProcesso}` : ", sem processo vinculado"}.`;
 }
 
 function normalizeProcessIdentifier(value = "") {
@@ -4048,6 +4234,22 @@ function normalizeProcessIdentifier(value = "") {
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/[^a-zA-Z0-9]/g, "")
     .toUpperCase();
+}
+
+export function normalizeProcessNumber(value = "") {
+  const text = String(value || "").trim().toUpperCase().replace(/\s+/g, " ");
+  if (!text) return "";
+  const digits = text.replace(/\D/g, "");
+  if (digits.length === 17) {
+    return `${digits.slice(0, 5)}.${digits.slice(5, 11)}/${digits.slice(11, 15)}-${digits.slice(15)}`;
+  }
+  return text;
+}
+
+function hasAtMostDecimalPlaces(value, places) {
+  const scale = 10 ** places;
+  const scaled = Number(value) * scale;
+  return Number.isFinite(scaled) && Math.abs(scaled - Math.round(scaled)) < 1e-7;
 }
 
 function normalizeNewProcessCommitmentNumber(value = "") {

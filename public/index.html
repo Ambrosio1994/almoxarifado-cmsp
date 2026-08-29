@@ -144,6 +144,10 @@
             </div>
 
             <div class="quick-filter-bar" id="quickFilterBar" role="group" aria-label="Filtros de empenhos. Selecione um ou mais."></div>
+            <div class="active-process-filters hidden" id="activeProcessFilters" role="status" aria-live="polite">
+              <span id="activeProcessFiltersText"></span>
+              <button type="button" class="secondary" id="clearProcessFilters">Limpar busca e filtros</button>
+            </div>
 
             <div class="table-wrap">
               <table class="process-table">
@@ -153,11 +157,12 @@
                     <th>Nº Processo</th>
                     <th>Nº Empenho</th>
                     <th>Fornecedor</th>
-                    <th>Materiais</th>
+                    <th>Tipo</th>
+                    <th>Objeto</th>
                     <th>Valor total</th>
                     <th>Data Envio fornecedor</th>
                     <th>Dias</th>
-                    <th>Data entrega</th>
+                    <th>Entrega / execução</th>
                     <th>Envio liquidacao</th>
                     <th>Requisitante</th>
                     <th>Status</th>
@@ -249,8 +254,25 @@
         <input type="hidden" name="id">
         <input type="hidden" name="versao">
 
+        <fieldset class="process-link-fieldset">
+          <legend>Vinculação ao processo</legend>
+          <div class="split">
+            <label>Como deseja cadastrar?
+              <select id="processAssociationMode">
+                <option value="new">Informar um processo</option>
+                <option value="existing">Selecionar processo existente</option>
+                <option value="none">Empenho sem processo</option>
+              </select>
+            </label>
+            <label id="existingProcessGroup" class="hidden">Processo existente
+              <select id="existingProcessSelect"></select>
+            </label>
+          </div>
+          <p class="field-help" id="processAssociationHelp">O mesmo processo pode reunir várias notas de empenho.</p>
+        </fieldset>
+
         <div class="split process-primary-grid">
-          <div class="process-primary-group">
+          <div class="process-primary-group" id="processNumberGroup">
             <label class="process-primary-label" for="processNumber">Numero do processo</label>
             <input id="processNumber" name="numeroProcesso" maxlength="20">
           </div>
@@ -265,6 +287,29 @@
             <small id="commitmentNumberPreview"></small>
           </div>
         </div>
+        <fieldset class="process-kind-fieldset">
+          <legend>O que este empenho contrata?</legend>
+          <div class="split">
+            <label>Tipo do empenho
+              <select id="processObjectType" name="tipoObjeto" required>
+                <option value="material">Material</option>
+                <option value="servico">Serviço</option>
+              </select>
+            </label>
+            <label id="serviceTrackingGroup" class="hidden">Forma de acompanhamento
+              <select id="serviceTrackingMode" name="acompanhamentoServico">
+                <option value="continuado">Contínuo / mensal</option>
+                <option value="sob_demanda">Sob demanda</option>
+                <option value="entrega">Com entrega física</option>
+              </select>
+            </label>
+          </div>
+          <p class="field-help" id="processKindHelp">Materiais são acompanhados por quantidades e entregas.</p>
+          <div class="split hidden" id="servicePeriodFields">
+            <label>Início da vigência <input name="dataInicioServico" type="date"></label>
+            <label>Fim da vigência <input name="dataFimServico" type="date"></label>
+          </div>
+        </fieldset>
         <label>Data do processo <input name="dataProcesso" type="date"></label>
         <label>Fornecedor <input name="fornecedor" maxlength="100"></label>
         <label>CNPJ <input name="cnpj" inputmode="numeric" maxlength="18" placeholder="00.000.000/0000-00"></label>
@@ -272,11 +317,22 @@
 
         <section class="materials-section">
           <div class="section-title">
-            <strong>Materiais</strong>
+            <strong id="processItemsTitle">Materiais</strong>
           </div>
           <div id="materialsList"></div>
+          <div class="materials-toolbar" aria-label="Ações da grade de itens">
+            <button type="button" id="addMaterialButton">Adicionar material</button>
+            <label class="compact-field">Adicionar linhas
+              <input id="materialRowsCount" type="number" min="1" max="100" value="5">
+            </label>
+            <button type="button" class="secondary" id="addMaterialRowsButton">Adicionar linhas</button>
+            <button type="button" class="secondary" id="copyMaterialDescriptionButton">Copiar 1ª descrição para todos</button>
+            <label class="secondary file-action" for="materialsSpreadsheetInput">Importar planilha (.csv/.tsv)</label>
+            <input class="sr-only" id="materialsSpreadsheetInput" type="file" accept=".csv,.tsv,text/csv,text/tab-separated-values">
+          </div>
+          <p class="field-help" id="materialsImportHelp">Colunas aceitas: descrição, quantidade e valor unitário. A importação adiciona linhas à grade.</p>
           <div class="process-total-summary">
-            <span>Valor Total do Empenho</span>
+            <span id="processTotalLabel">Valor Total do Empenho</span>
             <output id="processMaterialsTotal" aria-live="polite">R$ 0,00</output>
           </div>
         </section>
@@ -285,7 +341,43 @@
           <button type="submit">Salvar</button>
           <button type="button" id="clearForm">Limpar</button>
         </div>
+        <div class="save-progress hidden" id="processSaveProgress" role="status" aria-live="polite">
+          <progress></progress>
+          <span>Salvando o empenho. Aguarde a confirmação com o ID.</span>
+        </div>
         <p class="form-message" id="formMessage" role="status" aria-live="polite"></p>
+      </form>
+    </dialog>
+
+    <dialog id="serviceExecutionDialog" class="small-dialog" aria-labelledby="serviceExecutionDialogTitle">
+      <form method="dialog" class="dialog-header">
+        <strong id="serviceExecutionDialogTitle">Registrar execução do serviço</strong>
+        <button type="submit" class="secondary">Fechar</button>
+      </form>
+      <form id="serviceExecutionForm" class="process-form" novalidate>
+        <p class="selected-file" id="serviceExecutionSummary"></p>
+        <div class="split">
+          <label>Data da execução
+            <input name="data" type="text" inputmode="numeric" autocomplete="off" data-date-input placeholder="DDMMAAAA" pattern="\d{2}-\d{2}-\d{4}" maxlength="10" required>
+          </label>
+          <label>Competência
+            <input name="competencia" type="month" required>
+          </label>
+        </div>
+        <label>Avanço neste registro (%)
+          <input name="percentualExecutado" type="number" min="0.01" max="100" step="0.01" required>
+        </label>
+        <label>Valor executado no período (opcional)
+          <input name="valorExecutado" type="text" inputmode="decimal" placeholder="0,00">
+        </label>
+        <label>Descrição do que foi executado
+          <textarea name="descricao" rows="4" maxlength="500" placeholder="Ex.: serviço referente à competência, etapa realizada ou demanda atendida."></textarea>
+        </label>
+        <div class="actions">
+          <button type="submit">Salvar execução</button>
+          <button type="button" class="secondary" id="cancelServiceExecution">Cancelar</button>
+        </div>
+        <p class="form-message" id="serviceExecutionMessage" role="alert" aria-live="assertive"></p>
       </form>
     </dialog>
 
@@ -355,6 +447,10 @@
         <p class="selected-file" id="processStepDialogDescription"></p>
         <label id="processStepDateGroup"><span id="processStepDateLabel">Data</span>
           <input name="data" type="text" inputmode="numeric" autocomplete="off" data-date-input placeholder="DDMMAAAA" pattern="\d{2}-\d{2}-\d{4}" maxlength="10">
+        </label>
+        <label class="critical-confirmation hidden" id="processStepCriticalConfirmation">
+          <input name="confirmarEtapaCritica" type="checkbox">
+          <span>Conferi a documentação e confirmo o envio deste empenho para liquidação.</span>
         </label>
         <div class="actions">
           <button type="submit">Salvar</button>

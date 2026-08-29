@@ -11,6 +11,9 @@ O sistema reúne processos, fornecedores, materiais, documentos, entregas, obser
 - Dashboard com indicadores operacionais e financeiros.
 - Cadastro e acompanhamento de processos administrativos.
 - Suporte a múltiplos materiais no mesmo empenho.
+- Cadastro explícito de empenhos de material ou de serviço.
+- Serviços contínuos ou sob demanda acompanhados por competência, percentual e valor executado, sem exigir data de entrega.
+- Serviços de confecção ou similares podem usar acompanhamento por entrega física.
 - Pesquisa e filtros por processo, empenho, fornecedor, material, ano e status.
 - Painel anual com agrupamento pelo ano do empenho.
 - Cadastro de fornecedores e histórico de processos relacionados.
