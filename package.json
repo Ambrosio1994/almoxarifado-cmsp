@@ -34,7 +34,7 @@
     "pg": "^8.22.0"
   },
   "devDependencies": {
-    "jsdom": "^29.1.1"
+    "jsdom": "^30.0.1"
   },
   "overrides": {
     "gaxios": "7.3.0"
