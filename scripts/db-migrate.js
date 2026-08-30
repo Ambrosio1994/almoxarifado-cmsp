@@ -10,7 +10,7 @@ const MIGRATIONS_DIR = join(ROOT, "db", "migrations");
 export async function runMigrations(options = {}) {
   const resolvedDatabaseUrl = options.databaseUrl
     ? { databaseUrl: options.databaseUrl, source: "options.databaseUrl" }
-    : resolveDatabaseUrl();
+    : resolveMigrationDatabaseUrl();
   const {
     databaseUrl = resolvedDatabaseUrl.databaseUrl,
     databaseUrlSource = resolvedDatabaseUrl.source,
@@ -37,6 +37,7 @@ export async function runMigrations(options = {}) {
   await client.connect();
   let migrationLockHeld = false;
   try {
+    await client.query("SET search_path TO public");
     await client.query("SELECT pg_advisory_lock(hashtext('almoxarifado_schema_migrations'))");
     migrationLockHeld = true;
     const appliedMigrations = await loadAppliedMigrations(client);
@@ -98,7 +99,7 @@ function withoutOuterTransaction(sql, migrationName) {
 
 async function loadAppliedMigrations(client) {
   try {
-    const result = await client.query("SELECT version FROM app_schema_migrations");
+    const result = await client.query("SELECT version FROM public.app_schema_migrations");
     return new Set(result.rows.map((row) => row.version));
   } catch (error) {
     if (error.code === "42P01") return new Set();
@@ -108,7 +109,7 @@ async function loadAppliedMigrations(client) {
 
 async function recordAppliedMigration(client, version) {
   await client.query(
-    "INSERT INTO app_schema_migrations (version) VALUES ($1) ON CONFLICT (version) DO NOTHING",
+    "INSERT INTO public.app_schema_migrations (version) VALUES ($1) ON CONFLICT (version) DO NOTHING",
     [version]
   );
 }
@@ -117,18 +118,32 @@ function defaultCreateClient(databaseUrl) {
   return new pg.Client(createPoolConfig(databaseUrl));
 }
 
-function resolveDatabaseUrl() {
-  if (process.env.DATABASE_URL_MIGRATION) {
+export function resolveMigrationDatabaseUrl(environment = process.env) {
+  if (environment.DATABASE_URL_MIGRATION) {
     return {
-      databaseUrl: process.env.DATABASE_URL_MIGRATION,
+      databaseUrl: environment.DATABASE_URL_MIGRATION,
       source: "DATABASE_URL_MIGRATION"
     };
   }
 
+  if (isNeonPooledUrl(environment.DATABASE_URL)) {
+    throw new Error("DATABASE_URL usa endpoint Neon pooled; DATABASE_URL_MIGRATION com a URL direta da mesma branch e database e obrigatoria para migrations, pois o advisory lock exige uma sessao dedicada.");
+  }
+
   return {
-    databaseUrl: process.env.DATABASE_URL,
+    databaseUrl: environment.DATABASE_URL,
     source: "DATABASE_URL"
   };
+}
+
+function isNeonPooledUrl(databaseUrl) {
+  try {
+    const hostname = new URL(databaseUrl).hostname.toLowerCase();
+    return hostname.endsWith(".neon.tech")
+      && (hostname.includes("-pooler.") || hostname.includes(".pooler."));
+  } catch {
+    return false;
+  }
 }
 
 function formatDatabaseTarget(databaseUrl, source) {

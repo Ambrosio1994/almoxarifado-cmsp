@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "dev": "NODE_ENV=development node src/server.js",
+    "prestart": "NODE_ENV=production node scripts/db-migrate.js",
     "start": "NODE_ENV=production node src/server.js",
     "test": "node scripts/run-tests.js",
     "test:db": "node scripts/run-database-tests.js",

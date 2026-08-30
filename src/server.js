@@ -445,7 +445,14 @@ const server = createServer(requestHandler);
 let applicationStartupComplete = !isMainModule();
 
 if (isMainModule()) {
-  await startApplication();
+  try {
+    await startApplication();
+  } catch (error) {
+    logStartupFailure(error);
+    process.exitCode = 1;
+    await closeServerAfterStartupFailure().catch((closeError) => logError("server_close_failed", { message: safeStartupErrorMessage(closeError) }));
+    await closePool().catch((closeError) => logError("database_close_failed", { message: safeStartupErrorMessage(closeError) }));
+  }
 }
 
 async function startApplication() {
@@ -2834,9 +2841,25 @@ export function readinessChecksPass(checks, options = {}) {
 
 function safeStartupErrorMessage(error) {
   return String(error?.message || "Erro desconhecido")
+    .replace(/postgres(?:ql)?:\/\/[^\s]+/gi, "[database-url-redacted]")
     .replace(/1\/\/[A-Za-z0-9._-]+/g, "[refresh-token-redacted]")
     .replace(/ya29\.[A-Za-z0-9._-]+/g, "[access-token-redacted]")
     .slice(0, 500);
+}
+
+function logStartupFailure(error) {
+  logError("application_startup_failed", {
+    stage: error?.databaseState === "schema_incomplete"
+      ? "database_schema"
+      : (error?.databaseState === "unavailable" ? "database_connectivity" : "application"),
+    statusCode: error?.statusCode || 500,
+    message: safeStartupErrorMessage(error),
+    ...(error?.databaseTarget ? { database: error.databaseTarget } : {}),
+    ...(error?.schema ? { schema: error.schema } : {}),
+    ...(Array.isArray(error?.missingObjects) && error.missingObjects.length ? { missingObjects: error.missingObjects } : {}),
+    ...(error?.pendingMigration ? { pendingMigration: error.pendingMigration } : {}),
+    ...(error?.suggestedAction ? { action: error.suggestedAction } : {})
+  });
 }
 
 function logInfo(event, data = {}) {

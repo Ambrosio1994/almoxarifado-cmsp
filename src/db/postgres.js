@@ -30,7 +30,12 @@ export function getPool() {
 }
 
 export async function query(text, params = []) {
-  return measuredQuery(getPool(), text, params);
+  const { client, acquisitionMs } = await acquireClient();
+  try {
+    return await measuredQuery(client, text, params, { acquisitionMs });
+  } finally {
+    client.release();
+  }
 }
 
 export async function transaction(callback) {
@@ -42,9 +47,9 @@ export async function readTransaction(callback) {
 }
 
 async function withTransaction(beginSql, callback) {
-  const client = await getPool().connect();
+  const { client, acquisitionMs } = await acquireClient();
   try {
-    await measuredQuery(client, beginSql);
+    await measuredQuery(client, beginSql, [], { acquisitionMs });
     const measuredClient = new Proxy(client, {
       get(target, property, receiver) {
         if (property === "query") {
@@ -64,16 +69,26 @@ async function withTransaction(beginSql, callback) {
   }
 }
 
-async function measuredQuery(target, text, params = []) {
+async function acquireClient() {
+  const startedAt = performance.now();
+  const client = await getPool().connect();
+  return { client, acquisitionMs: performance.now() - startedAt };
+}
+
+async function measuredQuery(target, text, params = [], timing = {}) {
   const startedAt = performance.now();
   try {
     return await target.query(text, params);
   } finally {
-    const durationMs = performance.now() - startedAt;
+    const queryDurationMs = performance.now() - startedAt;
+    const acquisitionMs = Number(timing.acquisitionMs || 0);
+    const durationMs = acquisitionMs + queryDurationMs;
     if (durationMs >= SLOW_QUERY_THRESHOLD_MS) {
       console.warn(JSON.stringify({
         event: "postgres_slow_query",
         durationMs: Math.round(durationMs),
+        acquisitionMs: Math.round(acquisitionMs),
+        queryDurationMs: Math.round(queryDurationMs),
         statement: safeSqlSummary(text),
         parameterCount: Array.isArray(params) ? params.length : 0
       }));
@@ -129,6 +144,23 @@ export function createPoolConfig(connectionString = process.env.DATABASE_URL) {
   };
 }
 
+export function databaseTargetSummary(connectionString = runtimeDatabaseUrl(), source = runtimeDatabaseUrlSource()) {
+  if (!connectionString) return { configured: false, source };
+  try {
+    const target = databaseTarget(connectionString, source);
+    return {
+      configured: true,
+      source,
+      host: target.host,
+      port: target.port,
+      database: target.database,
+      sslmode: target.sslmode || null
+    };
+  } catch {
+    return { configured: true, source, host: "<url-invalida>" };
+  }
+}
+
 function buildSslConfig() {
   const caCertPath = process.env.DB_CA_CERT_PATH;
   return {
@@ -169,6 +201,10 @@ function runtimeDatabaseUrl() {
   if (!isTestRuntime()) return process.env.DATABASE_URL || "";
   if (!process.env.TEST_DATABASE_URL) return "";
   return assertSafeTestDatabaseUrl(process.env.TEST_DATABASE_URL);
+}
+
+function runtimeDatabaseUrlSource() {
+  return isTestRuntime() ? "TEST_DATABASE_URL" : "DATABASE_URL";
 }
 
 function assertSecureDatabaseUrl(connectionString) {

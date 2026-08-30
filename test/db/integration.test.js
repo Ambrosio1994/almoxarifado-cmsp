@@ -1,9 +1,13 @@
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { closePool, query } from "../../src/db/postgres.js";
-import { detectStoreBackend, readStore, writeStore } from "../../src/storage.js";
+import { EXPECTED_SCHEMA_MIGRATION, REQUIRED_DATABASE_TABLES, detectStoreBackend, readStore, writeStore } from "../../src/storage.js";
 import { createAuditEntry } from "../../src/domain/processos.js";
 import { createSession, resolveSessionUser } from "../../src/repositories/sessions.js";
+import { runMigrations } from "../../scripts/db-migrate.js";
 
 const integration = process.env.RUN_DB_INTEGRATION === "true" ? describe : describe.skip;
 
@@ -12,13 +16,8 @@ integration("integracao PostgreSQL", () => {
 
   it("reconhece todas as migracoes exigidas pela aplicacao", async () => {
     assert.equal(await detectStoreBackend(), "postgres");
-    const required = [
-      "app_users", "user_sessions", "app_settings",
-      "app_processes", "app_process_audit", "app_state_revision",
-      "app_email_dispatch_claims", "auth_rate_limits", "app_security_audit"
-    ];
-    const result = await query("SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename = ANY($1::text[])", [required]);
-    assert.deepEqual(result.rows.map((row) => row.tablename).sort(), required.sort());
+    const result = await query("SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename = ANY($1::text[])", [REQUIRED_DATABASE_TABLES]);
+    assert.deepEqual(result.rows.map((row) => row.tablename).sort(), REQUIRED_DATABASE_TABLES.slice().sort());
     const authColumns = await query(`
       SELECT table_name, column_name
       FROM information_schema.columns
@@ -31,8 +30,44 @@ integration("integracao PostgreSQL", () => {
       { table_name: "app_users", column_name: "auth_version" },
       { table_name: "user_sessions", column_name: "auth_version" }
     ]);
-    const migration = await query("SELECT version FROM app_schema_migrations WHERE version = '010_auth_session_version'");
+    const migration = await query("SELECT version FROM public.app_schema_migrations WHERE version = $1", [EXPECTED_SCHEMA_MIGRATION]);
     assert.equal(migration.rowCount, 1);
+  });
+
+  it("serializa runners concorrentes: uma migracao e aplicada uma unica vez", async () => {
+    const migration = createTemporaryMigration("concurrent", "SELECT pg_sleep(0.15);");
+    try {
+      const [first, second] = await Promise.all([
+        runMigrations({ databaseUrl: process.env.TEST_DATABASE_URL, databaseUrlSource: "TEST_DATABASE_URL", migrationsDir: migration.directory, logger: silentLogger }),
+        runMigrations({ databaseUrl: process.env.TEST_DATABASE_URL, databaseUrlSource: "TEST_DATABASE_URL", migrationsDir: migration.directory, logger: silentLogger })
+      ]);
+      assert.equal(first.applied.length + second.applied.length, 1);
+      assert.equal(first.skipped.length + second.skipped.length, 1);
+      assert.equal((await query("SELECT count(*)::integer AS count FROM public.app_schema_migrations WHERE version = $1", [migration.version])).rows[0].count, 1);
+      assert.equal((await query("SELECT to_regclass($1) AS relation", [`public.${migration.table}`])).rows[0].relation, migration.table);
+    } finally {
+      rmSync(migration.directory, { recursive: true, force: true });
+    }
+  });
+
+  it("fixa migrations e historico no public apesar de search_path alternativo", async () => {
+    const migration = createTemporaryMigration("search_path", "");
+    const alternateSchema = `migration_alternate_${migration.suffix}`;
+    await query(`CREATE SCHEMA ${alternateSchema}`);
+    const target = new URL(process.env.TEST_DATABASE_URL);
+    target.searchParams.set("options", `-c search_path=${alternateSchema}`);
+
+    try {
+      const first = await runMigrations({ databaseUrl: target.toString(), databaseUrlSource: "TEST_DATABASE_URL", migrationsDir: migration.directory, logger: silentLogger });
+      const second = await runMigrations({ databaseUrl: target.toString(), databaseUrlSource: "TEST_DATABASE_URL", migrationsDir: migration.directory, logger: silentLogger });
+      assert.deepEqual(first.applied, [migration.version]);
+      assert.deepEqual(second.skipped, [migration.version]);
+      assert.equal((await query("SELECT to_regclass($1) AS relation", [`public.${migration.table}`])).rows[0].relation, migration.table);
+      assert.equal((await query("SELECT to_regclass($1) AS relation", [`${alternateSchema}.${migration.table}`])).rows[0].relation, null);
+      assert.equal((await query("SELECT count(*)::integer AS count FROM public.app_schema_migrations WHERE version = $1", [migration.version])).rows[0].count, 1);
+    } finally {
+      rmSync(migration.directory, { recursive: true, force: true });
+    }
   });
 
   it("rejeita uma gravacao baseada em snapshot obsoleto", async () => {
@@ -200,3 +235,14 @@ integration("integracao PostgreSQL", () => {
     assert.equal((await query("SELECT id FROM app_security_audit WHERE id = $1", [securityEvent.rows[0].id])).rowCount, 1);
   });
 });
+
+const silentLogger = { log() {} };
+
+function createTemporaryMigration(label, prefixSql) {
+  const suffix = crypto.randomUUID().replaceAll("-", "");
+  const version = `999_${label}_${suffix}`;
+  const table = `migration_${label}_${suffix}`;
+  const directory = mkdtempSync(join(tmpdir(), "almoxarifado-db-migration-"));
+  writeFileSync(join(directory, `${version}.sql`), `${prefixSql}\nCREATE TABLE ${table} (id text PRIMARY KEY);`);
+  return { directory, suffix, table, version };
+}

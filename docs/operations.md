@@ -82,12 +82,15 @@ O script preserva o nome original registrado, grava o caminho anterior na audito
 1. Gere e restaure um backup em staging.
 2. Carregue os segredos do ambiente e execute `npm run validate:production`.
 3. Execute `npm test`, `npm run check` e o build da imagem. `npm test` usa store/uploads temporarios e ignora URLs de banco de runtime; a integracao PostgreSQL e opt-in com `TEST_DATABASE_URL` apontando para um database separado cujo nome contenha `test`.
-4. Execute `NODE_ENV=production npm run db:migrate` com `DATABASE_URL_MIGRATION` somente depois que o build passar.
-5. Suba a nova imagem e aguarde `/health/ready` retornar `200`.
-6. Valide login, consulta autenticada, criacao controlada, download autenticado e fila de e-mail.
-7. Mantenha a imagem anterior disponivel para rollback da aplicacao. Migracoes devem ser aditivas; nao reverta schema sem um procedimento testado.
+4. No Render com runtime Node, configure o **Start Command** como `npm start` (nunca `node src/server.js`). Esse comando executa o runner unico de migrations, protegido por advisory lock, antes de abrir o servidor HTTP. Em deploy por Docker, o `CMD` da imagem ja executa `npm start`.
+5. Defina `DATABASE_URL` para a URL pooled de runtime e `DATABASE_URL_MIGRATION` para a URL direta do Neon **da mesma branch e do mesmo database**. Esta segunda URL e obrigatoria quando o runtime usa endpoint Neon pooled: migrations usam advisory lock de sessao e recusam poolers sem uma conexao direta. Para runtime nao-Neon ou URL direta, `DATABASE_URL` continua sendo o fallback. Mantenha `DB_SSL=true` e `sslmode=require` ou `sslmode=verify-full` nas URLs.
+6. Suba a nova imagem e aguarde `/health/ready` retornar `200`.
+7. Valide login, consulta autenticada, criacao controlada, download autenticado e fila de e-mail.
+8. Mantenha a imagem anterior disponivel para rollback da aplicacao. Migracoes devem ser aditivas; nao reverta schema sem um procedimento testado.
 
-O fluxo acima esta automatizado, com gates seguros, em `scripts/deploy-production.sh`. O deploy pausa a aplicacao, cria o backup consistente **antes** de executar testes ou migracoes, volta a instancia atual e somente depois continua o release. Depois do build, um container temporario compara as referencias do PostgreSQL com o volume real; se houver arquivo ausente ou identidade divergente, o deploy para antes de substituir a aplicacao ativa. Execute `check` antes da janela e `deploy` para backup, testes isolados, migracao, build, validacao dos uploads, start, readiness e smoke test.
+O fluxo acima esta automatizado, com gates seguros, em `scripts/deploy-production.sh`. O deploy pausa a aplicacao, cria o backup consistente **antes** de executar testes ou migracoes, volta a instancia atual e somente depois continua o release. Depois do build, um container temporario executa o mesmo `npm start -- --check-upload-storage`: o lifecycle aplica migrations pendentes e so entao compara as referencias do PostgreSQL com o volume real. Se houver falha de migration, arquivo ausente ou identidade divergente, o deploy para antes de substituir a aplicacao ativa. Execute `check` antes da janela e `deploy` para backup, testes isolados, build, gate de migrations e uploads, start, readiness e smoke test.
+
+Se o startup nao puder consultar o schema, o log `application_startup_failed` informa se a falha e de conectividade/permissao ou de schema incompleto, o host e database sem credenciais, o schema `public`, os objetos ausentes e a migration pendente. O processo continua falhando antes de atender requisicoes quando a incompatibilidade e real; nao ha fallback para JSON quando `DATABASE_URL` esta configurada.
 
 Os limites `AUTH_MAX_BODY_BYTES` e `ADMIN_MAX_BODY_BYTES` reduzem a memoria aceita por rotas de autenticacao e administracao sem upload. `LOGIN_SCRYPT_CONCURRENCY` e `LOGIN_SCRYPT_MAX_QUEUE` limitam o trabalho simultaneo de verificacao de senha. O Painel usa cache curto por revisao, controlado por `DASHBOARD_CACHE_TTL_MS`; alteracoes persistidas invalidam naturalmente a revisao usada pela resposta.
 

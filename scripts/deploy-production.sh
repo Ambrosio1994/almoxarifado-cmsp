@@ -92,8 +92,8 @@ verify_upload_mount() {
 }
 
 check_upload_integrity() {
-  echo "Validando referencias no PostgreSQL contra o volume persistente antes da troca da aplicacao."
-  "${COMPOSE[@]}" run --rm --no-deps app node src/server.js --check-upload-storage
+  echo "Executando o gate de migrations e validando referencias no PostgreSQL contra o volume persistente antes da troca da aplicacao."
+  "${COMPOSE[@]}" run --rm --no-deps app npm start -- --check-upload-storage
 }
 
 wait_ready() {
@@ -221,7 +221,6 @@ deploy() {
   fi
 
   "${COMPOSE[@]}" build --pull app
-  NODE_ENV=production npm run db:migrate
   check_upload_integrity
   "${COMPOSE[@]}" up -d --no-deps app
   verify_upload_mount
