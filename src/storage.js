@@ -11,6 +11,7 @@ import {
   readRegularFileLimited
 } from "./security/private-files.js";
 import {
+  databaseTargetSummary,
   databaseConfigured,
   isTestRuntime,
   query,
@@ -21,7 +22,22 @@ import { recordSecurityEvent } from "./repositories/security-audit.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORE_FILE = fileURLToPath(new URL("../data/store.json", `file://${__dirname}/`));
-const EXPECTED_SCHEMA_MIGRATION = "011_process_multiple_commitments";
+export const EXPECTED_SCHEMA_MIGRATION = "011_process_multiple_commitments";
+export const REQUIRED_DATABASE_TABLES = Object.freeze([
+  "app_users",
+  "user_sessions",
+  "app_settings",
+  "app_schema_migrations",
+  "app_processes",
+  "app_process_observations",
+  "app_process_audit",
+  "app_suppliers",
+  "app_email_history",
+  "app_state_revision",
+  "app_email_dispatch_claims",
+  "auth_rate_limits",
+  "app_security_audit"
+]);
 const STORE_FILE = resolveStoreFilePath();
 let writeQueue = Promise.resolve();
 let databaseReadyConfirmed = false;
@@ -529,46 +545,58 @@ async function deleteMissingRecords(client, table, records) {
   await client.query(`DELETE FROM ${table} WHERE NOT (id = ANY($1::text[]))`, [ids]);
 }
 
-async function databaseStateReady() {
-  if (!databaseConfigured()) return false;
-  if (databaseReadyConfirmed) return true;
-  const result = await query(`
-      SELECT
-        to_regclass('public.app_users') IS NOT NULL AS users_ready,
-        to_regclass('public.user_sessions') IS NOT NULL AS sessions_ready,
-        to_regclass('public.app_settings') IS NOT NULL AS settings_ready,
-        to_regclass('public.app_schema_migrations') IS NOT NULL AS migrations_ready,
-        to_regclass('public.app_processes') IS NOT NULL AS processes_ready,
-        to_regclass('public.app_process_observations') IS NOT NULL AS observations_ready,
-        to_regclass('public.app_process_audit') IS NOT NULL AS audit_ready,
-        to_regclass('public.app_suppliers') IS NOT NULL AS suppliers_ready,
-        to_regclass('public.app_email_history') IS NOT NULL AS email_history_ready,
-        to_regclass('public.app_state_revision') IS NOT NULL AS revision_ready,
-        to_regclass('public.app_email_dispatch_claims') IS NOT NULL AS email_claims_ready,
-        to_regclass('public.auth_rate_limits') IS NOT NULL AS rate_limits_ready,
-        to_regclass('public.app_security_audit') IS NOT NULL AS security_audit_ready,
-        EXISTS (
-          SELECT 1 FROM app_schema_migrations WHERE version = '${EXPECTED_SCHEMA_MIGRATION}'
-        ) AS schema_current
-    `);
-  const row = result.rows[0] || {};
-  databaseReadyConfirmed = Boolean(
-    row.users_ready &&
-    row.sessions_ready &&
-    row.settings_ready &&
-    row.migrations_ready &&
-    row.processes_ready &&
-    row.observations_ready &&
-    row.audit_ready &&
-    row.suppliers_ready &&
-    row.email_history_ready &&
-    row.revision_ready &&
-    row.email_claims_ready &&
-    row.rate_limits_ready &&
-    row.security_audit_ready &&
-    row.schema_current
-  );
-  return databaseReadyConfirmed;
+export async function inspectDatabaseSchema(options = {}) {
+  const configured = options.databaseConfigured ?? databaseConfigured();
+  const cacheable = options.databaseConfigured === undefined && options.query === undefined;
+  if (!configured) {
+    return {
+      configured: false,
+      ready: false,
+      schema: "public",
+      missingObjects: [],
+      pendingMigration: null
+    };
+  }
+  if (cacheable && databaseReadyConfirmed) {
+    return {
+      configured: true,
+      ready: true,
+      schema: "public",
+      missingObjects: [],
+      pendingMigration: null
+    };
+  }
+
+  const executeQuery = options.query || query;
+  const result = await executeQuery(`
+    SELECT object_name
+    FROM unnest($1::text[]) AS required(object_name)
+    WHERE to_regclass(format('public.%I', object_name)) IS NULL
+    ORDER BY object_name
+  `, [REQUIRED_DATABASE_TABLES]);
+  const missingObjects = result.rows.map((row) => `public.${row.object_name}`).sort();
+  let migrationCurrent = false;
+
+  if (!missingObjects.includes("public.app_schema_migrations")) {
+    const migration = await executeQuery(`
+      SELECT EXISTS (
+        SELECT 1
+        FROM public.app_schema_migrations
+        WHERE version = $1
+      ) AS migration_current
+    `, [EXPECTED_SCHEMA_MIGRATION]);
+    migrationCurrent = Boolean(migration.rows[0]?.migration_current);
+  }
+
+  const inspection = {
+    configured: true,
+    ready: missingObjects.length === 0 && migrationCurrent,
+    schema: "public",
+    missingObjects,
+    pendingMigration: migrationCurrent ? null : EXPECTED_SCHEMA_MIGRATION
+  };
+  if (cacheable && inspection.ready) databaseReadyConfirmed = true;
+  return inspection;
 }
 
 export async function detectStoreBackend() {
@@ -576,19 +604,43 @@ export async function detectStoreBackend() {
   return "json";
 }
 
-async function requireConfiguredDatabase() {
-  if (!databaseConfigured()) return false;
-  let ready;
+export async function requireConfiguredDatabase(options = {}) {
+  const configured = options.databaseConfigured ?? databaseConfigured();
+  if (!configured) return false;
+  let inspection;
   try {
-    ready = await databaseStateReady();
+    inspection = await inspectDatabaseSchema(options);
   } catch (cause) {
-    const error = new Error("PostgreSQL configurado, mas indisponivel.", { cause });
-    error.statusCode = 503;
+    const error = new Error("PostgreSQL configurado, mas indisponivel ou sem permissao para consultar o schema public. Verifique conectividade, SSL e permissoes.", { cause });
+    Object.assign(error, {
+      statusCode: 503,
+      databaseState: "unavailable",
+      databaseTarget: options.databaseTarget || databaseTargetSummary(),
+      schema: "public",
+      suggestedAction: "Verifique DATABASE_URL, DB_SSL, conectividade e permissoes de leitura no schema public."
+    });
     throw error;
   }
-  if (!ready) {
-    const error = new Error("PostgreSQL configurado, mas o schema da aplicacao nao esta pronto.");
-    error.statusCode = 503;
+  if (!inspection.ready) {
+    const details = [];
+    if (inspection.missingObjects.length) details.push(`Objetos ausentes: ${inspection.missingObjects.join(", ")}.`);
+    if (inspection.pendingMigration) details.push(`Migration pendente: ${inspection.pendingMigration}.`);
+    const schemaHistoryCurrent = inspection.missingObjects.length > 0 && !inspection.pendingMigration;
+    const resolution = schemaHistoryCurrent
+      ? "O historico de migrations esta atual, mas o schema foi alterado ou corrompido; repare-o de forma controlada ou restaure-o de um backup."
+      : "Execute npm run db:migrate:production antes de iniciar.";
+    const error = new Error(`PostgreSQL conectado, mas o schema esta incompleto. ${details.join(" ")} ${resolution}`);
+    Object.assign(error, {
+      statusCode: 503,
+      databaseState: "schema_incomplete",
+      databaseTarget: options.databaseTarget || databaseTargetSummary(),
+      schema: inspection.schema,
+      missingObjects: inspection.missingObjects,
+      pendingMigration: inspection.pendingMigration,
+      suggestedAction: schemaHistoryCurrent
+        ? "Nao marque migrations manualmente. Repare os objetos ausentes de forma controlada ou restaure um backup compativel."
+        : "Execute npm run db:migrate:production e confirme que DATABASE_URL_MIGRATION aponta para o mesmo banco de DATABASE_URL."
+    });
     throw error;
   }
   return true;

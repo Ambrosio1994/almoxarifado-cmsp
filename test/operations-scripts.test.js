@@ -142,7 +142,7 @@ describe("scripts operacionais", () => {
     const dockerfile = readText("Dockerfile");
     const dockerignore = readText(".dockerignore");
     assert.match(dockerfile, /COPY --chown=node:node \. \./);
-    assert.match(dockerfile, /CMD \["node", "src\/server\.js"\]/);
+    assert.match(dockerfile, /CMD \["npm", "start"\]/);
     assert.doesNotMatch(dockerignore, /^src\/?$/m);
     assert.doesNotMatch(dockerignore, /^scripts\/?$/m);
     assert.equal(readText("src/uploads/drive-storage.js").length > 0, true);
@@ -196,7 +196,8 @@ describe("scripts operacionais", () => {
     assert.match(compose, /name: almoxarifado_uploads/);
     const deploy = readText("scripts/deploy-production.sh");
     assert.match(deploy, /verify_upload_mount/);
-    assert.match(deploy, /run --rm --no-deps app node src\/server\.js --check-upload-storage/);
+    assert.match(deploy, /run --rm --no-deps app npm start -- --check-upload-storage/);
+    assert.doesNotMatch(deploy, /NODE_ENV=production npm run db:migrate/);
     assert.ok(deploy.indexOf("check_upload_integrity") < deploy.indexOf('"${COMPOSE[@]}" up -d --no-deps app'));
   });
 });

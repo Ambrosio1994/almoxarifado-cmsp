@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { assertSafeTestDatabaseUrl, createPoolConfig } from "../../src/db/postgres.js";
-import { runMigrations } from "../../scripts/db-migrate.js";
+import { resolveMigrationDatabaseUrl, runMigrations } from "../../scripts/db-migrate.js";
 
 describe("configuracao PostgreSQL", () => {
   it("inclui versao de autenticacao em usuarios e sessoes", () => {
@@ -145,6 +145,27 @@ describe("configuracao PostgreSQL", () => {
 });
 
 describe("runner de migracoes PostgreSQL", () => {
+  it("exige URL direta quando o runtime Neon usa pooler e aceita fallback direto", () => {
+    assert.throws(() => resolveMigrationDatabaseUrl({
+      DATABASE_URL: "postgresql://user:secret@ep-blue-123-pooler.us-east-2.aws.neon.tech/neondb?sslmode=require"
+    }), /DATABASE_URL_MIGRATION.*URL direta/);
+
+    assert.deepEqual(resolveMigrationDatabaseUrl({
+      DATABASE_URL: "postgresql://user:secret@ep-blue-123.us-east-2.aws.neon.tech/neondb?sslmode=require"
+    }), {
+      databaseUrl: "postgresql://user:secret@ep-blue-123.us-east-2.aws.neon.tech/neondb?sslmode=require",
+      source: "DATABASE_URL"
+    });
+
+    assert.deepEqual(resolveMigrationDatabaseUrl({
+      DATABASE_URL: "postgresql://user:secret@ep-blue-123-pooler.us-east-2.aws.neon.tech/neondb?sslmode=require",
+      DATABASE_URL_MIGRATION: "postgresql://migration:secret@ep-blue-123.us-east-2.aws.neon.tech/neondb?sslmode=require"
+    }), {
+      databaseUrl: "postgresql://migration:secret@ep-blue-123.us-east-2.aws.neon.tech/neondb?sslmode=require",
+      source: "DATABASE_URL_MIGRATION"
+    });
+  });
+
   it("nao reaplica migracoes ja registradas", async () => {
     const tempDir = createMigrationsDir({
       "001_initial_schema.sql": "CREATE TABLE example (id text PRIMARY KEY);"
@@ -334,6 +355,10 @@ function createFakeDatabase(options = {}) {
         async connect() {},
         async end() {},
         async query(sql, params = []) {
+          if (sql === "SET search_path TO public") {
+            controlSql.push(sql);
+            return { rows: [] };
+          }
           if (/pg_advisory_(?:un)?lock/.test(sql)) {
             controlSql.push(sql);
             return { rows: [] };
@@ -354,10 +379,10 @@ function createFakeDatabase(options = {}) {
             pendingVersions = [];
             return { rows: [] };
           }
-          if (/SELECT version FROM app_schema_migrations/.test(sql)) {
+          if (/SELECT version FROM (?:public\.)?app_schema_migrations/.test(sql)) {
             return { rows: [...appliedVersions].map((version) => ({ version })) };
           }
-          if (/INSERT INTO app_schema_migrations/.test(sql)) {
+          if (/INSERT INTO (?:public\.)?app_schema_migrations/.test(sql)) {
             if (failRecordOnce) {
               failRecordOnce = false;
               throw new Error("migration record failed");
