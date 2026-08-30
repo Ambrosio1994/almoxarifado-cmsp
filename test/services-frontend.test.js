@@ -76,6 +76,65 @@ describe("Servicos no DOM", () => {
       dom.window.close();
     }
   });
+
+  it("adiciona itens em lote, replica a descricao e importa uma planilha CSV", async () => {
+    const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
+    const dom = new JSDOM(html, { url: "http://localhost/empenhos", pretendToBeVisual: true });
+    installDialogPolyfill(dom.window);
+    const restoreGlobals = installDomGlobals(dom.window);
+
+    globalThis.fetch = async (input) => {
+      const path = String(input);
+      if (path === "/auth/session") return jsonResponse({ id: "u1", email: "estoque@example.com", nome: "Estoque", role: "almoxarifado" });
+      if (path === "/api/meta") return jsonResponse({ status: [], filtrosRapidos: [], transicoes: {} });
+      if (path.startsWith("/api/dashboard")) return jsonResponse({ ano: 2026, anos: [2026], metrics: {}, charts: { execucaoMensal: [], distribuicaoStatus: [] } });
+      if (path === "/api/processes") return jsonResponse([]);
+      if (path === "/api/suppliers") return jsonResponse([]);
+      throw new Error(`Requisicao inesperada no teste: ${path}`);
+    };
+
+    try {
+      await import(`${new URL("../public/app.js", import.meta.url).href}?materials-test=${Date.now()}`);
+      dom.window.document.querySelector("#newProcessButton").click();
+      const materialsList = dom.window.document.querySelector("#materialsList");
+      const firstDescription = materialsList.querySelector('[data-material-field="descricao"]');
+      firstDescription.value = "Papel A4";
+      firstDescription.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+
+      dom.window.document.querySelector("#materialRowsCount").value = "2";
+      dom.window.document.querySelector("#addMaterialRowsButton").click();
+      assert.equal(materialsList.children.length, 3);
+      dom.window.document.querySelector("#copyMaterialDescriptionButton").click();
+      assert.deepEqual(
+        [...materialsList.querySelectorAll('[data-material-field="descricao"]')].map((input) => input.value),
+        ["Papel A4", "Papel A4", "Papel A4"]
+      );
+
+      const spreadsheetInput = dom.window.document.querySelector("#materialsSpreadsheetInput");
+      Object.defineProperty(spreadsheetInput, "files", {
+        configurable: true,
+        value: [{
+          name: "itens.csv",
+          text: async () => "descricao;quantidade;valor unitario\nCaneta;2;0,7326\nEtiqueta;1;47,4750\n"
+        }]
+      });
+      spreadsheetInput.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+
+      await waitFor(() => materialsList.children.length === 5);
+      assert.deepEqual(
+        [...materialsList.querySelectorAll('[data-material-field="descricao"]')].slice(-2).map((input) => input.value),
+        ["Caneta", "Etiqueta"]
+      );
+      assert.deepEqual(
+        [...materialsList.querySelectorAll('[data-material-field="valorUnitario"]')].slice(-2).map((input) => input.value),
+        ["0,7326", "47,4750"]
+      );
+      assert.match(dom.window.document.querySelector("#materialsImportHelp").textContent, /2 itens importados de itens\.csv/);
+    } finally {
+      restoreGlobals();
+      dom.window.close();
+    }
+  });
 });
 
 function serviceFixture(today) {

@@ -333,7 +333,7 @@ describe("contrato visual e de navegacao", () => {
 
   it("abre os dados gerais depois de criar um processo ja enviado para SALC", () => {
     assert.match(app, /const isCreating = !id/);
-    assert.match(app, /if \(isCreating\)[\s\S]*?openProcessDetail\(createdProcess, "processes"\)/);
+    assert.match(app, /if \(isCreating\)[\s\S]*?openProcessDetail\(savedProcess, "processes"\)/);
     assert.match(app, /status: processo\.status \|\| "Enviado para SALC"/);
     assert.match(app, /"Enviado para SALC": \["dataEnvioSalc"\]/);
   });

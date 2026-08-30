@@ -15,6 +15,7 @@ import {
   requiresAdmin,
   resolveEmailConfiguration,
   roleCanMutate,
+  normalizeProcessNumber,
   validateProcessBody
 } from "../src/server.js";
 import { createSession } from "../src/repositories/sessions.js";
@@ -664,14 +665,14 @@ describe("rotas http", () => {
     for (const body of cases) {
       const response = await postJson("/api/processes", token, body);
       assert.equal(response.statusCode, 201);
-      assert.equal(response.json().numeroProcesso, body.numeroProcesso || "");
+      assert.equal(response.json().numeroProcesso, normalizeProcessNumber(body.numeroProcesso || ""));
       assert.equal(response.json().numeroEmpenho, body.expectedCommitment || body.numeroEmpenho);
     }
 
     const persisted = await readStore();
     for (const body of cases) {
       assert.ok(persisted.processos.some((processo) => (
-        processo.numeroProcesso === (body.numeroProcesso || "")
+        processo.numeroProcesso === normalizeProcessNumber(body.numeroProcesso || "")
           && processo.numeroEmpenho === (body.expectedCommitment || body.numeroEmpenho)
       )));
     }
@@ -976,7 +977,10 @@ describe("rotas http", () => {
     assert.equal(valid.statusCode, 201);
     assert.equal(valid.json().dataProcesso, "2024-02-29");
     const persisted = await readStore();
-    assert.equal(persisted.processos.find((processo) => processo.numeroProcesso === processNumber)?.dataProcesso, "2024-02-29");
+    assert.equal(
+      persisted.processos.find((processo) => processo.numeroProcesso === normalizeProcessNumber(processNumber))?.dataProcesso,
+      "2024-02-29"
+    );
   });
 
   it("considera o processo enviado para SALC no momento da criacao", async () => {
