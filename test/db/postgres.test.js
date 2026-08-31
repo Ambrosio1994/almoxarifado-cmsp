@@ -1,5 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -324,11 +325,211 @@ describe("runner de migracoes PostgreSQL", () => {
       rmSync(tempDir, { recursive: true, force: true });
     }
   });
+
+  it("fecha o client e registra falha de conexao sem expor URL", async () => {
+    const tempDir = createMigrationsDir({ "001_connection.sql": "SELECT 1;" });
+    const logs = [];
+    let closed = 0;
+    try {
+      await assert.rejects(() => runMigrations({
+        databaseUrl: "postgres://user:secret@localhost:5432/app",
+        migrationsDir: tempDir,
+        logger: captureLogger(logs),
+        createClient: () => ({
+          async connect() {
+            throw new Error("connect postgres://user:secret@localhost:5432/app refused");
+          },
+          async end() { closed += 1; },
+          async query() { throw new Error("nao deveria consultar"); }
+        })
+      }), /connect postgres/);
+      assert.equal(closed, 1);
+      assert.ok(logEvents(logs).some((event) => event.event === "migration_runner_failed" && event.error.includes("[database-url-redacted]")));
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  for (const phase of ["connection", "lock", "migration"]) {
+    it(`interrompe por SIGTERM durante ${phase}, limpa a sessao e nao conclui`, async () => {
+      const tempDir = createMigrationsDir({ "001_interrupt.sql": "CREATE TABLE example (id text PRIMARY KEY);" });
+      const signals = new EventEmitter();
+      const logs = [];
+      const fake = createInterruptibleClient(phase);
+      try {
+        const run = runMigrations({
+          databaseUrl: "postgres://user:pass@localhost:5432/app",
+          migrationsDir: tempDir,
+          createClient: () => fake.client,
+          logger: captureLogger(logs),
+          signalSource: signals
+        });
+        await fake.waitForInterruptionPoint();
+        signals.emit("SIGTERM");
+        await assert.rejects(() => run, (error) => error.code === "MIGRATION_INTERRUPTED" && error.exitCode === 143);
+        assert.equal(fake.closed, 1);
+        assert.equal(fake.lockReleased, true);
+        const events = logEvents(logs);
+        assert.ok(events.some((event) => event.event === "migration_signal_received" && event.signal === "SIGTERM"));
+        assert.ok(events.some((event) => event.event === "migration_runner_interrupted"));
+        assert.equal(events.some((event) => event.event === "migration_runner_complete"), false);
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+  }
+
+  for (const signal of ["SIGTERM", "SIGINT"]) {
+    for (const phase of ["unlock", "end"]) {
+      it(`interrompe por ${signal} durante ${phase} sem concluir com sucesso`, async () => {
+        const tempDir = createMigrationsDir({ "001_cleanup_interrupt.sql": "CREATE TABLE cleanup_example (id text PRIMARY KEY);" });
+        const signals = new EventEmitter();
+        const logs = [];
+        const fake = createCleanupInterruptClient(phase);
+        try {
+          const run = runMigrations({
+            databaseUrl: "postgres://user:pass@localhost:5432/app",
+            migrationsDir: tempDir,
+            createClient: () => fake.client,
+            logger: captureLogger(logs),
+            signalSource: signals
+          });
+          await fake.waitForInterruptionPoint();
+          signals.emit(signal);
+          fake.release();
+          await assert.rejects(() => run, (error) => error.code === "MIGRATION_INTERRUPTED"
+            && error.exitCode === (signal === "SIGTERM" ? 143 : 130));
+          assert.equal(fake.closed, 1);
+          const events = logEvents(logs);
+          assert.equal(events.filter((event) => event.event === "migration_signal_received" && event.signal === signal).length, 1);
+          assert.equal(events.filter((event) => event.event === "migration_runner_interrupted" && event.signal === signal).length, 1);
+          assert.equal(events.some((event) => event.event === "migration_runner_complete"), false);
+        } finally {
+          rmSync(tempDir, { recursive: true, force: true });
+        }
+      });
+    }
+  }
 });
 
 const silentLogger = {
   log() {}
 };
+
+function captureLogger(logs) {
+  return { log(message) { logs.push(message); } };
+}
+
+function logEvents(logs) {
+  return logs.flatMap((message) => {
+    try {
+      return [JSON.parse(message)];
+    } catch {
+      return [];
+    }
+  });
+}
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+function createInterruptibleClient(phase) {
+  const reached = deferred();
+  const pending = deferred();
+  let closed = 0;
+  let lockHeld = false;
+  const client = {
+    async connect() {
+      if (phase === "connection") {
+        reached.resolve();
+        return pending.promise;
+      }
+    },
+    async end() {
+      closed += 1;
+      lockHeld = false;
+      pending.resolve();
+    },
+    async query(sql) {
+      if (sql === "SET search_path TO public") return { rows: [] };
+      if (/pg_advisory_lock/.test(sql)) {
+        if (phase === "lock") {
+          reached.resolve();
+          return pending.promise;
+        }
+        lockHeld = true;
+        return { rows: [] };
+      }
+      if (/SELECT version FROM public\.app_schema_migrations/.test(sql)) return { rows: [] };
+      if (sql === "BEGIN") return { rows: [] };
+      if (/CREATE TABLE example/.test(sql)) {
+        reached.resolve();
+        return pending.promise;
+      }
+      if (/pg_advisory_unlock/.test(sql)) {
+        lockHeld = false;
+        return { rows: [] };
+      }
+      return { rows: [] };
+    }
+  };
+  return {
+    client,
+    get closed() { return closed; },
+    get lockReleased() { return !lockHeld; },
+    waitForInterruptionPoint: () => reached.promise
+  };
+}
+
+function createCleanupInterruptClient(phase) {
+  const reached = deferred();
+  const pending = deferred();
+  let closed = 0;
+  let lockHeld = false;
+  const client = {
+    async connect() {},
+    async end() {
+      if (phase === "end") {
+        reached.resolve();
+        await pending.promise;
+      }
+      closed += 1;
+      lockHeld = false;
+    },
+    async query(sql) {
+      if (sql === "SET search_path TO public") return { rows: [] };
+      if (/pg_advisory_lock/.test(sql)) {
+        lockHeld = true;
+        return { rows: [] };
+      }
+      if (/SELECT version FROM public\.app_schema_migrations/.test(sql)) return { rows: [] };
+      if (["BEGIN", "COMMIT"].includes(sql) || /CREATE TABLE cleanup_example/.test(sql) || /INSERT INTO public\.app_schema_migrations/.test(sql)) return { rows: [] };
+      if (/pg_advisory_unlock/.test(sql)) {
+        if (phase === "unlock") {
+          reached.resolve();
+          await pending.promise;
+        }
+        lockHeld = false;
+        return { rows: [] };
+      }
+      throw new Error(`Consulta inesperada: ${sql}`);
+    }
+  };
+  return {
+    client,
+    get closed() { return closed; },
+    waitForInterruptionPoint: () => reached.promise,
+    release: () => pending.resolve(),
+    get lockReleased() { return !lockHeld; }
+  };
+}
 
 function createMigrationsDir(files) {
   const tempDir = mkdtempSync(join(tmpdir(), "almoxarifado-migrations-"));
