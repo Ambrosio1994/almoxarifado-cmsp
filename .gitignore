@@ -28,3 +28,10 @@ certs/*.srl
 
 .DS_Store
 Thumbs.db
+
+# Configuracao local dos agentes
+.codex/config.toml
+.codex/agents/executor.toml
+.codex/agents/verifier.toml
+AGENTS.md
+docs/agent/WORKFLOW.md
