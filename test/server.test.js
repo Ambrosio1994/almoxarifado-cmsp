@@ -16,11 +16,13 @@ import {
   resolveEmailConfiguration,
   roleCanMutate,
   normalizeProcessNumber,
+  uploadIntegrityForHealth,
   validateProcessBody
 } from "../src/server.js";
 import { createSession } from "../src/repositories/sessions.js";
 import { hashPassword, verifyPassword } from "../src/security/password-policy.js";
 import { readStore, writeStore } from "../src/storage.js";
+import { refreshUploadIntegrityInBackground } from "../src/uploads/upload-storage.js";
 
 describe("respostas de erro do servidor", () => {
   it("nao expoe detalhes internos em erro 500", () => {
@@ -68,6 +70,55 @@ describe("readiness da inicializacao de uploads", () => {
       uploadStartupReady: true,
       applicationStartupComplete: true
     }), true);
+  });
+
+  it("responde usando a ultima integridade e atualiza cache expirado sem aguardar Drive", async () => {
+    let resolveRefresh;
+    const refresh = new Promise((resolve) => {
+      resolveRefresh = resolve;
+    });
+    let refreshCalls = 0;
+    const result = uploadIntegrityForHealth({
+      integrityState: {
+        result: { ok: true, referenced: 3, available: 3, missing: 0 },
+        stale: true
+      },
+      nodeEnvironment: "production",
+      refresh: () => {
+        refreshCalls += 1;
+        return refresh;
+      }
+    });
+
+    assert.deepEqual(result, { ok: true, referenced: 3, available: 3, missing: 0 });
+    assert.equal(refreshCalls, 1);
+    resolveRefresh();
+    await refresh;
+  });
+
+  it("mantem readiness de uploads indisponivel sem resultado de integridade", () => {
+    assert.deepEqual(uploadIntegrityForHealth({
+      integrityState: { result: null, stale: false },
+      refresh: async () => null
+    }), { ok: false, referenced: 0, available: 0, missing: null });
+  });
+
+  it("nao altera readiness nem aciona refresh fora de producao", () => {
+    let refreshCalls = 0;
+    const result = uploadIntegrityForHealth({
+      nodeEnvironment: "test",
+      integrityState: { result: { ok: true, referenced: 1, available: 1, missing: 0 }, stale: true },
+      refresh: async () => { refreshCalls += 1; }
+    });
+    assert.equal(result.ok, true);
+    assert.equal(refreshCalls, 0);
+  });
+
+  it("compartilha uma unica atualizacao de integridade em segundo plano", async () => {
+    const first = refreshUploadIntegrityInBackground({ backend: "local", references: [] });
+    const second = refreshUploadIntegrityInBackground({ backend: "local", references: [] });
+    assert.equal(first, second);
+    await first;
   });
 });
 
@@ -828,7 +879,7 @@ describe("rotas http", () => {
 
   it("acompanha servico continuado por competencia e percentual sem exigir entrega", async () => {
     const { token } = await authenticatedAs("almoxarifado");
-    const today = new Date().toISOString().slice(0, 10);
+    const today = currentBrazilianDate();
     const competence = today.slice(0, 7);
     const created = await postJson("/api/processes", token, {
       numeroProcesso: `SERV-${crypto.randomUUID().slice(0, 8)}`,
@@ -1858,6 +1909,17 @@ function escapeRegExp(value = "") {
 }
 
 let testCommitmentSequence = 1000;
+
+function currentBrazilianDate() {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(new Date());
+  const values = Object.fromEntries(parts.map(({ type, value }) => [type, value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
 
 function testCommitmentNumber(year = 2026) {
   testCommitmentSequence += 1;

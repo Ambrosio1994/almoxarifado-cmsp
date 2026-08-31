@@ -42,6 +42,7 @@ const DEFAULT_INTEGRITY_CACHE_TTL_MS = 60_000;
 let activeStorageIdentity = "";
 let activeIdentityBackend = "";
 const integrityCache = { checkedAt: 0, result: null };
+let integrityRefreshPromise = null;
 const volatileDatabaseIdentities = new Map();
 let uploadStorageReadiness = Object.freeze({ ready: false, backend: "", identity: "", stage: "not_started" });
 
@@ -285,6 +286,25 @@ export async function inspectUploadIntegrity(options = {}) {
   integrityCache.checkedAt = now;
   integrityCache.result = result;
   return result;
+}
+
+export function uploadIntegrityState(options = {}) {
+  const now = options.now ?? Date.now();
+  const ttlMs = positiveInteger(options.cacheTtlMs ?? process.env.UPLOAD_INTEGRITY_CACHE_TTL_MS, DEFAULT_INTEGRITY_CACHE_TTL_MS);
+  return Object.freeze({
+    result: integrityCache.result,
+    checkedAt: integrityCache.checkedAt,
+    stale: !integrityCache.result || now - integrityCache.checkedAt >= ttlMs
+  });
+}
+
+export function refreshUploadIntegrityInBackground(options = {}) {
+  if (integrityRefreshPromise) return integrityRefreshPromise;
+  integrityRefreshPromise = inspectUploadIntegrity({ ...options, force: true })
+    .finally(() => {
+      integrityRefreshPromise = null;
+    });
+  return integrityRefreshPromise;
 }
 
 export function parseDriveUploadPath(uploadPath = "") {

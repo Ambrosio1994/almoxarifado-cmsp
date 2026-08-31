@@ -79,7 +79,9 @@ import {
   getUploadMetadata,
   inspectUploadIntegrity,
   putUploadFile,
+  refreshUploadIntegrityInBackground,
   streamUploadTo,
+  uploadIntegrityState,
   uploadStorageReadinessState
 } from "./uploads/upload-storage.js";
 import {
@@ -2807,11 +2809,7 @@ async function handleHealth(res, pathname = "/health") {
     }
   }
   if (process.env.NODE_ENV === "production" && checks.storage && uploadStartupReady) {
-    try {
-      checks.uploads = await inspectUploadIntegrity({ backend: UPLOAD_STORAGE_BACKEND, root: UPLOAD_ROOT });
-    } catch {
-      checks.uploads = { ok: false, referenced: 0, available: 0, missing: null };
-    }
+    checks.uploads = uploadIntegrityForHealth({ backend: UPLOAD_STORAGE_BACKEND, root: UPLOAD_ROOT });
   }
   const ok = pathname === "/health/ready"
     ? readinessChecksPass(checks, {
@@ -2826,6 +2824,20 @@ async function handleHealth(res, pathname = "/health") {
     checks,
     checkedAt: new Date().toISOString()
   });
+}
+
+export function uploadIntegrityForHealth(options = {}) {
+  const state = options.integrityState || uploadIntegrityState(options);
+  const production = (options.nodeEnvironment || process.env.NODE_ENV) === "production";
+  if (production && state.stale) {
+    const refresh = options.refresh || refreshUploadIntegrityInBackground;
+    void refresh(options).catch((error) => {
+      logError("upload_storage_integrity_refresh_failed", {
+        message: safeStartupErrorMessage(error)
+      });
+    });
+  }
+  return state.result || { ok: false, referenced: 0, available: 0, missing: null };
 }
 
 export function readinessChecksPass(checks, options = {}) {
