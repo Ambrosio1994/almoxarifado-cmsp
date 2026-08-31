@@ -85,7 +85,7 @@ export async function runMigrations(options = {}) {
       } catch (error) {
         if (state.interruption) throw state.interruption;
         await rollbackMigrationTransaction(state, logger);
-        throw new Error(`Falha ao aplicar ${migration}: ${error.message}`);
+        throw createMigrationApplyError(migration, error);
       }
       appliedMigrations.add(migrationVersion);
       result.applied.push(migrationVersion);
@@ -107,9 +107,13 @@ export async function runMigrations(options = {}) {
     throw state.interruption;
   }
   if (failure) {
+    const failureDetails = classifyMigrationFailure(failure);
     logMigrationEvent(logger, state, "migration_runner_failed", {
       signal: null,
-      error: safeMigrationError(failure)
+      error: safeMigrationError(failure),
+      failureKind: failureDetails.kind,
+      postgresCode: failureDetails.postgresCode,
+      action: failureDetails.action
     });
     throw failure;
   }
@@ -284,6 +288,77 @@ function safeMigrationError(error) {
   return String(error?.message || "Erro desconhecido")
     .replace(/postgres(?:ql)?:\/\/[^\s]+/gi, "[database-url-redacted]")
     .slice(0, 400);
+}
+
+function createMigrationApplyError(migration, error) {
+  const migrationError = new Error(`Falha ao aplicar ${migration}: ${safeMigrationError(error)}`, { cause: error });
+  if (error?.code) migrationError.code = error.code;
+  return migrationError;
+}
+
+function classifyMigrationFailure(error) {
+  const postgresError = findPostgresError(error);
+  const postgresCode = typeof postgresError?.code === "string" ? postgresError.code : null;
+  const details = `${error?.message || ""}\n${postgresError?.message || ""}`.toLowerCase();
+
+  if (postgresCode === "42501" && /must be owner/.test(details)) {
+    return {
+      kind: "ownership_mismatch",
+      postgresCode,
+      action: "DATABASE_URL_MIGRATION deve usar a role proprietaria do objeto PostgreSQL que a migration altera."
+    };
+  }
+  if (postgresCode === "42501" || /permission denied/.test(details)) {
+    return {
+      kind: "permission_denied",
+      postgresCode,
+      action: "Verifique as permissoes da role usada por DATABASE_URL_MIGRATION no schema public e nos objetos afetados."
+    };
+  }
+  if (postgresCode === "2BP01" || /cannot drop[\s\S]*because[\s\S]*(depend|constraint)|dependent objects/.test(details)) {
+    return {
+      kind: "constraint_dependency",
+      postgresCode,
+      action: "Verifique as dependencias e constraints do objeto antes de aplicar a migration; nao remova constraints automaticamente."
+    };
+  }
+  if (postgresCode === "42P01" || postgresCode === "3F000" || /relation .+ does not exist|schema .+ does not exist/.test(details)) {
+    return {
+      kind: "schema_mismatch",
+      postgresCode,
+      action: "Confirme que as migrations anteriores foram aplicadas no schema public antes de repetir a migration pendente."
+    };
+  }
+  if (isConnectionFailure(postgresCode, details)) {
+    return {
+      kind: "connection_unavailable",
+      postgresCode,
+      action: "Verifique DATABASE_URL_MIGRATION, SSL, rede e disponibilidade do PostgreSQL."
+    };
+  }
+  return {
+    kind: "postgres_error",
+    postgresCode,
+    action: "Revise o erro PostgreSQL e a migration pendente antes de tentar novamente."
+  };
+}
+
+function findPostgresError(error) {
+  let candidate = error;
+  const visited = new Set();
+  while (candidate && typeof candidate === "object" && !visited.has(candidate)) {
+    if (candidate.code) return candidate;
+    visited.add(candidate);
+    candidate = candidate.cause;
+  }
+  return error;
+}
+
+function isConnectionFailure(code, details) {
+  return Boolean(
+    (typeof code === "string" && (/^08/.test(code) || ["57P01", "ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "EAI_AGAIN", "ENOTFOUND"].includes(code)))
+    || /\b(connect|connection)\b[\s\S]*(refused|timeout|timed out|failed)|database system is starting up/.test(details)
+  );
 }
 
 function withoutOuterTransaction(sql, migrationName) {
