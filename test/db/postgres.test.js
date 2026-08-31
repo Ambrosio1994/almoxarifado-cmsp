@@ -350,6 +350,44 @@ describe("runner de migracoes PostgreSQL", () => {
     }
   });
 
+  it("classifica falha de ownership ao remover indice e preserva rollback, lock e causa", async () => {
+    const tempDir = createMigrationsDir({
+      "011_process_multiple_commitments.sql": "DROP INDEX IF EXISTS app_processes_numero_processo_uidx;"
+    });
+    const logs = [];
+    const ownershipError = Object.assign(
+      new Error("must be owner of index app_processes_numero_processo_uidx"),
+      { code: "42501" }
+    );
+    const fakeDatabase = createFakeDatabase({
+      failOnSql: /DROP INDEX IF EXISTS app_processes_numero_processo_uidx/,
+      failOnSqlError: ownershipError
+    });
+
+    try {
+      await assert.rejects(() => runMigrations({
+        databaseUrl: "postgres://user:pass@localhost:5432/app",
+        migrationsDir: tempDir,
+        createClient: fakeDatabase.createClient,
+        logger: captureLogger(logs)
+      }), (error) => error.code === "42501"
+        && error.cause === ownershipError
+        && /Falha ao aplicar 011_process_multiple_commitments\.sql/.test(error.message));
+
+      assert.equal(fakeDatabase.controlSql.includes("ROLLBACK"), true);
+      assert.equal(fakeDatabase.controlSql.filter((sql) => /pg_advisory_unlock/.test(sql)).length, 1);
+      assert.equal(fakeDatabase.closedClients, 1);
+      const events = logEvents(logs);
+      const failed = events.find((event) => event.event === "migration_runner_failed");
+      assert.equal(failed.failureKind, "ownership_mismatch");
+      assert.equal(failed.postgresCode, "42501");
+      assert.match(failed.action, /DATABASE_URL_MIGRATION.*role proprietaria/);
+      assert.equal(events.some((event) => event.event === "migration_runner_complete"), false);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   for (const phase of ["connection", "lock", "migration"]) {
     it(`interrompe por SIGTERM durante ${phase}, limpa a sessao e nao conclui`, async () => {
       const tempDir = createMigrationsDir({ "001_interrupt.sql": "CREATE TABLE example (id text PRIMARY KEY);" });
@@ -544,17 +582,20 @@ function createFakeDatabase(options = {}) {
   const appliedSql = [];
   const controlSql = [];
   const failOnSql = options.failOnSql;
+  const failOnSqlError = options.failOnSqlError;
   let failRecordOnce = Boolean(options.failRecordOnce);
   let pendingVersions = [];
+  let closedClients = 0;
 
   return {
     appliedVersions,
     appliedSql,
     controlSql,
+    get closedClients() { return closedClients; },
     createClient() {
       return {
         async connect() {},
-        async end() {},
+        async end() { closedClients += 1; },
         async query(sql, params = []) {
           if (sql === "SET search_path TO public") {
             controlSql.push(sql);
@@ -593,7 +634,7 @@ function createFakeDatabase(options = {}) {
           }
           appliedSql.push(sql);
           if (failOnSql?.test(sql)) {
-            throw new Error("migration failed");
+            throw failOnSqlError || new Error("migration failed");
           }
           return { rows: [] };
         }
