@@ -11,9 +11,9 @@ import {
   dockerUploadsArchiveArgs,
   verifyBackupManifest
 } from "../scripts/backup-production.js";
-import { roleSecurityAlerts } from "../scripts/audit-postgres-role.js";
+import { aclPrivilegeOrigin, roleAuditQueryCatalog, roleSecurityAlerts } from "../scripts/audit-postgres-role.js";
 import { checkLocalPermissions } from "../scripts/check-local-permissions.js";
-import { assertRestoreTargetSafe, collectUploadPaths } from "../scripts/verify-restored-database.js";
+import { assertRestoreTargetSafe, collectUploadPaths, restoreBaselineErrors } from "../scripts/verify-restored-database.js";
 import { validateAdminBootstrap, validateUploadStorage } from "../scripts/validate-production-env.js";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
@@ -211,6 +211,23 @@ describe("scripts operacionais", () => {
     ]);
   });
 
+  it("documenta ACLs efetivas por origem, ownership e assinatura de funcao", () => {
+    assert.equal(aclPrivilegeOrigin(0, 10, [11]), "PUBLIC");
+    assert.equal(aclPrivilegeOrigin(10, 10, [11]), "direct");
+    assert.equal(aclPrivilegeOrigin(11, 10, [11]), "inherited");
+    const catalog = roleAuditQueryCatalog();
+    for (const key of ["schemas", "tables", "sequences", "functions", "defaultPrivileges"]) {
+      assert.match(catalog[key], /aclexplode/);
+      assert.match(catalog[key], /grantor/);
+      assert.match(catalog[key], /grantable/);
+      assert.match(catalog[key], /PUBLIC/);
+      assert.match(catalog[key], /inherited/);
+    }
+    assert.match(catalog.memberships, /WITH RECURSIVE membership_edges/);
+    assert.match(catalog.functions, /pg_get_function_identity_arguments/);
+    assert.match(catalog.schemas, /nspowner/);
+  });
+
   it("recusa restauracao no mesmo alvo do runtime e coleta referencias de upload", () => {
     assert.throws(() => assertRestoreTargetSafe("postgresql://u:p@db.example:5432/app", {
       DATABASE_URL: "postgresql://runtime:secret@db.example/app"
@@ -218,6 +235,23 @@ describe("scripts operacionais", () => {
     assert.deepEqual([...collectUploadPaths([{ documentos: { nota: { path: "/uploads/a.pdf" }, anexos: ["/uploads/b.pdf"] } }])].sort(), [
       "/uploads/a.pdf", "/uploads/b.pdf"
     ]);
+  });
+
+  it("exige baseline para todas as contagens criticas, inclusive em banco vazio", () => {
+    const empty = { processes: 0, items: 0, users: 0, process_audit: 0, security_audit: 0 };
+    assert.deepEqual(restoreBaselineErrors(empty, {}), [
+      "baseline-missing:processes",
+      "baseline-missing:items",
+      "baseline-missing:users",
+      "baseline-missing:process_audit",
+      "baseline-missing:security_audit"
+    ]);
+    const baseline = Object.fromEntries(Object.keys(empty).map((field) => [`RESTORE_EXPECTED_${field.toUpperCase()}`, "0"]));
+    assert.deepEqual(restoreBaselineErrors(empty, baseline), []);
+    for (const field of Object.keys(empty)) {
+      const mismatched = { ...baseline, [`RESTORE_EXPECTED_${field.toUpperCase()}`]: "1" };
+      assert.deepEqual(restoreBaselineErrors(empty, mismatched), [`count-mismatch:${field}`]);
+    }
   });
 
   it("verifica permissoes locais sem modificar arquivos por padrao", async () => {

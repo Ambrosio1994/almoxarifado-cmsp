@@ -11,6 +11,7 @@ import {
   emailSchedulerHealthStatus,
   errorResponsePayload,
   isValidPassword,
+  logStartupReady,
   readinessChecksPass,
   publicHealthPayload,
   requiresAdmin,
@@ -64,6 +65,34 @@ describe("respostas de erro do servidor", () => {
     assert.doesNotMatch(sanitized.message, /senha|segredo|postgresql:\/\//);
     assert.doesNotMatch(sanitized.stack, /sessao-secreta/);
     assert.equal(sanitizeLogValue("Bearer abc.def-ghi"), "Bearer [redacted]");
+    for (const value of [
+      "Authorization: Bearer super-secret-token",
+      "authorization=basic dXNlcjpzZWNyZXQ=",
+      "Cookie: session=super-secret-cookie; other=value",
+      "refreshToken=super-secret-refresh"
+    ]) {
+      assert.doesNotMatch(sanitizeLogValue(value), /super-secret|dXNlcjpzZWNyZXQ/);
+    }
+    assert.equal(sanitizeLogData({ route: "/api/processes/123?token=ignored" }).route, "/api/processes/123");
+  });
+
+  it("registra a inicializacao sem expor o caminho local de uploads", () => {
+    const messages = [];
+    const originalLog = console.log;
+    console.log = (message) => messages.push(message);
+    try {
+      logStartupReady({
+        storeBackend: "postgres",
+        uploadBackend: "local",
+        port: 3000,
+        uploadRoot: "/segredo/volumes/uploads"
+      });
+    } finally {
+      console.log = originalLog;
+    }
+    assert.equal(messages.length, 1);
+    assert.match(messages[0], /application_started/);
+    assert.doesNotMatch(messages[0], /segredo|volumes|uploads/);
   });
 
   it("aceita somente identificadores de build publicos e limitados", () => {

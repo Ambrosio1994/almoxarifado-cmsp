@@ -30,7 +30,11 @@ DATABASE_URL_AUDIT='postgresql://...' POSTGRES_RUNTIME_ROLE=almoxarifado_app \
 
 O comando usa transacao `REPEATABLE READ READ ONLY`, nao escreve no banco e nao
 imprime a URL. Ele lista atributos, memberships, ownership, permissoes de
-schema/tabelas/sequences/funcoes e default privileges. Exit code `2` indica
+schema/tabelas/sequences/funcoes e default privileges. Cada ACL informa owner,
+grantor, grantee, `grantable` e origem (`direct`, `PUBLIC` ou `inherited`);
+memberships sao percorridas recursivamente e funcoes incluem a assinatura.
+Os contratos de transformacao/consulta sao cobertos por testes unitarios; a
+consulta real deve ocorrer somente contra ambiente autorizado de leitura. Exit code `2` indica
 privilegio administrativo ou membership sensivel; isso e evidencia para revisao,
 nao uma revogacao automatica.
 
@@ -47,13 +51,20 @@ RESTORE_DATABASE_URL='postgresql://...' \
 RESTORE_DATABASE_CONFIRMATION=isolated-restored \
 RESTORE_UPLOAD_ROOT=/caminho/uploads-restaurados \
 RESTORE_EXPECTED_PROCESSES=79 \
+RESTORE_EXPECTED_ITEMS=253 \
+RESTORE_EXPECTED_USERS=6 \
+RESTORE_EXPECTED_PROCESS_AUDIT=395 \
+RESTORE_EXPECTED_SECURITY_AUDIT=296 \
 npm run db:verify-restored
 ```
 
 O verificador recusa host+porta+database iguais a `DATABASE_URL` ou
 `DATABASE_URL_MIGRATION`; usa transacao somente leitura; confere migrations,
 processos, itens, usuarios, auditorias, referencias orfas e uploads referidos.
-Registre a saida sem segredos e a data do teste na tabela acima.
+As cinco variaveis `RESTORE_EXPECTED_*` sao obrigatorias, inclusive quando a
+contagem esperada e zero: sem baseline ou com qualquer divergencia, o comando
+retorna exit code `2` e o restore nao deve ser marcado como validado. Registre a
+saida sem segredos e a data do teste na tabela acima.
 
 ## Mudanca controlada da role
 

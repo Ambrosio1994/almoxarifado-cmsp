@@ -522,10 +522,11 @@ async function startApplication() {
   }
   applicationStartupComplete = true;
   if (!uploadStorageCheckOnly) {
-    console.log(`Storage backend ativo: ${storeBackend}`);
-    console.log(`Upload backend ativo: ${configuredUploadStorageBackend({ backend: UPLOAD_STORAGE_BACKEND })}`);
-    if (UPLOAD_STORAGE_BACKEND === "local") console.log(`Upload root ativo: ${UPLOAD_ROOT}`);
-    console.log(`Almoxarifado em http://localhost:${PORT}`);
+    logStartupReady({
+      storeBackend,
+      uploadBackend: configuredUploadStorageBackend({ backend: UPLOAD_STORAGE_BACKEND }),
+      port: PORT
+    });
     startEmailScheduler();
     startMaintenance();
   }
@@ -2892,6 +2893,14 @@ function logInfo(event, data = {}) {
   }));
 }
 
+export function logStartupReady(details = {}) {
+  logInfo("application_started", {
+    storageBackend: details.storeBackend,
+    uploadBackend: details.uploadBackend,
+    port: details.port
+  });
+}
+
 function logError(event, data = {}) {
   console.error(JSON.stringify({
     level: "error",
@@ -2905,8 +2914,9 @@ const SENSITIVE_LOG_KEY = /password|passwd|secret|token|authorization|cookie|api
 
 export function sanitizeLogData(value, key = "") {
   if (SENSITIVE_LOG_KEY.test(key)) return "[redacted]";
-  if (key === "path" && /^\/(?:api|auth|health|uploads)(?:\/|$)/.test(String(value))) {
-    return String(value).split(/[?#]/, 1)[0];
+  if (isOperationalRouteKey(key)) {
+    const route = safeOperationalRoute(value);
+    if (route) return route;
   }
   if (typeof value === "string") return sanitizeLogValue(value);
   if (value instanceof Error) return sanitizeLogValue(value.message);
@@ -2923,14 +2933,27 @@ export function sanitizeLogData(value, key = "") {
 export function sanitizeLogValue(value) {
   return String(value)
     .replace(/postgres(?:ql)?:\/\/[^\s'"`<>]+/gi, "[database-url-redacted]")
+    .replace(/\b((?:proxy-)?authorization)\s*[:=]\s*(?:bearer|basic)\s+[^\s,;]+/gi, "$1=[redacted]")
+    .replace(/\b((?:set-)?cookie)\s*[:=]\s*[^\r\n]+/gi, "$1=[redacted]")
     .replace(
-      /\b(?:password|passwd|secret|token|authorization|cookie|api[_-]?key|refresh_token)\s*[=:]\s*[^\s,;]+/gi,
+      /\b(?:password|passwd|secret|(?:access|refresh|id)?[_-]?token|api[_-]?key|connection(?:[_-]?string)?|database[_-]?url)\s*[=:]\s*[^\s,;&]+/gi,
       (match) => `${match.split(/[=:]/, 1)[0]}=[redacted]`
     )
     .replace(/\bBearer\s+[A-Za-z0-9._~+\/-]+=*/gi, "Bearer [redacted]")
     .replace(/\b(?:ya29\.|1\/\/)[A-Za-z0-9._-]+/g, "[token-redacted]")
     .replace(/(?:file:\/\/)?\/(?:[^\s():]+\/)+[^\s():]+/g, "[path-redacted]")
     .slice(0, 4_000);
+}
+
+function isOperationalRouteKey(key) {
+  return ["path", "route", "requestpath", "request_path", "pathname", "urlpath", "url_path"].includes(String(key).toLowerCase());
+}
+
+function safeOperationalRoute(value) {
+  const route = String(value || "").split(/[?#]/, 1)[0];
+  if (!route.startsWith("/") || route.startsWith("//") || route.includes("\\") || /(?:^|\/)\.\.?($|\/)/.test(route)) return null;
+  if (/^\/(?:tmp|home|var|etc|data)(?:\/|$)/.test(route)) return null;
+  return route;
 }
 
 async function recordSecurityEventSafely(eventType, event = {}) {
