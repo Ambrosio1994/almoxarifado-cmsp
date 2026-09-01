@@ -2933,15 +2933,19 @@ export function sanitizeLogData(value, key = "") {
 export function sanitizeLogValue(value) {
   return String(value)
     .replace(/postgres(?:ql)?:\/\/[^\s'"`<>]+/gi, "[database-url-redacted]")
+    .replace(
+      /([?&](?:client[_-]?secret|(?:[A-Za-z0-9]+[_-]?)?token|password|passwd|cookie|authorization|api[_-]?key|code|state)=)[^&#\s'"`<>]*/gi,
+      "$1[redacted]"
+    )
     .replace(/\b((?:proxy-)?authorization)\s*[:=]\s*(?:bearer|basic)\s+[^\s,;]+/gi, "$1=[redacted]")
     .replace(/\b((?:set-)?cookie)\s*[:=]\s*[^\r\n]+/gi, "$1=[redacted]")
     .replace(
-      /\b(?:password|passwd|secret|(?:access|refresh|id)?[_-]?token|api[_-]?key|connection(?:[_-]?string)?|database[_-]?url)\s*[=:]\s*[^\s,;&]+/gi,
+      /\b(?:password|passwd|(?:client[_-]?)?secret|(?:[A-Za-z0-9]+[_-]?)?token|api[_-]?key|connection(?:[_-]?string)?|database[_-]?url)\s*[=:]\s*[^\s,;&]+/gi,
       (match) => `${match.split(/[=:]/, 1)[0]}=[redacted]`
     )
     .replace(/\bBearer\s+[A-Za-z0-9._~+\/-]+=*/gi, "Bearer [redacted]")
     .replace(/\b(?:ya29\.|1\/\/)[A-Za-z0-9._-]+/g, "[token-redacted]")
-    .replace(/(?:file:\/\/)?\/(?:[^\s():]+\/)+[^\s():]+/g, "[path-redacted]")
+    .replace(/(?<![:/])(?:file:\/\/)?\/(?:[^\s():]+\/)+[^\s():]+/g, "[path-redacted]")
     .slice(0, 4_000);
 }
 
