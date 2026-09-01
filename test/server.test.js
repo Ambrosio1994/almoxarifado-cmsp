@@ -73,9 +73,32 @@ describe("respostas de erro do servidor", () => {
     ]) {
       assert.doesNotMatch(sanitizeLogValue(value), /super-secret|dXNlcjpzZWNyZXQ/);
     }
-    const query = sanitizeLogValue("https://oauth.example/callback?client_secret=leak&session_token=session-token&auth_token=auth-token&code=oauth-code&state=oauth-state&safe=visible");
-    assert.doesNotMatch(query, /leak|session-token|auth-token|oauth-code|oauth-state/);
-    assert.match(query, /safe=visible/);
+    for (const { input, secrets, safe } of [
+      {
+        input: "safe_before=visible&client_secret=client-secret&safe_after=visible",
+        secrets: /client-secret/,
+        safe: /safe_before=visible&client_secret=\[redacted\]&safe_after=visible/
+      },
+      {
+        input: "cookie=query-cookie&safe=visible",
+        secrets: /query-cookie/,
+        safe: /cookie=\[redacted\]&safe=visible/
+      },
+      {
+        input: "https://oauth.example/callback?safe_before=visible&google_access_token=google-token&oauth_refresh_token=refresh-token&safe_after=visible",
+        secrets: /google-token|refresh-token/,
+        safe: /safe_before=visible&google_access_token=\[redacted\]&oauth_refresh_token=\[redacted\]&safe_after=visible/
+      },
+      {
+        input: "safe_before=visible&session_token=session-token&auth_token=auth-token&code=oauth-code&state=oauth-state&safe_after=visible",
+        secrets: /session-token|auth-token|oauth-code|oauth-state/,
+        safe: /safe_before=visible&session_token=\[redacted\]&auth_token=\[redacted\]&code=\[redacted\]&state=\[redacted\]&safe_after=visible/
+      }
+    ]) {
+      const query = sanitizeLogValue(input);
+      assert.doesNotMatch(query, secrets);
+      assert.match(query, safe);
+    }
     assert.equal(sanitizeLogData({ route: "/api/processes/123?token=ignored" }).route, "/api/processes/123");
   });
 

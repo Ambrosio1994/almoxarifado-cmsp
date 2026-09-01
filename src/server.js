@@ -2931,22 +2931,39 @@ export function sanitizeLogData(value, key = "") {
 }
 
 export function sanitizeLogValue(value) {
-  return String(value)
+  const withoutHeaders = String(value)
+    .replace(/\b((?:proxy-)?authorization)\s*[:=]\s*(?:bearer|basic)\s+[^\s,;]+/gi, "$1=[redacted]")
+    .replace(/\b((?:set-)?cookie)\s*:\s*[^\r\n]+/gi, "$1=[redacted]");
+  return sanitizeQueryPairs(withoutHeaders)
     .replace(/postgres(?:ql)?:\/\/[^\s'"`<>]+/gi, "[database-url-redacted]")
     .replace(
-      /([?&](?:client[_-]?secret|(?:[A-Za-z0-9]+[_-]?)?token|password|passwd|cookie|authorization|api[_-]?key|code|state)=)[^&#\s'"`<>]*/gi,
-      "$1[redacted]"
-    )
-    .replace(/\b((?:proxy-)?authorization)\s*[:=]\s*(?:bearer|basic)\s+[^\s,;]+/gi, "$1=[redacted]")
-    .replace(/\b((?:set-)?cookie)\s*[:=]\s*[^\r\n]+/gi, "$1=[redacted]")
-    .replace(
-      /\b(?:password|passwd|(?:client[_-]?)?secret|(?:[A-Za-z0-9]+[_-]?)?token|api[_-]?key|connection(?:[_-]?string)?|database[_-]?url)\s*[=:]\s*[^\s,;&]+/gi,
+      /\b(?:password|passwd|cookie|(?:client[_-]?)?secret|(?:[A-Za-z0-9]+[_-]?)?token|api[_-]?key|connection(?:[_-]?string)?|database[_-]?url)\s*[=:]\s*[^\s,;&]+/gi,
       (match) => `${match.split(/[=:]/, 1)[0]}=[redacted]`
     )
     .replace(/\bBearer\s+[A-Za-z0-9._~+\/-]+=*/gi, "Bearer [redacted]")
     .replace(/\b(?:ya29\.|1\/\/)[A-Za-z0-9._-]+/g, "[token-redacted]")
     .replace(/(?<![:/])(?:file:\/\/)?\/(?:[^\s():]+\/)+[^\s():]+/g, "[path-redacted]")
     .slice(0, 4_000);
+}
+
+function sanitizeQueryPairs(value) {
+  return value.replace(/(^|[?&])([^?&#=\s]+)=([^&#\s'"`<>]*)/g, (match, prefix, rawKey, rawValue) => (
+    sensitiveQueryKey(rawKey) ? `${prefix}${rawKey}=[redacted]` : `${prefix}${rawKey}=${rawValue}`
+  ));
+}
+
+function sensitiveQueryKey(rawKey) {
+  let key = String(rawKey).replace(/\+/g, " ");
+  try {
+    key = decodeURIComponent(key);
+  } catch {
+    // Preserve malformed keys for logs; they cannot bypass the literal checks.
+  }
+  key = key.trim().toLowerCase();
+  return [
+    "client_secret", "clientsecret", "password", "passwd", "authorization",
+    "cookie", "set-cookie", "api_key", "apikey", "code", "state"
+  ].includes(key) || key.endsWith("_token") || key.endsWith("-token") || /(?:access|refresh|id|session|auth)token$/.test(key);
 }
 
 function isOperationalRouteKey(key) {
