@@ -7,6 +7,7 @@ Alvo oficial: `https://sapgestao.dpdns.org`, com PostgreSQL de producao no Neon.
 - [ ] Confirmar que o branch e o commit que serao implantados passaram por `npm ci`, `npm test` e `npm run check`.
 - [ ] Copiar `.env.production.example` para `.env.production`, substituir todos os marcadores e executar `chmod 600 .env.production`.
 - [ ] Manter `DATABASE_URL` com a conexao pooled do Neon para a aplicacao e `DATABASE_URL_MIGRATION` com a conexao direta para migracoes e backup. Se executar a integracao PostgreSQL opcional, usar `TEST_DATABASE_URL` em database separado, descartavel e identificado como teste.
+- [ ] Preencher `APP_VERSION` ou `GIT_COMMIT_SHA` pelo pipeline com o SHA curto do commit; confirme a identificacao em um health check sem incluir segredos.
 - [ ] Confirmar `DB_SSL=true` e `sslmode=require` ou `sslmode=verify-full` nas duas URLs; manter `channel_binding=require` quando fornecido pelo Neon.
 - [ ] Confirmar que a role de runtime tem somente os privilegios necessarios e que a credencial de migracao fica restrita ao operador/CI.
 - [ ] Em instalacao nova, configurar `LOCAL_ADMIN_EMAIL` e `LOCAL_ADMIN_PASSWORD`. Em banco existente, confirmar por consulta e teste de login que ha administrador local ativo antes de usar `CONFIRM_EXISTING_ADMIN_PROVISIONED=true`; `ADMIN_EMAILS` sozinho nao cria acesso.
@@ -32,7 +33,7 @@ Alvo oficial: `https://sapgestao.dpdns.org`, com PostgreSQL de producao no Neon.
 
 ## Verificacao apos release
 
-- [ ] Confirmar `200` em `/health/live` e `/health/ready`, localmente e por HTTPS; em `/health/ready`, exigir `checks.uploads.ok=true` e `missing=0`.
+- [ ] Confirmar `200` em `/health/live` e `/health/ready`, localmente e por HTTPS; o payload publico deve conter somente `status` e, se configurada, `version`.
 - [ ] Executar `npm run smoke:production`.
 - [ ] Validar login, consulta autenticada, criacao/edicao controlada, download autenticado e envio de e-mail de teste.
 - [ ] Conferir logs por `requestId`, erros de banco, falhas SMTP, limites de login e espaco do volume de uploads.

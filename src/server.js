@@ -99,6 +99,7 @@ import {
 loadLocalEnv();
 
 const PORT = Number(process.env.PORT || 3000);
+const APP_VERSION = resolvePublicAppVersion(process.env);
 const ROOT = fileURLToPath(new URL("../public/", import.meta.url));
 const FAVICON_FILE = fileURLToPath(new URL("../new_favicon.png", import.meta.url));
 const UPLOAD_ROOT = process.env.UPLOAD_STORAGE_ROOT
@@ -2779,7 +2780,7 @@ function uploadMetadataError(body = {}, options = {}) {
 
 async function handleHealth(res, pathname = "/health") {
   if (pathname === "/health/live") {
-    sendJson(res, 200, { ok: true, checkedAt: new Date().toISOString() });
+    sendJson(res, 200, publicHealthPayload("live"));
     return;
   }
   const storageBackend = databaseConfigured() ? "postgres" : "json";
@@ -2818,12 +2819,24 @@ async function handleHealth(res, pathname = "/health") {
       applicationStartupComplete
     })
     : checks.storage && checks.uploads.ok && checks.emailConfigured && !checks.scheduler.degraded;
-  sendJson(res, ok ? 200 : 503, {
-    ok,
-    degraded: !checks.storage || !checks.uploads.ok || !checks.emailConfigured || checks.scheduler.degraded,
-    checks,
-    checkedAt: new Date().toISOString()
-  });
+  // Keep dependency details in internal logs. Public probes only need a stable
+  // status code and a deploy identifier to correlate an incident with a build.
+  sendJson(res, ok ? 200 : 503, publicHealthPayload(
+    ok ? (pathname === "/health/ready" ? "ready" : "ok") : "unavailable"
+  ));
+}
+
+export function resolvePublicAppVersion(environment = {}) {
+  const value = String(environment.APP_VERSION || environment.GIT_COMMIT_SHA || "").trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{6,63}$/.test(value)) return null;
+  return value.slice(0, 16);
+}
+
+export function publicHealthPayload(status, version = APP_VERSION) {
+  return {
+    status,
+    ...(version ? { version } : {})
+  };
 }
 
 export function uploadIntegrityForHealth(options = {}) {
@@ -2852,11 +2865,7 @@ export function readinessChecksPass(checks, options = {}) {
 }
 
 function safeStartupErrorMessage(error) {
-  return String(error?.message || "Erro desconhecido")
-    .replace(/postgres(?:ql)?:\/\/[^\s]+/gi, "[database-url-redacted]")
-    .replace(/1\/\/[A-Za-z0-9._-]+/g, "[refresh-token-redacted]")
-    .replace(/ya29\.[A-Za-z0-9._-]+/g, "[access-token-redacted]")
-    .slice(0, 500);
+  return sanitizeLogValue(error?.message || "Erro desconhecido").slice(0, 500);
 }
 
 function logStartupFailure(error) {
@@ -2875,11 +2884,53 @@ function logStartupFailure(error) {
 }
 
 function logInfo(event, data = {}) {
-  console.log(JSON.stringify({ level: "info", event, at: new Date().toISOString(), ...data }));
+  console.log(JSON.stringify({
+    level: "info",
+    event: sanitizeLogValue(event),
+    at: new Date().toISOString(),
+    ...sanitizeLogData(data)
+  }));
 }
 
 function logError(event, data = {}) {
-  console.error(JSON.stringify({ level: "error", event, at: new Date().toISOString(), ...data }));
+  console.error(JSON.stringify({
+    level: "error",
+    event: sanitizeLogValue(event),
+    at: new Date().toISOString(),
+    ...sanitizeLogData(data)
+  }));
+}
+
+const SENSITIVE_LOG_KEY = /password|passwd|secret|token|authorization|cookie|api[_-]?key|connection(?:[_-]?string)?|database[_-]?url|refresh/i;
+
+export function sanitizeLogData(value, key = "") {
+  if (SENSITIVE_LOG_KEY.test(key)) return "[redacted]";
+  if (key === "path" && /^\/(?:api|auth|health|uploads)(?:\/|$)/.test(String(value))) {
+    return String(value).split(/[?#]/, 1)[0];
+  }
+  if (typeof value === "string") return sanitizeLogValue(value);
+  if (value instanceof Error) return sanitizeLogValue(value.message);
+  if (Array.isArray(value)) return value.map((entry) => sanitizeLogData(entry));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([entryKey, entryValue]) => [
+      entryKey,
+      sanitizeLogData(entryValue, entryKey)
+    ]));
+  }
+  return value;
+}
+
+export function sanitizeLogValue(value) {
+  return String(value)
+    .replace(/postgres(?:ql)?:\/\/[^\s'"`<>]+/gi, "[database-url-redacted]")
+    .replace(
+      /\b(?:password|passwd|secret|token|authorization|cookie|api[_-]?key|refresh_token)\s*[=:]\s*[^\s,;]+/gi,
+      (match) => `${match.split(/[=:]/, 1)[0]}=[redacted]`
+    )
+    .replace(/\bBearer\s+[A-Za-z0-9._~+\/-]+=*/gi, "Bearer [redacted]")
+    .replace(/\b(?:ya29\.|1\/\/)[A-Za-z0-9._-]+/g, "[token-redacted]")
+    .replace(/(?:file:\/\/)?\/(?:[^\s():]+\/)+[^\s():]+/g, "[path-redacted]")
+    .slice(0, 4_000);
 }
 
 async function recordSecurityEventSafely(eventType, event = {}) {

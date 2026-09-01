@@ -12,9 +12,13 @@ import {
   errorResponsePayload,
   isValidPassword,
   readinessChecksPass,
+  publicHealthPayload,
   requiresAdmin,
   resolveEmailConfiguration,
   roleCanMutate,
+  resolvePublicAppVersion,
+  sanitizeLogData,
+  sanitizeLogValue,
   normalizeProcessNumber,
   uploadIntegrityForHealth,
   validateProcessBody
@@ -46,6 +50,26 @@ describe("respostas de erro do servidor", () => {
   it("identifica corretamente js e css", () => {
     assert.equal(contentTypeForPath("app.js"), "text/javascript; charset=utf-8");
     assert.equal(contentTypeForPath("styles.css"), "text/css; charset=utf-8");
+  });
+
+  it("remove segredos por chave e por conteudo antes de registrar logs", () => {
+    const sanitized = sanitizeLogData({
+      password: "nao-imprimir",
+      nested: { authorization: "Bearer segredo" },
+      message: "falha em postgresql://user:senha@db.example/app?token=segredo",
+      stack: "Error: cookie=sessao-secreta"
+    });
+    assert.equal(sanitized.password, "[redacted]");
+    assert.equal(sanitized.nested.authorization, "[redacted]");
+    assert.doesNotMatch(sanitized.message, /senha|segredo|postgresql:\/\//);
+    assert.doesNotMatch(sanitized.stack, /sessao-secreta/);
+    assert.equal(sanitizeLogValue("Bearer abc.def-ghi"), "Bearer [redacted]");
+  });
+
+  it("aceita somente identificadores de build publicos e limitados", () => {
+    assert.equal(resolvePublicAppVersion({ GIT_COMMIT_SHA: "a1b2c3d4e5f6a7b8c9" }), "a1b2c3d4e5f6a7b8");
+    assert.equal(resolvePublicAppVersion({ APP_VERSION: "https://secret.example" }), null);
+    assert.deepEqual(publicHealthPayload("ok", "a1b2c3d"), { status: "ok", version: "a1b2c3d" });
   });
 });
 
@@ -290,19 +314,18 @@ describe("rotas http", () => {
     assert.match(response.text(), /export function groupProcessesByStatus/);
   });
 
-  it("expoe readiness e telemetria sanitizada do scheduler sem ler o store completo", async () => {
+  it("expoe readiness publica minima sem detalhes operacionais", async () => {
     const response = await invokeRequest({ method: "GET", path: "/health/ready" });
     const payload = response.json();
 
     assert.equal(response.statusCode, 200);
-    assert.equal(payload.degraded, true);
-    assert.equal(payload.checks.storage, true);
-    assert.equal(payload.checks.uploads.ok, true);
-    assert.equal(payload.checks.uploads.missing, 0);
-    assert.equal(payload.checks.scheduler.running, false);
-    assert.equal(payload.checks.scheduler.status, "stopped");
-    assert.equal(Object.hasOwn(payload.checks.scheduler, "error"), false);
-    assert.equal(Object.hasOwn(payload.checks, "storageError"), false);
+    assert.deepEqual(Object.keys(payload), ["status"]);
+    assert.equal(payload.status, "ready");
+    assert.equal(Object.hasOwn(payload, "checks"), false);
+
+    const health = await invokeRequest({ method: "GET", path: "/health" });
+    assert.equal(health.statusCode, 503);
+    assert.deepEqual(health.json(), { status: "unavailable" });
   });
 
   it("marca scheduler parado, atrasado e com erro persistente como degradado", () => {

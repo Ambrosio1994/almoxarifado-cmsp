@@ -8,20 +8,20 @@ Endpoints recomendados:
 
 - `GET /health/live`: confirma que o processo HTTP responde; use para reinicio automatico.
 - `GET /health/ready`: confirma PostgreSQL, identidade do volume e disponibilidade de todos os uploads referenciados; use para retirar uma instancia do trafego.
-- `GET /health`: diagnostico completo legado, incluindo e-mail e scheduler.
+- `GET /health`: confirma disponibilidade geral da aplicacao.
 
-O endpoint `GET /health` responde com `200` quando:
+Os endpoints publicos retornam apenas `status` e, quando configurado no deploy,
+`version` (derivado de `APP_VERSION` ou `GIT_COMMIT_SHA`, limitado a identificador
+seguro). Eles nao expõem scheduler, storage, e-mail, contagens ou timestamps.
+
+`/health` responde com `200` quando:
 
 - o storage responde;
 - o e-mail esta configurado;
 - o scheduler de e-mails foi iniciado.
 
-O payload inclui `checks.storageBackend` com o backend ativo:
-
-- `postgres`: a aplicacao esta lendo e gravando no PostgreSQL.
-- `json`: backend permitido apenas em desenvolvimento; producao falha ao iniciar.
-
-Use esse campo no monitor externo para detectar regressao de storage.
+Use o status HTTP para o monitor externo. Detalhes de dependencias pertencem aos
+logs internos e aos procedimentos administrativos autenticados.
 
 ## Uploads
 
@@ -127,6 +127,11 @@ tar -xzf uploads-AAAA-MM-DD.tar.gz -C uploads-restaurados
 ```
 
 Confira os SHA-256 contra o manifesto antes da restauracao. O backup deve ser criptografado e copiado para armazenamento externo depois de criado; a retencao local nao substitui uma copia externa. Restaure periodicamente banco e uploads em staging e valide uma amostra de download. Para storage de objetos, habilite versionamento e lifecycle conforme a politica institucional.
+
+Depois da restauracao, execute o verificador somente leitura descrito em
+[`security-recovery-runbook.md`](security-recovery-runbook.md). O runbook tambem
+registra a confirmacao manual da politica/retencao PITR do Neon, responsavel,
+RTO e procedimento seguro para reduzir privilegios da role de runtime.
 
 ## Importacao legada
 
