@@ -11,6 +11,9 @@ import {
   dockerUploadsArchiveArgs,
   verifyBackupManifest
 } from "../scripts/backup-production.js";
+import { roleSecurityAlerts } from "../scripts/audit-postgres-role.js";
+import { checkLocalPermissions } from "../scripts/check-local-permissions.js";
+import { assertRestoreTargetSafe, collectUploadPaths } from "../scripts/verify-restored-database.js";
 import { validateAdminBootstrap, validateUploadStorage } from "../scripts/validate-production-env.js";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
@@ -199,6 +202,34 @@ describe("scripts operacionais", () => {
     assert.match(deploy, /run --rm --no-deps app npm start -- --check-upload-storage/);
     assert.doesNotMatch(deploy, /NODE_ENV=production npm run db:migrate/);
     assert.ok(deploy.indexOf("check_upload_integrity") < deploy.indexOf('"${COMPOSE[@]}" up -d --no-deps app'));
+  });
+
+  it("identifica privilegios administrativos e memberships sensiveis da role de runtime", () => {
+    assert.deepEqual(roleSecurityAlerts({ rolcreaterole: true }, [{ roleName: "neon_superuser" }]), [
+      "attribute:rolcreaterole",
+      "membership:neon_superuser"
+    ]);
+  });
+
+  it("recusa restauracao no mesmo alvo do runtime e coleta referencias de upload", () => {
+    assert.throws(() => assertRestoreTargetSafe("postgresql://u:p@db.example:5432/app", {
+      DATABASE_URL: "postgresql://runtime:secret@db.example/app"
+    }), /mesmo banco/);
+    assert.deepEqual([...collectUploadPaths([{ documentos: { nota: { path: "/uploads/a.pdf" }, anexos: ["/uploads/b.pdf"] } }])].sort(), [
+      "/uploads/a.pdf", "/uploads/b.pdf"
+    ]);
+  });
+
+  it("verifica permissoes locais sem modificar arquivos por padrao", async () => {
+    const root = join(temporaryRoot, "permissions");
+    await mkdir(join(root, "data"), { recursive: true, mode: 0o755 });
+    await writeFile(join(root, ".env"), "X=1", { mode: 0o644 });
+    await writeFile(join(root, "data", "store.json"), "{}", { mode: 0o644 });
+    const inspected = await checkLocalPermissions({ root });
+    assert.equal(inspected.applied, false);
+    assert.equal(inspected.compliant, false);
+    const applied = await checkLocalPermissions({ root, apply: true });
+    assert.equal(applied.compliant, true);
   });
 });
 
