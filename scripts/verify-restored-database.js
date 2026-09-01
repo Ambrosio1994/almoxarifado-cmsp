@@ -94,7 +94,7 @@ export async function verifyRestoredDatabase(options = {}) {
       ...missingMigrations.map((version) => `migration-missing:${version}`),
       ...Object.entries(orphanRow).filter(([, count]) => Number(count) > 0).map(([name, count]) => `orphan:${name}=${count}`),
       ...uploadCheck.errors,
-      ...expectedCountErrors(countRow, environment)
+      ...restoreBaselineErrors(countRow, environment)
     ];
     return {
       target,
@@ -113,12 +113,12 @@ export async function verifyRestoredDatabase(options = {}) {
   }
 }
 
-function expectedCountErrors(counts, environment) {
-  return ["PROCESSES", "ITEMS", "USERS", "PROCESS_AUDIT", "SECURITY_AUDIT"].flatMap((key) => {
-    const expected = environment[`RESTORE_EXPECTED_${key}`];
-    if (expected === undefined || expected === "") return [];
-    if (!/^\d+$/.test(expected)) return [`expected-count-invalid:${key}`];
-    const field = key.toLowerCase();
+export function restoreBaselineErrors(counts = {}, environment = {}) {
+  return ["processes", "items", "users", "process_audit", "security_audit"].flatMap((field) => {
+    const key = `RESTORE_EXPECTED_${field.toUpperCase()}`;
+    const expected = environment[key];
+    if (expected === undefined || expected === "") return [`baseline-missing:${field}`];
+    if (!/^\d+$/.test(String(expected))) return [`baseline-invalid:${field}`];
     return Number(counts[field]) === Number(expected) ? [] : [`count-mismatch:${field}`];
   });
 }
