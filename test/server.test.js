@@ -73,6 +73,9 @@ describe("respostas de erro do servidor", () => {
     ]) {
       assert.doesNotMatch(sanitizeLogValue(value), /super-secret|dXNlcjpzZWNyZXQ/);
     }
+    const query = sanitizeLogValue("https://oauth.example/callback?client_secret=leak&session_token=session-token&auth_token=auth-token&code=oauth-code&state=oauth-state&safe=visible");
+    assert.doesNotMatch(query, /leak|session-token|auth-token|oauth-code|oauth-state/);
+    assert.match(query, /safe=visible/);
     assert.equal(sanitizeLogData({ route: "/api/processes/123?token=ignored" }).route, "/api/processes/123");
   });
 
