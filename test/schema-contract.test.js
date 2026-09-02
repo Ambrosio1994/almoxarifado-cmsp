@@ -30,7 +30,7 @@ describe("contrato de schema PostgreSQL", () => {
   it("detecta primary key, unique, foreign key e check ausentes", () => {
     const catalog = completeCatalog();
     catalog.constraints = catalog.constraints.filter((row) => ![
-      "app_users:p:id", "app_users:u:email", "user_sessions:f:user_id", "auth_rate_limits:c:attempts"
+      "app_users:p:id", "app_users:u:email", "user_sessions:f:user_id", "auth_rate_limits:c:CHECK (attempts >= 0)"
     ].includes(row.marker));
     const categories = compareSchemaCatalog(catalog, { expectedOwner: OWNER }).differences.map((item) => item.category);
     assert.ok(categories.includes("primary-key"));
@@ -55,6 +55,43 @@ describe("contrato de schema PostgreSQL", () => {
     assert.ok(categories.includes("ownership"));
   });
 
+  it("rejeita indice legado proibido, expressao incompleta e predicado invertido", () => {
+    const catalog = completeCatalog();
+    catalog.indexes.push({ table_name: "app_processes", name: "app_processes_numero_processo_uidx", unique: true, partial: true, key_definitions: ["regexp_replace(lower(data ->> 'numeroProcesso'::text), '[^a-z0-9]'::text, ''::text, 'g'::text)"], predicate: "COALESCE(data ->> 'numeroProcesso'::text, ''::text) <> ''::text AND COALESCE((data ->> 'inativo'::text)::boolean, false) = false", owner: OWNER });
+    const index = catalog.indexes.find((row) => row.name === "app_processes_numero_processo_idx");
+    index.key_definitions = ["regexp_replace(lower(data ->> 'numeroProcesso'::text), '[^a-z0-9]'::text, ''::text, 'g'::text) || 'alterado'"];
+    index.predicate = "COALESCE(data ->> 'numeroProcesso'::text, ''::text) <> ''::text AND COALESCE((data ->> 'inativo'::text)::boolean, false) = true";
+    const categories = compareSchemaCatalog(catalog, { expectedOwner: OWNER }).differences.map((item) => item.category);
+    assert.ok(categories.includes("forbidden-index"));
+    assert.ok(categories.includes("index-definition"));
+    assert.ok(categories.includes("index-predicate"));
+  });
+
+  it("rejeita FK em coluna referenciada errada, CHECK invertido e default inesperado", () => {
+    const catalog = completeCatalog();
+    const foreignKey = catalog.constraints.find((row) => row.marker === "user_sessions:f:user_id");
+    foreignKey.references_columns = ["email"];
+    const check = catalog.constraints.find((row) => row.marker === "auth_rate_limits:c:CHECK (attempts >= 0)");
+    check.definition = "CHECK (attempts <= 0)";
+    const active = catalog.columns.find((row) => row.table_name === "app_users" && row.column_name === "ativo");
+    active.column_default = "false";
+    const categories = compareSchemaCatalog(catalog, { expectedOwner: OWNER }).differences.map((item) => item.category);
+    assert.ok(categories.includes("foreign-key"));
+    assert.ok(categories.includes("check"));
+    assert.ok(categories.includes("column-default"));
+  });
+
+  it("rejeita funcao homonima em outro schema e corpo sem bloqueio", () => {
+    const catalog = completeCatalog();
+    const trigger = catalog.triggers.find((row) => row.name === "app_process_audit_immutable");
+    trigger.function_schema = "other_schema";
+    const functionRow = catalog.functions.find((row) => row.name === "prevent_process_audit_mutation");
+    functionRow.source = "app_process_audit is append-only";
+    const categories = compareSchemaCatalog(catalog, { expectedOwner: OWNER }).differences.map((item) => item.category);
+    assert.ok(categories.includes("trigger-function"));
+    assert.ok(categories.includes("function-source"));
+  });
+
   it("detecta funcao, trigger, sequence e migration ausentes", () => {
     const catalog = completeCatalog();
     catalog.functions = [];
@@ -76,19 +113,19 @@ function completeCatalog(contract = RUNTIME_SCHEMA_CONTRACT) {
   const tables = Object.entries(contract.tables).map(([table_name]) => ({ table_name, owner: OWNER }));
   const columns = Object.entries(contract.tables).flatMap(([table_name, table]) => Object.entries(table.columns).map(([column_name, expected]) => ({
     table_name, column_name, data_type: expected.type, udt_name: expected.type, nullable: expected.nullable,
-    column_default: expected.defaultIncludes || null
+    column_default: expected.default
   })));
   const constraints = Object.entries(contract.tables).flatMap(([table_name, table]) => [
     ...(table.primaryKeys || []).map((columns) => ({ table_name, type: "p", columns, marker: `${table_name}:p:${columns.join(",")}` })),
     ...(table.unique || []).map((columns) => ({ table_name, type: "u", columns, marker: `${table_name}:u:${columns.join(",")}` })),
-    ...(table.foreignKeys || []).map((foreignKey) => ({ table_name, type: "f", columns: foreignKey.columns, references_table: foreignKey.referencesTable, on_delete: foreignKey.onDelete, marker: `${table_name}:f:${foreignKey.columns.join(",")}` })),
-    ...(table.checks || []).map((expectedCheck) => ({ table_name, type: "c", columns: [], definition: `CHECK (${expectedCheck.parts.join(" AND ")})`, marker: `${table_name}:c:${expectedCheck.parts[0]}` }))
+    ...(table.foreignKeys || []).map((foreignKey) => ({ table_name, type: "f", columns: foreignKey.columns, references_table: foreignKey.referencesTable, references_columns: foreignKey.referencesColumns, on_delete: foreignKey.onDelete, marker: `${table_name}:f:${foreignKey.columns.join(",")}` })),
+    ...(table.checks || []).map((expectedCheck) => ({ table_name, type: "c", columns: [], definition: expectedCheck.definition, marker: `${table_name}:c:${expectedCheck.definition}` }))
   ]);
   const indexes = contract.indexes.map((expected) => ({
-    table_name: expected.table, name: expected.name, unique: expected.unique, partial: Boolean(expected.predicateParts?.length),
-    definition: expected.parts.join(" "), predicate: (expected.predicateParts || []).join(" "), owner: OWNER
+    table_name: expected.table, name: expected.name, unique: expected.unique, partial: Boolean(expected.predicate),
+    key_definitions: expected.keys, predicate: expected.predicate || null, owner: OWNER
   }));
-  const functions = contract.functions.map((expected) => ({ name: expected.name, identity_arguments: expected.identityArguments, returns: expected.returns, language: expected.language, source: expected.sourceParts.join(" "), owner: OWNER }));
-  const triggers = contract.triggers.map((expected) => ({ table_name: expected.table, name: expected.name, function_name: expected.function, definition: expected.definitionParts.join(" ") }));
+  const functions = contract.functions.map((expected) => ({ function_schema: expected.schema, name: expected.name, identity_arguments: expected.identityArguments, returns: expected.returns, language: expected.language, source: expected.sourceParts.join(" "), owner: OWNER }));
+  const triggers = contract.triggers.map((expected) => ({ table_name: expected.table, name: expected.name, function_schema: expected.functionSchema, function_name: expected.function, function_identity_arguments: expected.functionIdentityArguments, definition: expected.definitionParts.join(" ") }));
   return { schema: { schema: contract.schema, owner: OWNER }, tables, columns, constraints, indexes, functions, triggers, sequences: contract.sequences.map((item) => ({ name: item.name, owner: OWNER })), migrations: contract.migrations.map((version) => ({ version })) };
 }
