@@ -126,6 +126,20 @@ describe("contrato de schema PostgreSQL", () => {
     assert.equal(difference?.critical, true);
   });
 
+  it("rejeita trigger UPDATE OF coluna que deixa outras mutacoes sem protecao", () => {
+    const catalog = completeCatalog();
+    const trigger = catalog.triggers.find((row) => row.name === "app_process_audit_immutable");
+    trigger.update_columns = ["data"];
+    const difference = compareSchemaCatalog(catalog, { expectedOwner: OWNER }).differences.find((item) => item.category === "trigger-update-columns");
+    assert.deepEqual(difference, {
+      category: "trigger-update-columns",
+      object: "trigger:app_process_audit.app_process_audit_immutable",
+      expected: "no UPDATE OF columns",
+      actual: "data",
+      critical: true
+    });
+  });
+
   it("detecta funcao, trigger, sequence e migration ausentes", () => {
     const catalog = completeCatalog();
     catalog.functions = [];
@@ -160,6 +174,6 @@ function completeCatalog(contract = RUNTIME_SCHEMA_CONTRACT) {
     valid: true, ready: true, access_method: expected.accessMethod, key_definitions: expected.keys, predicate: expected.predicate || null, owner: OWNER
   }));
   const functions = contract.functions.map((expected) => ({ function_schema: expected.schema, name: expected.name, identity_arguments: expected.identityArguments, returns: expected.returns, language: expected.language, source: expected.canonicalDefinition, owner: OWNER }));
-  const triggers = contract.triggers.map((expected) => ({ table_name: expected.table, name: expected.name, function_schema: expected.functionSchema, function_name: expected.function, function_identity_arguments: expected.functionIdentityArguments, timing: expected.timing, events: expected.events, level: expected.level, when_condition: expected.whenCondition, enabled: expected.enabled }));
+  const triggers = contract.triggers.map((expected) => ({ table_name: expected.table, name: expected.name, function_schema: expected.functionSchema, function_name: expected.function, function_identity_arguments: expected.functionIdentityArguments, timing: expected.timing, events: expected.events, update_columns: expected.updateColumns, level: expected.level, when_condition: expected.whenCondition, enabled: expected.enabled }));
   return { schema: { schema: contract.schema, owner: OWNER }, tables, columns, constraints, indexes, functions, triggers, sequences: contract.sequences.map((item) => ({ name: item.name, owner: OWNER })), migrations: contract.migrations.map((version) => ({ version })) };
 }
