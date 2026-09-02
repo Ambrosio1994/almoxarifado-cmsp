@@ -93,12 +93,23 @@ export const RUNTIME_SCHEMA_CONTRACT = Object.freeze({
     { table: "auth_rate_limits", name: "auth_rate_limits_updated_idx", unique: false, keys: ["updated_at"] },
     { table: "app_security_audit", name: "app_security_audit_created_idx", unique: false, keys: ["created_at"] },
     { table: "app_security_audit", name: "app_security_audit_actor_idx", unique: false, keys: ["actor_user_id", "created_at"] }
-  ],
+  ].map((index) => ({ accessMethod: "btree", ...index })),
   forbiddenIndexes: [{ table: "app_processes", name: "app_processes_numero_processo_uidx" }],
-  functions: [{ schema: "public", name: "prevent_process_audit_mutation", identityArguments: "", returns: "trigger", language: "plpgsql", sourceParts: ["begin", "raise exception", "app_process_audit is append-only", "end"] }],
+  functions: [{
+    schema: "public",
+    name: "prevent_process_audit_mutation",
+    identityArguments: "",
+    returns: "trigger",
+    language: "plpgsql",
+    // pg_get_functiondef() is normalized before comparison so PostgreSQL's
+    // generated dollar-quote tag and whitespace do not create false drift.
+    // Keep the complete executable definition here: fragments would accept an
+    // inert IF false branch that merely contains the expected words.
+    canonicalDefinition: "CREATE OR REPLACE FUNCTION public.prevent_process_audit_mutation() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'app_process_audit is append-only'; END; $$"
+  }],
   triggers: [
-    { table: "app_process_audit", name: "app_process_audit_immutable", functionSchema: "public", function: "prevent_process_audit_mutation", functionIdentityArguments: "", definitionParts: ["before", "update", "delete", "for each row"] },
-    { table: "app_security_audit", name: "app_security_audit_immutable", functionSchema: "public", function: "prevent_process_audit_mutation", functionIdentityArguments: "", definitionParts: ["before", "update", "delete", "for each row"] }
+    { table: "app_process_audit", name: "app_process_audit_immutable", functionSchema: "public", function: "prevent_process_audit_mutation", functionIdentityArguments: "", timing: "BEFORE", events: ["UPDATE", "DELETE"], level: "ROW", whenCondition: null, enabled: "O" },
+    { table: "app_security_audit", name: "app_security_audit_immutable", functionSchema: "public", function: "prevent_process_audit_mutation", functionIdentityArguments: "", timing: "BEFORE", events: ["UPDATE", "DELETE"], level: "ROW", whenCondition: null, enabled: "O" }
   ],
   // UUID defaults are functions; this schema has no serial/identity sequences.
   sequences: []
@@ -108,8 +119,8 @@ export const SCHEMA_CATALOG_QUERIES = Object.freeze({
   tables: `/* schema-contract:tables */ SELECT c.relname AS table_name, pg_get_userbyid(c.relowner) AS owner FROM pg_class AS c JOIN pg_namespace AS n ON n.oid = c.relnamespace WHERE n.nspname = $1 AND c.relkind IN ('r', 'p') AND c.relname = ANY($2::text[]) ORDER BY c.relname`,
   columns: `/* schema-contract:columns */ SELECT table_name, column_name, data_type, udt_name, is_nullable = 'YES' AS nullable, column_default FROM information_schema.columns WHERE table_schema = $1 AND table_name = ANY($2::text[]) ORDER BY table_name, ordinal_position`,
   constraints: `/* schema-contract:constraints */ SELECT rel.relname AS table_name, con.conname AS name, con.contype AS type, COALESCE(cols.columns, ARRAY[]::text[]) AS columns, ref.relname AS references_table, COALESCE(ref_cols.columns, ARRAY[]::text[]) AS references_columns, con.confdeltype AS on_delete, pg_get_constraintdef(con.oid, true) AS definition FROM pg_constraint AS con JOIN pg_class AS rel ON rel.oid = con.conrelid JOIN pg_namespace AS n ON n.oid = rel.relnamespace LEFT JOIN pg_class AS ref ON ref.oid = con.confrelid LEFT JOIN LATERAL (SELECT array_agg(att.attname ORDER BY key.ordinality) AS columns FROM unnest(con.conkey) WITH ORDINALITY AS key(attnum, ordinality) JOIN pg_attribute AS att ON att.attrelid = con.conrelid AND att.attnum = key.attnum) AS cols ON true LEFT JOIN LATERAL (SELECT array_agg(att.attname ORDER BY key.ordinality) AS columns FROM unnest(con.confkey) WITH ORDINALITY AS key(attnum, ordinality) JOIN pg_attribute AS att ON att.attrelid = con.confrelid AND att.attnum = key.attnum) AS ref_cols ON true WHERE n.nspname = $1 AND rel.relname = ANY($2::text[]) ORDER BY rel.relname, con.conname`,
-  indexes: `/* schema-contract:indexes */ SELECT tbl.relname AS table_name, idx.relname AS name, ind.indisunique AS unique, ind.indpred IS NOT NULL AS partial, keys.key_definitions, pg_get_expr(ind.indpred, ind.indrelid, true) AS predicate, pg_get_userbyid(idx.relowner) AS owner FROM pg_index AS ind JOIN pg_class AS idx ON idx.oid = ind.indexrelid JOIN pg_class AS tbl ON tbl.oid = ind.indrelid JOIN pg_namespace AS n ON n.oid = tbl.relnamespace LEFT JOIN LATERAL (SELECT array_agg(pg_get_indexdef(ind.indexrelid, key_ordinality, true) ORDER BY key_ordinality) AS key_definitions FROM generate_series(1, ind.indnkeyatts) AS key_ordinality) AS keys ON true WHERE n.nspname = $1 AND tbl.relname = ANY($2::text[]) ORDER BY tbl.relname, idx.relname`,
-  triggers: `/* schema-contract:triggers */ SELECT tbl.relname AS table_name, trg.tgname AS name, proc_namespace.nspname AS function_schema, proc.proname AS function_name, pg_get_function_identity_arguments(proc.oid) AS function_identity_arguments, pg_get_triggerdef(trg.oid, true) AS definition FROM pg_trigger AS trg JOIN pg_class AS tbl ON tbl.oid = trg.tgrelid JOIN pg_namespace AS n ON n.oid = tbl.relnamespace JOIN pg_proc AS proc ON proc.oid = trg.tgfoid JOIN pg_namespace AS proc_namespace ON proc_namespace.oid = proc.pronamespace WHERE n.nspname = $1 AND tbl.relname = ANY($2::text[]) AND NOT trg.tgisinternal ORDER BY tbl.relname, trg.tgname`,
+  indexes: `/* schema-contract:indexes */ SELECT tbl.relname AS table_name, idx.relname AS name, ind.indisunique AS unique, ind.indisvalid AS valid, ind.indisready AS ready, access_method.amname AS access_method, ind.indpred IS NOT NULL AS partial, keys.key_definitions, pg_get_expr(ind.indpred, ind.indrelid, true) AS predicate, pg_get_userbyid(idx.relowner) AS owner FROM pg_index AS ind JOIN pg_class AS idx ON idx.oid = ind.indexrelid JOIN pg_am AS access_method ON access_method.oid = idx.relam JOIN pg_class AS tbl ON tbl.oid = ind.indrelid JOIN pg_namespace AS n ON n.oid = tbl.relnamespace LEFT JOIN LATERAL (SELECT array_agg(pg_get_indexdef(ind.indexrelid, key_ordinality, true) ORDER BY key_ordinality) AS key_definitions FROM generate_series(1, ind.indnkeyatts) AS key_ordinality) AS keys ON true WHERE n.nspname = $1 AND tbl.relname = ANY($2::text[]) ORDER BY tbl.relname, idx.relname`,
+  triggers: `/* schema-contract:triggers */ SELECT tbl.relname AS table_name, trg.tgname AS name, proc_namespace.nspname AS function_schema, proc.proname AS function_name, pg_get_function_identity_arguments(proc.oid) AS function_identity_arguments, CASE WHEN (trg.tgtype & 2) <> 0 THEN 'BEFORE' WHEN (trg.tgtype & 64) <> 0 THEN 'INSTEAD OF' ELSE 'AFTER' END AS timing, ARRAY_REMOVE(ARRAY[CASE WHEN (trg.tgtype & 4) <> 0 THEN 'INSERT' END, CASE WHEN (trg.tgtype & 16) <> 0 THEN 'UPDATE' END, CASE WHEN (trg.tgtype & 8) <> 0 THEN 'DELETE' END, CASE WHEN (trg.tgtype & 32) <> 0 THEN 'TRUNCATE' END], NULL) AS events, CASE WHEN (trg.tgtype & 1) <> 0 THEN 'ROW' ELSE 'STATEMENT' END AS level, pg_get_expr(trg.tgqual, trg.tgrelid, true) AS when_condition, trg.tgenabled AS enabled FROM pg_trigger AS trg JOIN pg_class AS tbl ON tbl.oid = trg.tgrelid JOIN pg_namespace AS n ON n.oid = tbl.relnamespace JOIN pg_proc AS proc ON proc.oid = trg.tgfoid JOIN pg_namespace AS proc_namespace ON proc_namespace.oid = proc.pronamespace WHERE n.nspname = $1 AND tbl.relname = ANY($2::text[]) AND NOT trg.tgisinternal ORDER BY tbl.relname, trg.tgname`,
   functions: `/* schema-contract:functions */ SELECT n.nspname AS function_schema, proc.proname AS name, pg_get_function_identity_arguments(proc.oid) AS identity_arguments, pg_get_function_result(proc.oid) AS returns, lang.lanname AS language, pg_get_functiondef(proc.oid) AS source, pg_get_userbyid(proc.proowner) AS owner FROM pg_proc AS proc JOIN pg_namespace AS n ON n.oid = proc.pronamespace JOIN pg_language AS lang ON lang.oid = proc.prolang WHERE n.nspname = $1 AND proc.proname = ANY($2::text[]) ORDER BY proc.proname, identity_arguments`,
   sequences: `/* schema-contract:sequences */ SELECT c.relname AS name, pg_get_userbyid(c.relowner) AS owner FROM pg_class AS c JOIN pg_namespace AS n ON n.oid = c.relnamespace WHERE n.nspname = $1 AND c.relkind = 'S' AND c.relname = ANY($2::text[]) ORDER BY c.relname`,
   schema: `/* schema-contract:schema */ SELECT n.nspname AS schema, pg_get_userbyid(n.nspowner) AS owner FROM pg_namespace AS n WHERE n.nspname = $1`,
@@ -169,6 +180,9 @@ export function compareSchemaCatalog(catalog, options = {}) {
     const actual = indexes.get(`${expected.table}.${expected.name}`);
     if (!actual) { addDifference(differences, "index", `index:${expected.table}.${expected.name}`, "present", "missing"); continue; }
     if (Boolean(actual.unique) !== Boolean(expected.unique)) addDifference(differences, "index-unique", `index:${expected.table}.${expected.name}`, String(expected.unique), String(actual.unique));
+    if (actual.valid !== true) addDifference(differences, "index-validity", `index:${expected.table}.${expected.name}`, "valid", String(actual.valid));
+    if (actual.ready !== true) addDifference(differences, "index-readiness", `index:${expected.table}.${expected.name}`, "ready", String(actual.ready));
+    if (expected.accessMethod && normalized(actual.access_method) !== normalized(expected.accessMethod)) addDifference(differences, "index-access-method", `index:${expected.table}.${expected.name}`, expected.accessMethod, actual.access_method || "missing");
     const partialExpected = Boolean(expected.predicate);
     if (Boolean(actual.partial) !== partialExpected) addDifference(differences, "index-partial", `index:${expected.table}.${expected.name}`, String(partialExpected), String(Boolean(actual.partial)));
     if (!equalSqlArrays(actual.key_definitions, expected.keys)) addDifference(differences, "index-definition", `index:${expected.table}.${expected.name}`, (expected.keys || []).join(", "), (actual.key_definitions || []).join(", ") || "missing");
@@ -182,14 +196,18 @@ export function compareSchemaCatalog(catalog, options = {}) {
     if (!actual) { addDifference(differences, "function", `function:${functionSchema}.${expected.name}(${expected.identityArguments || ""})`, "present", "missing"); continue; }
     if (!normalized(actual.returns).includes(normalized(expected.returns))) addDifference(differences, "function-return", `function:${expected.name}`, expected.returns, actual.returns || "missing");
     if (normalized(actual.language) !== normalized(expected.language)) addDifference(differences, "function-language", `function:${expected.name}`, expected.language, actual.language || "missing");
-    for (const part of expected.sourceParts || []) if (!normalized(actual.source).includes(normalized(part))) addDifference(differences, "function-source", `function:${expected.name}`, `contains ${part}`, "different");
+    if (canonicalFunctionDefinition(actual.source) !== canonicalFunctionDefinition(expected.canonicalDefinition)) addDifference(differences, "function-definition", `function:${functionSchema}.${expected.name}(${expected.identityArguments || ""})`, expected.canonicalDefinition, actual.source || "missing or different");
     if (expectedOwner && actual.owner !== expectedOwner) addDifference(differences, "ownership", `function:${expected.name}`, expectedOwner, actual.owner || "missing");
   }
   for (const expected of contract.triggers) {
     const actual = triggers.get(`${expected.table}.${expected.name}`);
     if (!actual) { addDifference(differences, "trigger", `trigger:${expected.table}.${expected.name}`, "present", "missing"); continue; }
     if (actual.function_schema !== (expected.functionSchema || contract.schema) || actual.function_name !== expected.function || (actual.function_identity_arguments || "") !== (expected.functionIdentityArguments || "")) addDifference(differences, "trigger-function", `trigger:${expected.table}.${expected.name}`, `${expected.functionSchema || contract.schema}.${expected.function}(${expected.functionIdentityArguments || ""})`, `${actual.function_schema || "missing"}.${actual.function_name || "missing"}(${actual.function_identity_arguments || ""})`);
-    for (const part of expected.definitionParts || []) if (!normalized(actual.definition).includes(normalized(part))) addDifference(differences, "trigger-definition", `trigger:${expected.table}.${expected.name}`, `contains ${part}`, "different");
+    if (normalized(actual.timing) !== normalized(expected.timing)) addDifference(differences, "trigger-timing", `trigger:${expected.table}.${expected.name}`, expected.timing, actual.timing || "missing");
+    if (!equalTextArrays(actual.events, expected.events)) addDifference(differences, "trigger-events", `trigger:${expected.table}.${expected.name}`, (expected.events || []).join(", "), (actual.events || []).join(", ") || "missing");
+    if (normalized(actual.level) !== normalized(expected.level)) addDifference(differences, "trigger-level", `trigger:${expected.table}.${expected.name}`, expected.level, actual.level || "missing");
+    if (!sameSql(actual.when_condition, expected.whenCondition)) addDifference(differences, "trigger-when", `trigger:${expected.table}.${expected.name}`, expected.whenCondition || "no WHEN clause", actual.when_condition || "no WHEN clause");
+    if (actual.enabled !== expected.enabled) addDifference(differences, "trigger-enabled", `trigger:${expected.table}.${expected.name}`, expected.enabled, actual.enabled || "missing");
   }
   for (const expected of contract.sequences) { const actual = sequences.get(expected.name); if (!actual) addDifference(differences, "sequence", `sequence:${expected.name}`, "present", "missing"); else if (expectedOwner && actual.owner !== expectedOwner) addDifference(differences, "ownership", `sequence:${expected.name}`, expectedOwner, actual.owner || "missing"); }
   for (const migration of contract.migrations) if (!migrations.has(migration)) addDifference(differences, "migration", `migration:${migration}`, "applied", "missing");
@@ -201,7 +219,9 @@ function equalColumns(actual = [], expected = []) { const values = Array.isArray
 function sameType(actual, expected) { return normalized(actual.udt_name) === normalized(expected) || normalized(actual.data_type) === normalized(expected); }
 function sameDefault(actual, expected) { return sameSql(actual, expected); }
 function equalSqlArrays(actual = [], expected = []) { const actualValues = Array.isArray(actual) ? actual : []; return actualValues.length === (expected || []).length && actualValues.every((value, index) => sameSql(value, expected[index])); }
+function equalTextArrays(actual = [], expected = []) { const actualValues = Array.isArray(actual) ? actual : []; return actualValues.length === (expected || []).length && actualValues.every((value, index) => normalized(value) === normalized(expected[index])); }
 function sameSql(actual, expected) { return normalizedSql(actual) === normalizedSql(expected); }
+function canonicalFunctionDefinition(value) { return normalized(String(value || "").replace(/\$[A-Za-z_][A-Za-z0-9_]*\$/g, () => "$$")); }
 function describeColumn(expected) { return `${expected.type}${expected.nullable ? " nullable" : " not-null"}`; }
 function normalized(value) { return String(value || "").toLowerCase().replace(/\s+/g, ""); }
 function normalizedSql(value) { return normalized(value).replace(/\(\(([^()]+)\)\)/g, "($1)"); }

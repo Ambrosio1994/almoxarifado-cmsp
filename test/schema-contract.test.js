@@ -10,6 +10,12 @@ describe("contrato de schema PostgreSQL", () => {
     assert.deepEqual(result, { valid: true, differences: [] });
   });
 
+  it("aceita o delimitador dollar-quote canonico gerado pelo PostgreSQL", () => {
+    const catalog = completeCatalog();
+    catalog.functions.find((row) => row.name === "prevent_process_audit_mutation").source = "CREATE OR REPLACE FUNCTION public.prevent_process_audit_mutation()\n RETURNS trigger\n LANGUAGE plpgsql\nAS $function$\nBEGIN\n  RAISE EXCEPTION 'app_process_audit is append-only';\nEND;\n$function$\n";
+    assert.deepEqual(compareSchemaCatalog(catalog, { expectedOwner: OWNER }), { valid: true, differences: [] });
+  });
+
   it("detecta tabela, coluna, tipo, nullability e default divergentes", () => {
     const catalog = completeCatalog();
     catalog.tables = catalog.tables.filter((row) => row.table_name !== "app_suppliers");
@@ -39,10 +45,13 @@ describe("contrato de schema PostgreSQL", () => {
     assert.ok(categories.includes("check"));
   });
 
-  it("detecta indice, unicidade, predicado parcial e ownership divergentes", () => {
+  it("detecta indice, validade, prontidao, metodo, unicidade, predicado parcial e ownership divergentes", () => {
     const catalog = completeCatalog();
     const index = catalog.indexes.find((row) => row.name === "app_processes_numero_empenho_uidx");
     index.unique = false;
+    index.valid = false;
+    index.ready = false;
+    index.access_method = "hash";
     index.partial = false;
     index.predicate = "";
     index.owner = "runtime_role";
@@ -50,6 +59,9 @@ describe("contrato de schema PostgreSQL", () => {
     const categories = compareSchemaCatalog(catalog, { expectedOwner: OWNER }).differences.map((item) => item.category);
     assert.ok(categories.includes("index"));
     assert.ok(categories.includes("index-unique"));
+    assert.ok(categories.includes("index-validity"));
+    assert.ok(categories.includes("index-readiness"));
+    assert.ok(categories.includes("index-access-method"));
     assert.ok(categories.includes("index-partial"));
     assert.ok(categories.includes("index-predicate"));
     assert.ok(categories.includes("ownership"));
@@ -67,6 +79,20 @@ describe("contrato de schema PostgreSQL", () => {
     assert.ok(categories.includes("index-predicate"));
   });
 
+  it("rejeita indice exigido que nao esta valido", () => {
+    const catalog = completeCatalog();
+    catalog.indexes.find((row) => row.name === "app_processes_updated_idx").valid = false;
+    const difference = compareSchemaCatalog(catalog, { expectedOwner: OWNER }).differences.find((item) => item.category === "index-validity");
+    assert.equal(difference?.critical, true);
+  });
+
+  it("rejeita indice exigido que nao esta pronto", () => {
+    const catalog = completeCatalog();
+    catalog.indexes.find((row) => row.name === "app_processes_updated_idx").ready = false;
+    const difference = compareSchemaCatalog(catalog, { expectedOwner: OWNER }).differences.find((item) => item.category === "index-readiness");
+    assert.equal(difference?.critical, true);
+  });
+
   it("rejeita FK em coluna referenciada errada, CHECK invertido e default inesperado", () => {
     const catalog = completeCatalog();
     const foreignKey = catalog.constraints.find((row) => row.marker === "user_sessions:f:user_id");
@@ -81,15 +107,23 @@ describe("contrato de schema PostgreSQL", () => {
     assert.ok(categories.includes("column-default"));
   });
 
-  it("rejeita funcao homonima em outro schema e corpo sem bloqueio", () => {
+  it("rejeita funcao homonima em outro schema e corpo inerte mesmo contendo os fragmentos esperados", () => {
     const catalog = completeCatalog();
     const trigger = catalog.triggers.find((row) => row.name === "app_process_audit_immutable");
     trigger.function_schema = "other_schema";
     const functionRow = catalog.functions.find((row) => row.name === "prevent_process_audit_mutation");
-    functionRow.source = "app_process_audit is append-only";
+    functionRow.source = "CREATE OR REPLACE FUNCTION public.prevent_process_audit_mutation() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF false THEN RAISE EXCEPTION 'app_process_audit is append-only'; END IF; RETURN OLD; END; $$";
     const categories = compareSchemaCatalog(catalog, { expectedOwner: OWNER }).differences.map((item) => item.category);
     assert.ok(categories.includes("trigger-function"));
-    assert.ok(categories.includes("function-source"));
+    assert.ok(categories.includes("function-definition"));
+  });
+
+  it("rejeita trigger condicionado que nunca executa", () => {
+    const catalog = completeCatalog();
+    const trigger = catalog.triggers.find((row) => row.name === "app_process_audit_immutable");
+    trigger.when_condition = "false";
+    const difference = compareSchemaCatalog(catalog, { expectedOwner: OWNER }).differences.find((item) => item.category === "trigger-when");
+    assert.equal(difference?.critical, true);
   });
 
   it("detecta funcao, trigger, sequence e migration ausentes", () => {
@@ -123,9 +157,9 @@ function completeCatalog(contract = RUNTIME_SCHEMA_CONTRACT) {
   ]);
   const indexes = contract.indexes.map((expected) => ({
     table_name: expected.table, name: expected.name, unique: expected.unique, partial: Boolean(expected.predicate),
-    key_definitions: expected.keys, predicate: expected.predicate || null, owner: OWNER
+    valid: true, ready: true, access_method: expected.accessMethod, key_definitions: expected.keys, predicate: expected.predicate || null, owner: OWNER
   }));
-  const functions = contract.functions.map((expected) => ({ function_schema: expected.schema, name: expected.name, identity_arguments: expected.identityArguments, returns: expected.returns, language: expected.language, source: expected.sourceParts.join(" "), owner: OWNER }));
-  const triggers = contract.triggers.map((expected) => ({ table_name: expected.table, name: expected.name, function_schema: expected.functionSchema, function_name: expected.function, function_identity_arguments: expected.functionIdentityArguments, definition: expected.definitionParts.join(" ") }));
+  const functions = contract.functions.map((expected) => ({ function_schema: expected.schema, name: expected.name, identity_arguments: expected.identityArguments, returns: expected.returns, language: expected.language, source: expected.canonicalDefinition, owner: OWNER }));
+  const triggers = contract.triggers.map((expected) => ({ table_name: expected.table, name: expected.name, function_schema: expected.functionSchema, function_name: expected.function, function_identity_arguments: expected.functionIdentityArguments, timing: expected.timing, events: expected.events, level: expected.level, when_condition: expected.whenCondition, enabled: expected.enabled }));
   return { schema: { schema: contract.schema, owner: OWNER }, tables, columns, constraints, indexes, functions, triggers, sequences: contract.sequences.map((item) => ({ name: item.name, owner: OWNER })), migrations: contract.migrations.map((version) => ({ version })) };
 }
