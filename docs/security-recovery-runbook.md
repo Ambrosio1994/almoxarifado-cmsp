@@ -38,6 +38,22 @@ consulta real deve ocorrer somente contra ambiente autorizado de leitura. Exit c
 privilegio administrativo ou membership sensivel; isso e evidencia para revisao,
 nao uma revogacao automatica.
 
+## Verificacao de drift de schema
+
+Depois das migrations e antes de uma janela de alteracao estrutural, execute o
+verificador somente leitura com o owner esperado explicitamente informado:
+
+```bash
+DATABASE_SCHEMA_OWNER=neondb_owner npm run db:verify-schema
+```
+
+Opcionalmente, `DATABASE_URL_SCHEMA_VERIFY` pode apontar para uma conexao de
+leitura destinada ao diagnostico. O comando verifica tabelas, colunas,
+constraints, indices, triggers, funcoes, sequences, ownership e migrations;
+retorna `2` para drift e `1` para falha operacional. Ele nao roda no startup,
+que continua usando a verificacao leve e cacheada para nao adicionar leituras
+pesadas a cada requisicao.
+
 ## Restore isolado
 
 1. Valide hashes do manifesto e restaure dump e uploads em uma branch/database
