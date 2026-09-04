@@ -53,6 +53,16 @@ describe("Documentos no DOM", () => {
       if (path === "/auth/session") return jsonResponse({ email: "teste@example.com", nome: "Teste", role: "almoxarifado" });
       if (path === "/api/meta") return jsonResponse({ status: [], filtrosRapidos: [] });
       if (path === "/api/dashboard") return jsonResponse(dashboardPayload());
+      if (path.startsWith("/api/processes?")) {
+        processRequests += 1;
+        return jsonResponse({
+          data: [process, secondProcess],
+          total: 2,
+          page: 1,
+          limit: 25,
+          totalPages: 1
+        });
+      }
       if (path === "/api/processes") {
         processRequests += 1;
         return jsonResponse([process, secondProcess]);

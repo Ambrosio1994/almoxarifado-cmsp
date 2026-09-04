@@ -39,6 +39,8 @@ const state = {
   allProcesses: [],
   processesLoaded: false,
   processesLoading: null,
+  processPage: { page: 1, limit: 25, total: 0, totalPages: 1 },
+  processPageLoading: null,
   fornecedores: [],
   suppliersLoaded: false,
   suppliersLoading: null,
@@ -150,6 +152,10 @@ const searchInput = document.querySelector("#searchInput");
 const activeProcessFilters = document.querySelector("#activeProcessFilters");
 const activeProcessFiltersText = document.querySelector("#activeProcessFiltersText");
 const clearProcessFilters = document.querySelector("#clearProcessFilters");
+const processPagination = document.querySelector("#processPagination");
+const processPaginationSummary = document.querySelector("#processPaginationSummary");
+const processPreviousPage = document.querySelector("#processPreviousPage");
+const processNextPage = document.querySelector("#processNextPage");
 const processForm = document.querySelector("#processForm");
 const commitmentYear = document.querySelector("#commitmentYear");
 const commitmentSequence = document.querySelector("#commitmentSequence");
@@ -629,6 +635,8 @@ function resetApplicationData() {
   state.allProcesses = [];
   state.processesLoaded = false;
   state.processesLoading = null;
+  state.processPage = { page: 1, limit: 25, total: 0, totalPages: 1 };
+  state.processPageLoading = null;
   state.fornecedores = [];
   state.auditoria = [];
   state.securityAudit = [];
@@ -893,12 +901,8 @@ async function ensureProcessesLoaded({ force = false } = {}) {
 }
 
 async function renderProcessesView() {
-  if (!state.processesLoaded) {
-    table.innerHTML = '<tr class="empty-table-row"><td colspan="12" role="status">Carregando processos...</td></tr>';
-  }
-  await ensureProcessesLoaded({ force: true });
-  applyProcessFilters();
-  renderProcessData();
+  table.innerHTML = '<tr class="empty-table-row"><td colspan="12" role="status">Carregando processos...</td></tr>';
+  await loadProcessesPage();
 }
 
 async function renderBoardView({ force = false } = {}) {
@@ -1176,7 +1180,7 @@ async function updateBoardProcess(process, targetStatus) {
       body: JSON.stringify(processUpdatePayloadFor(process, { status: targetStatus }))
     });
     replaceProcessInState(updated);
-    applyProcessFilters();
+    renderActiveProcessFilters();
     finalMessage = `Processo movido para “${targetStatus}”.`;
     await loadDashboardData(state.dashboardYear).catch(() => null);
   } catch (error) {
@@ -1224,48 +1228,77 @@ function cleanupBoardDragState() {
 
 async function refresh({ reload = true, updateDashboard = reload } = {}) {
   if (reload) {
-    const [processResult, dashboardResult] = await Promise.allSettled([
-      ensureProcessesLoaded({ force: true }),
+    const refreshes = [
+      state.processesLoaded ? ensureProcessesLoaded({ force: true }) : Promise.resolve(null),
+      state.activeSection === "processes" || state.detailReturnSection === "processes"
+        ? loadProcessesPage({ force: true })
+        : Promise.resolve(null),
       updateDashboard ? loadDashboardData(state.dashboardYear) : Promise.resolve(null)
-    ]);
-    if (processResult.status === "rejected") {
-      if (processResult.reason?.name === "AbortError") return;
-      throw processResult.reason;
+    ];
+    const results = await Promise.allSettled(refreshes);
+    const processFailure = results.slice(0, 2).find((result) => result.status === "rejected");
+    if (processFailure) {
+      if (processFailure.reason?.name === "AbortError") return;
+      throw processFailure.reason;
     }
+    const dashboardResult = results[2];
     if (dashboardResult.status === "rejected" && dashboardResult.reason?.name !== "AbortError") {
       showAppError(`A lista foi atualizada, mas os gráficos nao: ${dashboardResult.reason?.message || "falha ao carregar os indicadores"}`);
     } else if (dashboardResult.value && state.activeSection === "dashboard") {
       renderDashboardView();
     }
   }
-  applyProcessFilters();
+  renderActiveProcessFilters();
   renderProcessData();
 }
 
-function applyProcessFilters() {
-  const query = normalizeText(searchInput?.value || "");
-  const status = statusFilter?.value || "";
-  const quickFilters = [...state.quickFilters];
-  state.processos = state.allProcesses
-    .filter((processo) => !processo.inativo)
-    .filter((processo) => !status || processo.status === status)
-    .filter((processo) => {
-      if (!query) return true;
-      return [
-        processo.numeroProcesso,
-        processo.numeroEmpenho,
-        processo.numeroNotaFiscal,
-        processo.fornecedor,
-        processo.material,
-        processo.status,
-        processo.criadoPor,
-        processo.criadoPorEmail,
-        ...(processo.materiais || []).map((material) => material.descricao)
-      ].some((value) => normalizeText(value).includes(query));
-    })
-    .filter((processo) => quickFilters.length === 0
-      || quickFilters.some((quickFilterValue) => matchesQuickFilter(processo, quickFilterValue)));
-  renderActiveProcessFilters();
+async function loadProcessesPage({ page = state.processPage.page, resetPage = false, force = false } = {}) {
+  const requestedPage = resetPage ? 1 : Math.max(1, Number(page) || 1);
+  if (state.processPageLoading && !force) return state.processPageLoading;
+  refreshController?.abort();
+  const controller = new AbortController();
+  refreshController = controller;
+  const sequence = ++refreshSequence;
+  const params = processFilterParams();
+  params.set("page", String(requestedPage));
+  params.set("limit", String(state.processPage.limit));
+  const request = api(`/api/processes?${params}`, { signal: controller.signal })
+    .then((payload) => {
+      if (sequence !== refreshSequence) return state.processos;
+      const normalized = normalizeProcessesPagePayload(payload, requestedPage, state.processPage.limit);
+      state.processos = normalized.data;
+      state.processPage = normalized;
+      renderActiveProcessFilters();
+      renderProcessData();
+      return normalized.data;
+    });
+  state.processPageLoading = request;
+  renderProcessPagination();
+  try {
+    return await request;
+  } finally {
+    if (refreshController === controller) refreshController = null;
+    if (state.processPageLoading === request) {
+      state.processPageLoading = null;
+      renderProcessPagination();
+    }
+  }
+}
+
+function normalizeProcessesPagePayload(payload, requestedPage, limit) {
+  if (Array.isArray(payload)) {
+    return { data: payload, total: payload.length, page: 1, limit, totalPages: 1 };
+  }
+  const data = Array.isArray(payload?.data) ? payload.data : [];
+  const total = Math.max(0, Number(payload?.total) || 0);
+  const totalPages = Math.max(1, Number(payload?.totalPages) || Math.ceil(total / limit) || 1);
+  return {
+    data,
+    total,
+    page: Math.min(Math.max(1, Number(payload?.page) || requestedPage), totalPages),
+    limit: Math.max(1, Number(payload?.limit) || limit),
+    totalPages
+  };
 }
 
 function renderActiveProcessFilters() {
@@ -1279,7 +1312,7 @@ function renderActiveProcessFilters() {
   activeProcessFilters.classList.toggle("hidden", !active);
   searchInput?.closest(".search-box")?.classList.toggle("has-active-filter", Boolean(search));
   activeProcessFiltersText.textContent = active
-    ? `${labels.length === 1 ? "Filtro ativo" : "Filtros ativos"}: ${labels.join(" · ")}. ${state.processos.length} ${state.processos.length === 1 ? "resultado" : "resultados"}.`
+    ? `${labels.length === 1 ? "Filtro ativo" : "Filtros ativos"}: ${labels.join(" · ")}. ${state.processPage.total} ${state.processPage.total === 1 ? "resultado" : "resultados"}.`
     : "";
 }
 
@@ -1295,6 +1328,18 @@ function matchesQuickFilter(processo, quickFilterValue) {
 
 function renderProcessData() {
   renderTable();
+  renderProcessPagination();
+}
+
+function renderProcessPagination() {
+  if (!processPaginationSummary || !processPreviousPage || !processNextPage) return;
+  const { page, total, totalPages } = state.processPage;
+  processPaginationSummary.textContent = total
+    ? `Página ${page} de ${totalPages} · ${total} ${total === 1 ? "empenho" : "empenhos"}`
+    : "Nenhum empenho encontrado.";
+  processPreviousPage.disabled = page <= 1 || Boolean(state.processPageLoading);
+  processNextPage.disabled = page >= totalPages || Boolean(state.processPageLoading);
+  processPagination?.classList.toggle("hidden", state.processPageLoading && !state.processos.length);
 }
 
 function processFilterParams() {
@@ -1455,8 +1500,7 @@ processForm.addEventListener("submit", async (event) => {
   const wasSelected = state.selectedProcess?.id === savedProcess.id;
   if (wasSelected) state.selectedProcess = savedProcess;
   upsertProcessInState(savedProcess);
-  applyProcessFilters();
-  renderProcessData();
+  renderActiveProcessFilters();
   const successMessage = `Empenho salvo com sucesso. ID: ${savedProcess.id}.`;
   showAppNotice(successMessage);
   clearForm();
@@ -1501,14 +1545,14 @@ processExportChoices.forEach((button) => {
     void downloadProcesses(format);
   });
 });
-searchInput.addEventListener("input", debounce(() => refresh({ reload: false }), 180));
-statusFilter.addEventListener("change", () => refresh({ reload: false }));
+searchInput.addEventListener("input", debounce(() => void loadProcessesPage({ resetPage: true, force: true }), 180));
+statusFilter.addEventListener("change", () => void loadProcessesPage({ resetPage: true, force: true }));
 clearProcessFilters?.addEventListener("click", () => {
   searchInput.value = "";
   statusFilter.value = "";
   state.quickFilters.clear();
   renderQuickFilters();
-  void refresh({ reload: false });
+  void loadProcessesPage({ resetPage: true, force: true });
   searchInput.focus();
 });
 quickFilter.addEventListener("change", () => {
@@ -1516,8 +1560,10 @@ quickFilter.addEventListener("change", () => {
     [...quickFilter.selectedOptions].map((option) => option.value).filter(Boolean)
   );
   renderQuickFilters();
-  void refresh({ reload: false });
+  void loadProcessesPage({ resetPage: true, force: true });
 });
+processPreviousPage?.addEventListener("click", () => void loadProcessesPage({ page: state.processPage.page - 1, force: true }));
+processNextPage?.addEventListener("click", () => void loadProcessesPage({ page: state.processPage.page + 1, force: true }));
 documentMetadataForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
   await saveComplementaryDocument();
@@ -1556,7 +1602,16 @@ addMaterialRowsButton?.addEventListener("click", () => {
 });
 copyMaterialDescriptionButton?.addEventListener("click", copyFirstMaterialDescription);
 materialsSpreadsheetInput?.addEventListener("change", importMaterialsSpreadsheet);
-processAssociationMode?.addEventListener("change", updateProcessAssociationFields);
+processAssociationMode?.addEventListener("change", async () => {
+  if (processAssociationMode.value === "existing" && !state.processesLoaded) {
+    try {
+      await ensureProcessesLoaded();
+    } catch (error) {
+      formMessage.textContent = error.message || "Não foi possível carregar os processos existentes.";
+    }
+  }
+  updateProcessAssociationFields();
+});
 existingProcessSelect?.addEventListener("change", () => {
   if (processAssociationMode?.value === "existing" && processNumber) {
     processNumber.value = existingProcessSelect.value;
@@ -5559,7 +5614,7 @@ function renderQuickFilters() {
       state.quickFilters.add(filter);
     }
     renderQuickFilters();
-    void refresh({ reload: false });
+    void loadProcessesPage({ resetPage: true, force: true });
   });
 }
 

@@ -4,7 +4,14 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { closePool, query } from "../../src/db/postgres.js";
-import { EXPECTED_SCHEMA_MIGRATION, REQUIRED_DATABASE_TABLES, detectStoreBackend, readStore, writeStore } from "../../src/storage.js";
+import {
+  EXPECTED_SCHEMA_MIGRATION,
+  REQUIRED_DATABASE_TABLES,
+  detectStoreBackend,
+  readProcessesPage,
+  readStore,
+  writeStore
+} from "../../src/storage.js";
 import { createAuditEntry } from "../../src/domain/processos.js";
 import { createSession, resolveSessionUser } from "../../src/repositories/sessions.js";
 import { runMigrations } from "../../scripts/db-migrate.js";
@@ -32,6 +39,72 @@ integration("integracao PostgreSQL", () => {
     ]);
     const migration = await query("SELECT version FROM public.app_schema_migrations WHERE version = $1", [EXPECTED_SCHEMA_MIGRATION]);
     assert.equal(migration.rowCount, 1);
+  });
+
+  it("pagina processos no PostgreSQL com filtros equivalentes ao armazenamento local", async () => {
+    const store = await readStore();
+    const marker = `PAGINACAO-DB-${crypto.randomUUID()}`;
+    const processIds = ["material", "pago", "inativo"].map((suffix) => `${marker}-${suffix}`);
+    store.processos.push(
+      {
+        id: processIds[0],
+        numeroProcesso: `${marker}-MATERIAL`,
+        numeroEmpenho: `${marker}-NE-1`,
+        fornecedor: "Fornecedor Café",
+        status: "Enviado para SALC",
+        materiais: [{ descricao: "Café em grãos", quantidade: 1, valorUnitario: 1 }],
+        inativo: false
+      },
+      {
+        id: processIds[1],
+        numeroProcesso: `${marker}-PAGO`,
+        numeroEmpenho: `${marker}-NE-2`,
+        fornecedor: "Outro fornecedor",
+        status: "Pago",
+        materiais: [{ descricao: "Material comum", quantidade: 1, valorUnitario: 1 }],
+        inativo: false
+      },
+      {
+        id: processIds[2],
+        numeroProcesso: `${marker}-INATIVO`,
+        numeroEmpenho: `${marker}-NE-3`,
+        fornecedor: "Fornecedor inativo",
+        status: "Pago",
+        materiais: [],
+        inativo: true
+      }
+    );
+    await writeStore(store);
+
+    const firstPage = await readProcessesPage({
+      page: 1,
+      limit: 1,
+      filters: { q: marker },
+      quickFilters: []
+    });
+    assert.equal(firstPage.total, 2);
+    assert.equal(firstPage.data.length, 1);
+    assert.equal(firstPage.page, 1);
+    assert.equal(firstPage.limit, 1);
+    assert.equal(firstPage.totalPages, 2);
+
+    const paid = await readProcessesPage({
+      page: 8,
+      limit: 25,
+      filters: { q: marker },
+      quickFilters: ["Pago"]
+    });
+    assert.equal(paid.total, 1);
+    assert.equal(paid.page, 1);
+    assert.deepEqual(paid.data.map((processo) => processo.id), [processIds[1]]);
+
+    const accentInsensitive = await readProcessesPage({
+      page: 1,
+      limit: 25,
+      filters: { q: "cafe" },
+      quickFilters: []
+    });
+    assert.ok(accentInsensitive.data.some((processo) => processo.id === processIds[0]));
   });
 
   it("serializa runners concorrentes: uma migracao e aplicada uma unica vez", async () => {

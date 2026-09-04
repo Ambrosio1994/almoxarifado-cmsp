@@ -28,6 +28,9 @@ describe("Navegacao principal no DOM", () => {
       if (path === "/api/meta") return jsonResponse({ status: [], filtrosRapidos: ["Liquidado", "Pago"] });
       if (path === "/api/dashboard") return jsonResponse(dashboardPayload());
       if (path === "/api/suppliers" || path === "/api/processes") return jsonResponse([]);
+      if (path.startsWith("/api/processes?")) {
+        return jsonResponse({ data: [], total: 0, page: 1, limit: 25, totalPages: 1 });
+      }
       if (path.startsWith("/api/processes/download?")) {
         processDownloadPath = path;
         return new Response("arquivo", { status: 200, headers: { "content-type": "text/csv" } });

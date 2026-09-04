@@ -50,6 +50,7 @@ import {
   readAuditStore,
   readProcessById,
   readProcessesSnapshot,
+  readProcessesPage,
   readProcessesStore,
   readSettingsStore,
   readStore,
@@ -237,6 +238,22 @@ const DEFAULT_SETTINGS = {
 
 function enrichProcess(processo, now = new Date()) {
   return enrichDomainProcess(processo, now, APP_TIME_ZONE);
+}
+
+function parseProcessesPagination(searchParams) {
+  const parsePositiveInteger = (name, fallback) => {
+    const raw = searchParams.get(name);
+    if (raw === null || raw === "") return { value: fallback };
+    if (!/^\d+$/.test(raw)) return { error: `O parametro ${name} deve ser um inteiro positivo.` };
+    const value = Number(raw);
+    if (!Number.isSafeInteger(value) || value < 1) return { error: `O parametro ${name} deve ser um inteiro positivo.` };
+    return { value };
+  };
+  const page = parsePositiveInteger("page", 1);
+  if (page.error) return page;
+  const limit = parsePositiveInteger("limit", 25);
+  if (limit.error) return limit;
+  return { page: page.value, limit: Math.min(limit.value, 100) };
 }
 
 export function createWorkLimiter(maxConcurrency = 1, maxQueue = 1) {
@@ -916,6 +933,22 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === "GET" && url.pathname === "/api/processes") {
+    const requestedPagination = url.searchParams.has("page") || url.searchParams.has("limit");
+    if (requestedPagination) {
+      const pagination = parseProcessesPagination(url.searchParams);
+      if (pagination.error) {
+        sendJson(res, 400, { error: pagination.error });
+        return;
+      }
+      const page = await readProcessesPage({
+        page: pagination.page,
+        limit: pagination.limit,
+        filters: Object.fromEntries(url.searchParams),
+        quickFilters: url.searchParams.getAll("filtroRapido")
+      });
+      sendJson(res, 200, { ...page, data: page.data.map((processo) => enrichProcess(processo)) });
+      return;
+    }
     const store = await readProcessesStore();
     const filtered = filterProcesses(store.processos, Object.fromEntries(url.searchParams));
     const enriched = filtered.map((processo) => enrichProcess(processo));

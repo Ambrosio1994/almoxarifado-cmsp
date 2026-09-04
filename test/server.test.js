@@ -510,6 +510,68 @@ describe("rotas http", () => {
     assert.deepEqual(inactive.json(), { error: "Processo nao encontrado" });
   });
 
+  it("pagina empenhos no servidor sem alterar o contrato legado da lista", async () => {
+    const { token } = await authenticatedAs("almoxarifado");
+    const marker = `PAGINACAO-${Date.now()}`;
+    const ids = [1, 2, 3].map((index) => `${marker}-${index}`);
+    const store = await readStore();
+    store.processos.push(...ids.map((id, index) => ({
+      id,
+      numeroProcesso: id,
+      numeroEmpenho: testCommitmentNumber(),
+      fornecedor: index === 1 ? "Fornecedor alvo" : "Outro fornecedor",
+      status: index === 2 ? "Pago" : "Enviado para SALC",
+      materiais: [{ descricao: index === 0 ? "Material alvo" : "Material comum", quantidade: 1, valorUnitario: 1 }]
+    })));
+    await writeStore(store);
+    const headers = { authorization: `Bearer ${token}` };
+
+    try {
+      const firstPage = await invokeRequest({
+        method: "GET",
+        path: `/api/processes?page=1&limit=1&q=${encodeURIComponent(marker)}`,
+        headers
+      });
+      assert.equal(firstPage.statusCode, 200);
+      assert.equal(Array.isArray(firstPage.json()), false);
+      assert.equal(firstPage.json().total, 3);
+      assert.equal(firstPage.json().data.length, 1);
+      assert.equal(firstPage.json().page, 1);
+      assert.equal(firstPage.json().limit, 1);
+      assert.equal(firstPage.json().totalPages, 3);
+
+      const filtered = await invokeRequest({
+        method: "GET",
+        path: `/api/processes?page=9&limit=500&q=${encodeURIComponent(marker)}&filtroRapido=Pago`,
+        headers
+      });
+      assert.equal(filtered.statusCode, 200);
+      assert.equal(filtered.json().limit, 100);
+      assert.equal(filtered.json().page, 1);
+      assert.deepEqual(filtered.json().data.map((processo) => processo.id), [ids[2]]);
+
+      const search = await invokeRequest({
+        method: "GET",
+        path: "/api/processes?page=1&limit=25&q=material%20alvo",
+        headers
+      });
+      assert.equal(search.statusCode, 200);
+      assert.ok(search.json().data.some((processo) => processo.id === ids[0]));
+
+      const legacy = await invokeRequest({ method: "GET", path: `/api/processes?q=${encodeURIComponent(marker)}`, headers });
+      assert.equal(legacy.statusCode, 200);
+      assert.equal(Array.isArray(legacy.json()), true);
+
+      const invalid = await invokeRequest({ method: "GET", path: "/api/processes?page=zero", headers });
+      assert.equal(invalid.statusCode, 400);
+      assert.match(invalid.json().error, /page.*inteiro positivo/i);
+    } finally {
+      const cleanupStore = await readStore();
+      cleanupStore.processos = cleanupStore.processos.filter((processo) => !ids.includes(processo.id));
+      await writeStore(cleanupStore);
+    }
+  });
+
   it("mantem o alias de download protegido por autenticacao", async () => {
     const anonymous = await invokeRequest({ method: "GET", path: "/api/processes/download" });
     assert.equal(anonymous.statusCode, 401);
