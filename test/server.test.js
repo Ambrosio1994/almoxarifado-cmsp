@@ -111,6 +111,7 @@ describe("respostas de erro do servidor", () => {
         storeBackend: "postgres",
         uploadBackend: "local",
         port: 3000,
+        startupDurationMs: 123,
         uploadRoot: "/segredo/volumes/uploads"
       });
     } finally {
@@ -119,6 +120,36 @@ describe("respostas de erro do servidor", () => {
     assert.equal(messages.length, 1);
     assert.match(messages[0], /application_started/);
     assert.doesNotMatch(messages[0], /segredo|volumes|uploads/);
+    assert.equal(JSON.parse(messages[0]).startupDurationMs, 123);
+  });
+
+  it("registra somente a primeira requisicao concluida sem query string ou segredo", async () => {
+    const messages = [];
+    const originalLog = console.log;
+    console.log = (message) => messages.push(message);
+    try {
+      const first = await invokeRequest({
+        method: "GET",
+        path: "/health/live?access_token=segredo-da-primeira-requisicao"
+      });
+      const second = await invokeRequest({
+        method: "GET",
+        path: "/health/live?refresh_token=segredo-da-segunda-requisicao"
+      });
+      assert.equal(first.statusCode, 200);
+      assert.equal(second.statusCode, 200);
+    } finally {
+      console.log = originalLog;
+    }
+
+    const events = messages.map((message) => JSON.parse(message));
+    const firstRequests = events.filter((event) => event.event === "first_request_completed");
+    assert.equal(firstRequests.length, 1);
+    assert.deepEqual(firstRequests[0].method, "GET");
+    assert.equal(firstRequests[0].path, "/health/live");
+    assert.equal(firstRequests[0].statusCode, 200);
+    assert.equal(Number.isInteger(firstRequests[0].durationMs), true);
+    assert.doesNotMatch(messages.join("\n"), /segredo-da-(?:primeira|segunda)-requisicao/);
   });
 
   it("aceita somente identificadores de build publicos e limitados", () => {
