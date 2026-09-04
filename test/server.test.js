@@ -572,6 +572,51 @@ describe("rotas http", () => {
     }
   });
 
+  it("calcula filtros de prazo da paginação no fallback antes de aplicar o filtro rápido", async () => {
+    const { token } = await authenticatedAs("almoxarifado");
+    const marker = `PRAZO-PAGINACAO-${Date.now()}`;
+    const ids = ["atrasado", "trinta", "entregue", "anulado"].map((suffix) => `${marker}-${suffix}`);
+    const store = await readStore();
+    store.processos.push(
+      {
+        id: ids[0], numeroProcesso: ids[0], numeroEmpenho: testCommitmentNumber(), fornecedor: "Fornecedor prazo",
+        status: "Aguardando entrega", dataEnvioFornecedor: brazilianDateDaysAgo(31), materiais: []
+      },
+      {
+        id: ids[1], numeroProcesso: ids[1], numeroEmpenho: testCommitmentNumber(), fornecedor: "Fornecedor prazo",
+        status: "Aguardando entrega", dataEnvioFornecedor: brazilianDateDaysAgo(30), materiais: []
+      },
+      {
+        id: ids[2], numeroProcesso: ids[2], numeroEmpenho: testCommitmentNumber(), fornecedor: "Fornecedor prazo",
+        status: "Entregue", dataEnvioFornecedor: brazilianDateDaysAgo(31), materiais: []
+      },
+      {
+        id: ids[3], numeroProcesso: ids[3], numeroEmpenho: testCommitmentNumber(), fornecedor: "Fornecedor prazo",
+        status: "Anulado", dataEnvioFornecedor: brazilianDateDaysAgo(31), materiais: []
+      }
+    );
+    await writeStore(store);
+    const headers = { authorization: `Bearer ${token}` };
+
+    try {
+      for (const quickFilter of ["Em atraso", "Mais de 30 dias"]) {
+        const response = await invokeRequest({
+          method: "GET",
+          path: `/api/processes?page=1&limit=25&q=${encodeURIComponent(marker)}&filtroRapido=${encodeURIComponent(quickFilter)}`,
+          headers
+        });
+        assert.equal(response.statusCode, 200);
+        assert.equal(response.json().total, 1);
+        assert.deepEqual(response.json().data.map((processo) => processo.id), [ids[0]]);
+        assert.ok(response.json().data[0].diasDecorridos > 30);
+      }
+    } finally {
+      const cleanupStore = await readStore();
+      cleanupStore.processos = cleanupStore.processos.filter((processo) => !ids.includes(processo.id));
+      await writeStore(cleanupStore);
+    }
+  });
+
   it("mantem o alias de download protegido por autenticacao", async () => {
     const anonymous = await invokeRequest({ method: "GET", path: "/api/processes/download" });
     assert.equal(anonymous.statusCode, 401);
@@ -2090,6 +2135,12 @@ function currentBrazilianDate() {
   }).formatToParts(new Date());
   const values = Object.fromEntries(parts.map(({ type, value }) => [type, value]));
   return `${values.year}-${values.month}-${values.day}`;
+}
+
+function brazilianDateDaysAgo(days) {
+  const date = new Date(`${currentBrazilianDate()}T12:00:00Z`);
+  date.setUTCDate(date.getUTCDate() - days);
+  return date.toISOString().slice(0, 10);
 }
 
 function testCommitmentNumber(year = 2026) {

@@ -73,10 +73,108 @@ describe("paginação de empenhos no DOM", () => {
       dom.window.close();
     }
   });
+
+  it("mantém as cargas da lista e do quadro independentes e recarrega o quadro após uma mutação", async () => {
+    const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
+    const dom = new JSDOM(html, { url: "http://localhost/", pretendToBeVisual: true });
+    installDialogPolyfill(dom.window);
+    const restoreGlobals = installDomGlobals(dom.window);
+    dom.window.sessionStorage.setItem("almoxActiveSection:admin@example.com", "processes");
+    const statuses = ["Enviado para SALC", "Empenho enviado ao fornecedor"];
+    const transitions = { "Enviado para SALC": "Empenho enviado ao fornecedor", "Empenho enviado ao fornecedor": "" };
+    let processes = [processFixture()];
+    let pageSignal;
+    let resolveDeferredPage;
+    let pageRequests = 0;
+    let fullRequests = 0;
+
+    globalThis.fetch = async (input, options = {}) => {
+      const path = String(input);
+      if (path === "/auth/session") return jsonResponse({ id: "admin-1", email: "admin@example.com", nome: "Admin", role: "admin" });
+      if (path === "/api/meta") return jsonResponse({ status: statuses, filtrosRapidos: [], transicoes: transitions });
+      if (path.startsWith("/api/dashboard")) return jsonResponse(dashboardPayload());
+      if (path.startsWith("/api/processes?")) {
+        pageRequests += 1;
+        if (pageRequests === 2) {
+          pageSignal = options.signal;
+          return new Promise((resolve) => { resolveDeferredPage = resolve; });
+        }
+        return jsonResponse(pagePayload(processes));
+      }
+      if (path === "/api/processes") {
+        fullRequests += 1;
+        return jsonResponse(processes);
+      }
+      if (/\/api\/processes\/[^/]+\/(observations|audit)$/.test(path)) return jsonResponse([]);
+      const updateMatch = path.match(/^\/api\/processes\/([^/]+)$/);
+      if (updateMatch && options.method === "PUT") {
+        const body = JSON.parse(options.body);
+        const current = processes.find((process) => process.id === updateMatch[1]);
+        const updated = { ...current, ...body, versao: current.versao + 1 };
+        processes = processes.map((process) => process.id === updated.id ? updated : process);
+        return jsonResponse(updated);
+      }
+      if (path === "/api/suppliers") return jsonResponse([]);
+      throw new Error(`Requisição inesperada no teste: ${path}`);
+    };
+
+    try {
+      await import(`${new URL("../public/app.js", import.meta.url).href}?process-load-separation=${Date.now()}`);
+      await waitFor(() => dom.window.document.querySelector("#processPaginationSummary").textContent.includes("Página 1 de 2"));
+      dom.window.document.querySelector("#processNextPage").click();
+      await waitFor(() => pageSignal);
+
+      dom.window.document.querySelector('[data-section="board"]').click();
+      await waitFor(() => fullRequests === 1);
+      assert.equal(pageSignal.aborted, false, "a carga completa não deve cancelar a paginação em curso");
+      resolveDeferredPage(jsonResponse(pagePayload(processes)));
+      await waitFor(() => dom.window.document.querySelector('[data-process-id="p1"]'));
+
+      const move = dom.window.document.querySelector('[data-process-id="p1"] [data-board-move]');
+      move.value = "Empenho enviado ao fornecedor";
+      move.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+      await waitFor(() => dom.window.document.querySelector("#processStepDialog").open);
+      dom.window.document.querySelector('#processStepForm input[name="data"]').value = "01-09-2026";
+      submit(dom.window, dom.window.document.querySelector("#processStepForm"));
+
+      await waitFor(() => fullRequests === 2);
+      await waitFor(() => dom.window.document.querySelector('[data-board-status="Empenho enviado ao fornecedor"] [data-process-id="p1"]'));
+
+      dom.window.document.querySelector('[data-section="processes"]').click();
+      await waitFor(() => dom.window.document.querySelector("#processPaginationSummary").textContent.includes("Página 1 de 2"));
+      dom.window.document.querySelector('[data-section="board"]').click();
+      await waitFor(() => dom.window.document.querySelector('[data-board-status="Empenho enviado ao fornecedor"] [data-process-id="p1"]'));
+      assert.equal(pageSignal.aborted, false, "a mutação e o retorno ao quadro não devem invalidar a requisição paginada já concluída");
+    } finally {
+      restoreGlobals();
+      dom.window.close();
+    }
+  });
 });
 
 function dashboardPayload() {
   return { ano: 2026, anos: [2026], metrics: {}, charts: { execucaoMensal: [], distribuicaoStatus: [] } };
+}
+
+function processFixture(overrides = {}) {
+  return {
+    id: "p1",
+    numeroProcesso: "PROC-1",
+    numeroEmpenho: "2026NE000001",
+    fornecedor: "Fornecedor",
+    criadoPor: "Responsável",
+    criadoPorEmail: "responsavel@example.com",
+    status: "Enviado para SALC",
+    materiais: [],
+    documentos: {},
+    entregas: [],
+    versao: 1,
+    ...overrides
+  };
+}
+
+function pagePayload(processes) {
+  return { data: processes, total: 2, page: 1, limit: 25, totalPages: 2 };
 }
 
 function jsonResponse(payload, status = 200) {
@@ -104,6 +202,10 @@ function installDomGlobals(window) {
       else globalThis[key] = value;
     }
   };
+}
+
+function submit(window, form) {
+  form.dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
 }
 
 async function waitFor(predicate, timeoutMs = 1_500) {

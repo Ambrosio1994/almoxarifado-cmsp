@@ -18,7 +18,7 @@ import {
   readTransaction,
   transaction
 } from "./db/postgres.js";
-import { applyQuickFilter, filterProcesses, QUICK_FILTERS } from "./domain/processos.js";
+import { applyQuickFilter, enrichProcess, filterProcesses, QUICK_FILTERS } from "./domain/processos.js";
 import { recordSecurityEvent } from "./repositories/security-audit.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -128,7 +128,12 @@ export async function readProcessesPage(options = {}) {
 
   if (!(await requireConfiguredDatabase())) {
     const store = await readStore();
-    const filtered = applyQuickFilter(filterProcesses(store.processos || [], filters), quickFilters);
+    // The PostgreSQL query evaluates deadline filters against the business date.
+    // Keep the file fallback equivalent without persisting derived fields.
+    const filtered = applyQuickFilter(
+      filterProcesses(store.processos || [], filters).map((processo) => enrichProcess(processo)),
+      quickFilters
+    );
     const total = filtered.length;
     const totalPages = Math.max(1, Math.ceil(total / limit));
     const resolvedPage = Math.min(page, totalPages);

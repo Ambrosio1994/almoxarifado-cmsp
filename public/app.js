@@ -107,8 +107,10 @@ const ALLOWED_DOCUMENT_RESPONSE_MIME_TYPES = new Set([
 
 let currentUser = null;
 let legacyAuthToken = localStorage.getItem("almoxAuthToken") || "";
-let refreshController = null;
-let refreshSequence = 0;
+let allProcessesRefreshController = null;
+let allProcessesRefreshSequence = 0;
+let processPageRefreshController = null;
+let processPageRefreshSequence = 0;
 let dashboardSequence = 0;
 let detailController = null;
 let detailSequence = 0;
@@ -583,10 +585,12 @@ function clearClientSession() {
   localStorage.removeItem("almoxAuthToken");
   legacyAuthToken = "";
   currentUser = null;
-  refreshController?.abort();
+  allProcessesRefreshController?.abort();
+  processPageRefreshController?.abort();
   detailController?.abort();
   cancelStandardDocumentUpload();
-  refreshSequence += 1;
+  allProcessesRefreshSequence += 1;
+  processPageRefreshSequence += 1;
   dashboardSequence += 1;
   detailSequence += 1;
   clearTimelineDocumentPreviews();
@@ -880,13 +884,13 @@ function normalizeDashboardPayload(payload = {}, requestedYear = "") {
 async function ensureProcessesLoaded({ force = false } = {}) {
   if (state.processesLoaded && !force) return state.allProcesses;
   if (state.processesLoading && !force) return state.processesLoading;
-  refreshController?.abort();
+  allProcessesRefreshController?.abort();
   const controller = new AbortController();
-  refreshController = controller;
-  const sequence = ++refreshSequence;
+  allProcessesRefreshController = controller;
+  const sequence = ++allProcessesRefreshSequence;
   const request = api("/api/processes", { signal: controller.signal })
     .then((processes) => {
-      if (sequence !== refreshSequence) return state.allProcesses;
+      if (sequence !== allProcessesRefreshSequence) return state.allProcesses;
       state.allProcesses = processes;
       state.processesLoaded = true;
       return processes;
@@ -895,7 +899,7 @@ async function ensureProcessesLoaded({ force = false } = {}) {
   try {
     return await request;
   } finally {
-    if (refreshController === controller) refreshController = null;
+    if (allProcessesRefreshController === controller) allProcessesRefreshController = null;
     if (state.processesLoading === request) state.processesLoading = null;
   }
 }
@@ -1194,17 +1198,31 @@ async function updateBoardProcess(process, targetStatus) {
 }
 
 function replaceProcessInState(updated) {
-  state.allProcesses = state.allProcesses.map((process) => process.id === updated.id ? updated : process);
+  if (state.processesLoaded) {
+    state.allProcesses = state.allProcesses.map((process) => process.id === updated.id ? updated : process);
+  }
   state.processos = state.processos.map((process) => process.id === updated.id ? updated : process);
   if (state.selectedProcess?.id === updated.id) state.selectedProcess = updated;
 }
 
 function upsertProcessInState(updated) {
-  const exists = state.allProcesses.some((process) => process.id === updated.id);
-  state.allProcesses = exists
-    ? state.allProcesses.map((process) => process.id === updated.id ? updated : process)
-    : [updated, ...state.allProcesses];
+  if (state.processesLoaded) {
+    const exists = state.allProcesses.some((process) => process.id === updated.id);
+    state.allProcesses = exists
+      ? state.allProcesses.map((process) => process.id === updated.id ? updated : process)
+      : [updated, ...state.allProcesses];
+  }
   replaceProcessInState(updated);
+}
+
+function invalidateProcessCaches() {
+  allProcessesRefreshController?.abort();
+  allProcessesRefreshSequence += 1;
+  state.processesLoaded = false;
+  state.processesLoading = null;
+  processPageRefreshController?.abort();
+  processPageRefreshSequence += 1;
+  state.processPageLoading = null;
 }
 
 async function retryProcessAudit(processId) {
@@ -1229,7 +1247,9 @@ function cleanupBoardDragState() {
 async function refresh({ reload = true, updateDashboard = reload } = {}) {
   if (reload) {
     const refreshes = [
-      state.processesLoaded ? ensureProcessesLoaded({ force: true }) : Promise.resolve(null),
+      (state.processesLoaded || state.activeSection === "board" || state.detailReturnSection === "board")
+        ? ensureProcessesLoaded({ force: true })
+        : Promise.resolve(null),
       state.activeSection === "processes" || state.detailReturnSection === "processes"
         ? loadProcessesPage({ force: true })
         : Promise.resolve(null),
@@ -1255,16 +1275,16 @@ async function refresh({ reload = true, updateDashboard = reload } = {}) {
 async function loadProcessesPage({ page = state.processPage.page, resetPage = false, force = false } = {}) {
   const requestedPage = resetPage ? 1 : Math.max(1, Number(page) || 1);
   if (state.processPageLoading && !force) return state.processPageLoading;
-  refreshController?.abort();
+  processPageRefreshController?.abort();
   const controller = new AbortController();
-  refreshController = controller;
-  const sequence = ++refreshSequence;
+  processPageRefreshController = controller;
+  const sequence = ++processPageRefreshSequence;
   const params = processFilterParams();
   params.set("page", String(requestedPage));
   params.set("limit", String(state.processPage.limit));
   const request = api(`/api/processes?${params}`, { signal: controller.signal })
     .then((payload) => {
-      if (sequence !== refreshSequence) return state.processos;
+      if (sequence !== processPageRefreshSequence) return state.processos;
       const normalized = normalizeProcessesPagePayload(payload, requestedPage, state.processPage.limit);
       state.processos = normalized.data;
       state.processPage = normalized;
@@ -1277,7 +1297,7 @@ async function loadProcessesPage({ page = state.processPage.page, resetPage = fa
   try {
     return await request;
   } finally {
-    if (refreshController === controller) refreshController = null;
+    if (processPageRefreshController === controller) processPageRefreshController = null;
     if (state.processPageLoading === request) {
       state.processPageLoading = null;
       renderProcessPagination();
@@ -1500,6 +1520,7 @@ processForm.addEventListener("submit", async (event) => {
   const wasSelected = state.selectedProcess?.id === savedProcess.id;
   if (wasSelected) state.selectedProcess = savedProcess;
   upsertProcessInState(savedProcess);
+  invalidateProcessCaches();
   renderActiveProcessFilters();
   const successMessage = `Empenho salvo com sucesso. ID: ${savedProcess.id}.`;
   showAppNotice(successMessage);
@@ -4103,6 +4124,7 @@ async function inactivateSelectedProcess() {
 }
 
 async function refreshAfterMutation(successPrefix = "A alteracao foi salva") {
+  invalidateProcessCaches();
   try {
     await refresh();
   } catch (error) {
