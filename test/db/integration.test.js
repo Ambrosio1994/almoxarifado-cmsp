@@ -107,6 +107,30 @@ integration("integracao PostgreSQL", () => {
     assert.ok(accentInsensitive.data.some((processo) => processo.id === processIds[0]));
   });
 
+  it("mantém o filtro SQL de prazo equivalente ao fallback enriquecido", async () => {
+    const store = await readStore();
+    const marker = `PRAZO-PAGINACAO-DB-${crypto.randomUUID()}`;
+    const processIds = ["atrasado", "trinta", "entregue", "anulado"].map((suffix) => `${marker}-${suffix}`);
+    store.processos.push(
+      { id: processIds[0], numeroProcesso: processIds[0], numeroEmpenho: `${marker}-NE-1`, status: "Aguardando entrega", dataEnvioFornecedor: brazilianDateDaysAgo(31), materiais: [] },
+      { id: processIds[1], numeroProcesso: processIds[1], numeroEmpenho: `${marker}-NE-2`, status: "Aguardando entrega", dataEnvioFornecedor: brazilianDateDaysAgo(30), materiais: [] },
+      { id: processIds[2], numeroProcesso: processIds[2], numeroEmpenho: `${marker}-NE-3`, status: "Entregue", dataEnvioFornecedor: brazilianDateDaysAgo(31), materiais: [] },
+      { id: processIds[3], numeroProcesso: processIds[3], numeroEmpenho: `${marker}-NE-4`, status: "Anulado", dataEnvioFornecedor: brazilianDateDaysAgo(31), materiais: [] }
+    );
+    await writeStore(store);
+
+    for (const quickFilter of ["Em atraso", "Mais de 30 dias"]) {
+      const page = await readProcessesPage({
+        page: 1,
+        limit: 25,
+        filters: { q: marker },
+        quickFilters: [quickFilter]
+      });
+      assert.equal(page.total, 1);
+      assert.deepEqual(page.data.map((processo) => processo.id), [processIds[0]]);
+    }
+  });
+
   it("serializa runners concorrentes: uma migracao e aplicada uma unica vez", async () => {
     const migration = createTemporaryMigration("concurrent", "SELECT pg_sleep(0.15);");
     try {
@@ -310,6 +334,19 @@ integration("integracao PostgreSQL", () => {
 });
 
 const silentLogger = { log() {} };
+
+function brazilianDateDaysAgo(days) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(new Date());
+  const values = Object.fromEntries(parts.map(({ type, value }) => [type, value]));
+  const date = new Date(`${values.year}-${values.month}-${values.day}T12:00:00Z`);
+  date.setUTCDate(date.getUTCDate() - days);
+  return date.toISOString().slice(0, 10);
+}
 
 function createTemporaryMigration(label, prefixSql) {
   const suffix = crypto.randomUUID().replaceAll("-", "");
