@@ -96,6 +96,8 @@ import {
   UnsafeFilePathError
 } from "./security/private-files.js";
 
+const processStartedAt = performance.now();
+
 loadLocalEnv();
 
 const PORT = Number(process.env.PORT || 3000);
@@ -197,6 +199,7 @@ const emailSchedulerState = {
 let maintenanceInterval;
 let localAdminBootstrapped = false;
 let activeCompiledDownloads = 0;
+let firstRequestCompletedLogged = false;
 const loginScryptLimiter = createWorkLimiter(LOGIN_SCRYPT_CONCURRENCY, LOGIN_SCRYPT_MAX_QUEUE);
 const dashboardCache = {
   generation: 0,
@@ -416,6 +419,12 @@ export async function requestHandler(req, res) {
     logError("request_error", { requestId, method: req.method, path: requestPathname, message: error.message, stack: error.stack });
     sendJson(res, error.statusCode || 500, errorResponsePayload(error));
   } finally {
+    logFirstRequestCompleted({
+      method: req.method,
+      path: requestPathname,
+      statusCode: res.statusCode,
+      durationMs: Date.now() - startedAt
+    });
     if (req.url !== "/health/live") {
       logInfo("request_completed", {
         requestId,
@@ -460,22 +469,37 @@ if (isMainModule()) {
 
 async function startApplication() {
   const uploadStorageCheckOnly = process.argv.includes("--check-upload-storage");
-  const storeBackend = await detectStoreBackend();
+  logStartupStageCompleted("configuration_loaded", processStartedAt, {
+    databaseConfigured: databaseConfigured(),
+    uploadStorageCheckOnly
+  });
+  const storeBackend = await measureStartupStage(
+    "storage_validation",
+    () => detectStoreBackend(),
+    (backend) => ({
+      storageBackend: backend,
+      databaseConfigured: backend === "postgres"
+    })
+  );
   if (process.env.NODE_ENV === "production" && storeBackend !== "postgres") {
     throw new Error("A aplicacao exige PostgreSQL migrado em producao.");
   }
   if (!uploadStorageCheckOnly) {
-    await listenForStartup();
+    await measureStartupStage("http_listener", () => listenForStartup(), () => ({ port: PORT }));
     for (const signal of ["SIGTERM", "SIGINT"]) {
       process.once(signal, () => gracefulShutdown(signal));
     }
   }
   try {
-    await ensureUploadStorageReady({
-      backend: UPLOAD_STORAGE_BACKEND,
-      root: UPLOAD_ROOT,
-      onEvent: logInfo
-    });
+    await measureStartupStage(
+      "upload_storage_ready",
+      () => ensureUploadStorageReady({
+        backend: UPLOAD_STORAGE_BACKEND,
+        root: UPLOAD_ROOT,
+        onEvent: logInfo
+      }),
+      () => ({ uploadBackend: configuredUploadStorageBackend({ backend: UPLOAD_STORAGE_BACKEND }) })
+    );
   } catch (error) {
     logError("upload_storage_startup_failed", {
       backend: UPLOAD_STORAGE_BACKEND,
@@ -492,11 +516,18 @@ async function startApplication() {
   if (process.env.NODE_ENV === "production") {
     let uploadIntegrity;
     try {
-      uploadIntegrity = await inspectUploadIntegrity({
-        backend: UPLOAD_STORAGE_BACKEND,
-        root: UPLOAD_ROOT,
-        force: true
-      });
+      uploadIntegrity = await measureStartupStage(
+        "upload_integrity_validation",
+        () => inspectUploadIntegrity({
+          backend: UPLOAD_STORAGE_BACKEND,
+          root: UPLOAD_ROOT,
+          force: true
+        }),
+        (result) => ({
+          uploadBackend: configuredUploadStorageBackend({ backend: UPLOAD_STORAGE_BACKEND }),
+          integrityOk: Boolean(result?.ok)
+        })
+      );
     } catch (error) {
       logError("upload_storage_startup_failed", {
         backend: UPLOAD_STORAGE_BACKEND,
@@ -522,14 +553,47 @@ async function startApplication() {
   }
   applicationStartupComplete = true;
   if (!uploadStorageCheckOnly) {
+    await measureStartupStage("scheduler_initialized", () => {
+      startEmailScheduler();
+      startMaintenance();
+    });
     logStartupReady({
       storeBackend,
       uploadBackend: configuredUploadStorageBackend({ backend: UPLOAD_STORAGE_BACKEND }),
-      port: PORT
+      port: PORT,
+      startupDurationMs: elapsedStartupDurationMs(processStartedAt)
     });
-    startEmailScheduler();
-    startMaintenance();
   }
+}
+
+async function measureStartupStage(stage, operation, details = () => ({})) {
+  const startedAt = performance.now();
+  try {
+    const result = await operation();
+    logStartupStageCompleted(stage, startedAt, details(result));
+    return result;
+  } catch (error) {
+    logError("startup_stage_failed", {
+      stage,
+      durationMs: elapsedStartupDurationMs(startedAt),
+      elapsedMs: elapsedStartupDurationMs(processStartedAt),
+      message: safeStartupErrorMessage(error)
+    });
+    throw error;
+  }
+}
+
+function logStartupStageCompleted(stage, startedAt, details = {}) {
+  logInfo("startup_stage_completed", {
+    stage,
+    durationMs: elapsedStartupDurationMs(startedAt),
+    elapsedMs: elapsedStartupDurationMs(processStartedAt),
+    ...details
+  });
+}
+
+function elapsedStartupDurationMs(startedAt) {
+  return Math.max(0, Math.round(performance.now() - startedAt));
 }
 
 function listenForStartup() {
@@ -2897,7 +2961,19 @@ export function logStartupReady(details = {}) {
   logInfo("application_started", {
     storageBackend: details.storeBackend,
     uploadBackend: details.uploadBackend,
-    port: details.port
+    port: details.port,
+    startupDurationMs: details.startupDurationMs
+  });
+}
+
+function logFirstRequestCompleted(details = {}) {
+  if (firstRequestCompletedLogged) return;
+  firstRequestCompletedLogged = true;
+  logInfo("first_request_completed", {
+    method: details.method,
+    path: details.path,
+    statusCode: details.statusCode,
+    durationMs: details.durationMs
   });
 }
 
