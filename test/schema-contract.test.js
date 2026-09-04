@@ -129,8 +129,10 @@ describe("contrato de schema PostgreSQL", () => {
   it("rejeita trigger UPDATE OF coluna que deixa outras mutacoes sem protecao", () => {
     const catalog = completeCatalog();
     const trigger = catalog.triggers.find((row) => row.name === "app_process_audit_immutable");
-    trigger.update_columns = ["data"];
-    const difference = compareSchemaCatalog(catalog, { expectedOwner: OWNER }).differences.find((item) => item.category === "trigger-update-columns");
+    trigger.update_columns = "{data}";
+    const result = compareSchemaCatalog(catalog, { expectedOwner: OWNER });
+    const difference = result.differences.find((item) => item.category === "trigger-update-columns");
+    assert.equal(result.valid, false);
     assert.deepEqual(difference, {
       category: "trigger-update-columns",
       object: "trigger:app_process_audit.app_process_audit_immutable",
@@ -138,6 +140,12 @@ describe("contrato de schema PostgreSQL", () => {
       actual: "data",
       critical: true
     });
+  });
+
+  it("aceita o array textual vazio retornado pelo catalogo PostgreSQL", () => {
+    const catalog = completeCatalog();
+    for (const trigger of catalog.triggers) trigger.update_columns = "{}";
+    assert.deepEqual(compareSchemaCatalog(catalog, { expectedOwner: OWNER }), { valid: true, differences: [] });
   });
 
   it("detecta funcao, trigger, sequence e migration ausentes", () => {
