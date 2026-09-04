@@ -18,6 +18,7 @@ import {
   readTransaction,
   transaction
 } from "./db/postgres.js";
+import { applyQuickFilter, filterProcesses, QUICK_FILTERS } from "./domain/processos.js";
 import { recordSecurityEvent } from "./repositories/security-audit.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -119,6 +120,51 @@ export async function readProcessesStore() {
   return { ...emptyStore(), processos: processes.rows.map(deserializeRecord) };
 }
 
+export async function readProcessesPage(options = {}) {
+  const page = positivePageValue(options.page, 1);
+  const limit = positivePageValue(options.limit, 25);
+  const filters = options.filters || {};
+  const quickFilters = Array.isArray(options.quickFilters) ? options.quickFilters : [];
+
+  if (!(await requireConfiguredDatabase())) {
+    const store = await readStore();
+    const filtered = applyQuickFilter(filterProcesses(store.processos || [], filters), quickFilters);
+    const total = filtered.length;
+    const totalPages = Math.max(1, Math.ceil(total / limit));
+    const resolvedPage = Math.min(page, totalPages);
+    const start = (resolvedPage - 1) * limit;
+    return {
+      data: filtered.slice(start, start + limit),
+      total,
+      page: resolvedPage,
+      limit,
+      totalPages
+    };
+  }
+
+  const { where, values } = processPageWhereClause(filters, quickFilters);
+  return readTransaction(async (client) => {
+    const totalResult = await client.query(`SELECT count(*)::integer AS total FROM app_processes${where}`, values);
+    const total = Number(totalResult.rows[0]?.total || 0);
+    const totalPages = Math.max(1, Math.ceil(total / limit));
+    const resolvedPage = Math.min(page, totalPages);
+    const offset = (resolvedPage - 1) * limit;
+    const pageResult = await client.query(`
+      SELECT data
+      FROM app_processes${where}
+      ORDER BY COALESCE(updated_at, created_at) DESC, id DESC
+      LIMIT $${values.length + 1} OFFSET $${values.length + 2}
+    `, [...values, limit, offset]);
+    return {
+      data: pageResult.rows.map(deserializeRecord),
+      total,
+      page: resolvedPage,
+      limit,
+      totalPages
+    };
+  });
+}
+
 export async function readProcessById(processId) {
   const id = String(processId || "");
   if (!id) return null;
@@ -195,6 +241,81 @@ function usersSelectSql(options = {}) {
            auth_version, criado_em, atualizado_em
     FROM app_users${options.orderBy === false ? "" : "\n    ORDER BY criado_em ASC, id ASC"}
   `;
+}
+
+function processPageWhereClause(filters = {}, quickFilters = []) {
+  const clauses = ["COALESCE((data->>'inativo')::boolean, false) = false"];
+  const values = [];
+  const addValue = (value) => {
+    values.push(value);
+    return `$${values.length}`;
+  };
+  const status = String(filters.status || "").trim();
+  const year = String(filters.ano || "").trim();
+  const search = normalizeProcessSearch(filters.q);
+
+  if (status) clauses.push(`data->>'status' = ${addValue(status)}`);
+  if (year) {
+    clauses.push(`substring(COALESCE(NULLIF(data->>'dataEnvioFornecedor', ''), NULLIF(data->>'dataEnvioEmpenho', '')) FROM 1 FOR 4) = ${addValue(year)}`);
+  }
+  if (search) {
+    const searchValue = addValue(`%${escapeLikePattern(search)}%`);
+    clauses.push(`(
+      ${normalizedProcessTextSql("data->>'numeroProcesso'")} LIKE ${searchValue} ESCAPE '\\'
+      OR ${normalizedProcessTextSql("data->>'numeroEmpenho'")} LIKE ${searchValue} ESCAPE '\\'
+      OR ${normalizedProcessTextSql("data->>'numeroNotaFiscal'")} LIKE ${searchValue} ESCAPE '\\'
+      OR ${normalizedProcessTextSql("data->>'fornecedor'")} LIKE ${searchValue} ESCAPE '\\'
+      OR ${normalizedProcessTextSql("data->>'material'")} LIKE ${searchValue} ESCAPE '\\'
+      OR ${normalizedProcessTextSql("data->>'status'")} LIKE ${searchValue} ESCAPE '\\'
+      OR ${normalizedProcessTextSql("data->>'criadoPor'")} LIKE ${searchValue} ESCAPE '\\'
+      OR ${normalizedProcessTextSql("data->>'criadoPorEmail'")} LIKE ${searchValue} ESCAPE '\\'
+      OR EXISTS (
+        SELECT 1
+        FROM jsonb_array_elements(CASE WHEN jsonb_typeof(data->'materiais') = 'array' THEN data->'materiais' ELSE '[]'::jsonb END) AS material
+        WHERE ${normalizedProcessTextSql("material->>'descricao'")} LIKE ${searchValue} ESCAPE '\\'
+      )
+    )`);
+  }
+
+  const selected = [...new Set(quickFilters.map((value) => String(value || "").trim()))]
+    .filter((value) => QUICK_FILTERS.includes(value));
+  if (selected.length) clauses.push(`(${selected.map(processQuickFilterSql).join(" OR ")})`);
+
+  return { where: `\n    WHERE ${clauses.join("\n      AND ")}`, values };
+}
+
+function processQuickFilterSql(filter) {
+  const status = "data->>'status'";
+  const usesDelivery = "(COALESCE(data->>'tipoObjeto', 'material') <> 'servico' OR data->>'acompanhamentoServico' = 'entrega')";
+  const deadline = "COALESCE(NULLIF(data->>'dataEnvioFornecedor', ''), NULLIF(data->>'dataEnvioEmpenho', ''))";
+  const deliveryReached = "('Entregue', 'Aguardando envio para liquidacao', 'Enviado para liquidacao', 'Liquidado', 'Pago')";
+  if (["Em atraso", "Mais de 30 dias"].includes(filter)) {
+    return `(${usesDelivery} AND ${deadline} IS NOT NULL AND ${deadline}::date < ((now() AT TIME ZONE 'America/Sao_Paulo')::date - 30) AND ${status} <> 'Anulado' AND ${status} NOT IN ${deliveryReached})`;
+  }
+  if (filter === "Aguardando entrega") return `(${usesDelivery} AND ${status} IN ('Empenho enviado ao fornecedor', 'Aguardando entrega'))`;
+  if (filter === "Pendentes de liquidacao") return `(${status} IN ('Entregue', 'Serviço concluído', 'Aguardando envio para liquidacao', 'Enviado para liquidacao') AND COALESCE(data->>'dataLiquidacao', '') = '')`;
+  return `${status} = '${filter.replace(/'/g, "''")}'`;
+}
+
+function normalizedProcessTextSql(expression) {
+  return `translate(lower(COALESCE(${expression}, '')), 'áàâãäåéèêëíìîïóòôõöúùûüçñ', 'aaaaaaeeeeiiiiooooouuuucn')`;
+}
+
+function normalizeProcessSearch(value = "") {
+  return String(value)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+}
+
+function escapeLikePattern(value = "") {
+  return String(value).replace(/[\\%_]/g, "\\$&");
+}
+
+function positivePageValue(value, fallback) {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 export async function writeStore(store, options = {}) {

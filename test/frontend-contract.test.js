@@ -411,7 +411,7 @@ describe("contrato visual e de navegacao", () => {
     assert.match(app, /event\.target\.dataset\.downloadProcess/);
   });
 
-  it("organiza os controles de Empenhos sem alterar pesquisa, filtros ou download", () => {
+  it("organiza os controles de Empenhos com pesquisa, filtros, paginação no servidor e download", () => {
     const processList = html.slice(html.indexOf('id="processListView"'), html.indexOf('id="dashboardView"'));
     assert.match(processList, /<h1>Empenhos<\/h1>/);
     assert.doesNotMatch(processList, /processExportFormat/);
@@ -423,7 +423,12 @@ describe("contrato visual e de navegacao", () => {
     assert.match(processList, /id="quickFilter"[^>]*multiple/);
     assert.match(processList, /id="quickFilterBar"[^>]*role="group"[^>]*aria-label="Filtros de empenhos\. Selecione um ou mais\."/);
     assert.match(app, /state\.quickFilters\.forEach\(\(filter\) => params\.append\("filtroRapido", filter\)\)/);
-    assert.match(app, /quickFilters\.some\(\(quickFilterValue\) => matchesQuickFilter\(processo, quickFilterValue\)\)/);
+    assert.match(app, /params\.set\("page", String\(requestedPage\)\)/);
+    assert.match(app, /api\(`\/api\/processes\?\$\{params\}`/);
+    assert.match(processList, /id="processPagination"[^>]*aria-label="Paginação de empenhos"/);
+    assert.match(processList, /id="processPaginationSummary"[^>]*role="status"[^>]*aria-live="polite"/);
+    assert.match(processList, /id="processPreviousPage"[^>]*aria-label="Página anterior"/);
+    assert.match(processList, /id="processNextPage"[^>]*aria-label="Próxima página"/);
     assert.match(html, /id="processExportDialog"[\s\S]*?data-process-export-format="excel"[\s\S]*?data-process-export-format="pdf"[\s\S]*?data-process-export-format="csv"/);
     assert.match(app, /processExportDialog\?\.showModal\(\)/);
     assert.match(app, /downloadProcesses\(format\)/);

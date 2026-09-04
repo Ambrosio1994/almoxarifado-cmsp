@@ -824,6 +824,30 @@ button.secondary,
   overflow: auto;
 }
 
+.process-pagination {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  margin-top: 14px;
+  min-height: 36px;
+}
+
+.process-pagination > span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.process-pagination-actions {
+  display: inline-flex;
+  gap: 8px;
+}
+
+.process-pagination button:disabled {
+  cursor: not-allowed;
+  opacity: .55;
+}
+
 table {
   background: var(--paper);
   border-collapse: separate;
@@ -3485,6 +3509,17 @@ dialog::backdrop {
   #processListView .table-wrap {
     border: 0;
     overflow: visible;
+  }
+
+  .process-pagination {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .process-pagination-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
   }
 
   .process-table {
