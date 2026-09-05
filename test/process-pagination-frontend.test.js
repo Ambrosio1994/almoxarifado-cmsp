@@ -240,12 +240,14 @@ describe("paginação de empenhos no DOM", () => {
       assert.match(dom.window.document.querySelector("#processTable").textContent, /Nao foi possivel atualizar a lista de empenhos/);
       assert.doesNotMatch(dom.window.document.querySelector("#processTable").textContent, /ANTERIOR/);
       const retry = dom.window.document.querySelector("#appStatus button");
+      assert.equal(dom.window.document.querySelector("#appStatus").dataset.source, "process-pagination");
       assert.equal(retry.textContent, "Tentar novamente");
       retry.click();
       await waitFor(() => dom.window.document.querySelector("#processTable").textContent.includes("PAGO"));
 
       assert.equal(paidRequests, 2);
       assert.equal(dom.window.document.querySelector("#appStatus").classList.contains("hidden"), true);
+      assert.equal(dom.window.document.querySelector("#appStatus").dataset.source, undefined);
     } finally {
       restoreGlobals();
       dom.window.close();
@@ -285,6 +287,55 @@ describe("paginação de empenhos no DOM", () => {
       assert.match(dom.window.document.querySelector("#processTable").textContent, /Nao foi possivel atualizar a lista de empenhos/);
       assert.doesNotMatch(dom.window.document.querySelector("#processTable").textContent, /ANTERIOR/);
       assert.equal(dom.window.document.querySelector("#appStatus button").textContent, "Tentar novamente");
+    } finally {
+      restoreGlobals();
+      dom.window.close();
+    }
+  });
+
+  it("preserva um aviso independente enquanto a paginação é atualizada com sucesso", async () => {
+    const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
+    const dom = new JSDOM(html, { url: "http://localhost/", pretendToBeVisual: true });
+    installDialogPolyfill(dom.window);
+    const restoreGlobals = installDomGlobals(dom.window);
+    dom.window.sessionStorage.setItem("almoxActiveSection:aviso@example.com", "processes");
+
+    globalThis.fetch = async (input) => {
+      const path = String(input);
+      if (path === "/auth/session") return jsonResponse({ id: "aviso", email: "aviso@example.com", nome: "Aviso", role: "almoxarifado" });
+      if (path === "/api/meta") return jsonResponse({ status: ["Pago"], filtrosRapidos: [] });
+      if (path.startsWith("/api/dashboard")) return jsonResponse(dashboardPayload());
+      if (path.startsWith("/api/processes?")) {
+        const status = new URL(`http://localhost${path}`).searchParams.get("status");
+        return jsonResponse(pagePayload([processFixture({ numeroProcesso: status === "Pago" ? "PAGO" : "INICIAL", status: status || "Enviado para SALC" })]));
+      }
+      if (path === "/api/suppliers") return jsonResponse([]);
+      throw new Error(`Requisição inesperada no teste: ${path}`);
+    };
+
+    try {
+      await import(`${new URL("../public/app.js", import.meta.url).href}?process-pagination-warning-owner=${Date.now()}`);
+      await waitFor(() => dom.window.document.querySelector("#processTable").textContent.includes("INICIAL"));
+
+      const appStatus = dom.window.document.querySelector("#appStatus");
+      const auditWarning = dom.window.document.createElement("span");
+      auditWarning.textContent = "A auditoria precisa ser recarregada.";
+      const auditRetry = dom.window.document.createElement("button");
+      auditRetry.type = "button";
+      auditRetry.textContent = "Recarregar auditoria";
+      appStatus.dataset.source = "audit";
+      appStatus.classList.remove("hidden");
+      appStatus.replaceChildren(auditWarning, auditRetry);
+
+      const status = dom.window.document.querySelector("#statusFilter");
+      status.value = "Pago";
+      status.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+      await waitFor(() => dom.window.document.querySelector("#processTable").textContent.includes("PAGO"));
+
+      assert.equal(appStatus.dataset.source, "audit");
+      assert.match(appStatus.textContent, /A auditoria precisa ser recarregada/);
+      assert.equal(appStatus.querySelector("button").textContent, "Recarregar auditoria");
+      assert.equal(appStatus.classList.contains("hidden"), false);
     } finally {
       restoreGlobals();
       dom.window.close();

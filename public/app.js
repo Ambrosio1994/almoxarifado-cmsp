@@ -89,6 +89,7 @@ const APP_SECTIONS = new Set(["dashboard", "processes", "board", "suppliers", "a
 const ACTIVE_SECTION_STORAGE_PREFIX = "almoxActiveSection";
 const DASHBOARD_YEAR_STORAGE_PREFIX = "almoxDashboardYear";
 const PROCESS_EXPORT_FORMATS = new Set(["excel", "pdf", "csv"]);
+const PROCESS_PAGE_STATUS_SOURCE = "process-pagination";
 const MAX_MATERIAL_ROWS = 200;
 const ALLOWED_DOCUMENT_RESPONSE_MIME_TYPES = new Set([
   "application/pdf",
@@ -528,6 +529,7 @@ async function bootSafely() {
 
 function showAppError(message) {
   if (!appStatus) return;
+  appStatus.dataset.source = "error";
   appStatus.replaceChildren();
   appStatus.classList.remove("success");
   const text = document.createElement("span");
@@ -543,6 +545,7 @@ function showAppError(message) {
 
 function showAppNotice(message) {
   if (!appStatus) return;
+  appStatus.dataset.source = "notice";
   appStatus.replaceChildren();
   const text = document.createElement("span");
   text.textContent = message;
@@ -551,8 +554,9 @@ function showAppNotice(message) {
   appStatus.classList.remove("hidden");
 }
 
-function showAppWarning(message, retryLabel, retryAction) {
+function showAppWarning(message, retryLabel, retryAction, { source = "warning" } = {}) {
   if (!appStatus) return;
+  appStatus.dataset.source = source;
   appStatus.replaceChildren();
   appStatus.classList.remove("success");
   const text = document.createElement("span");
@@ -577,10 +581,12 @@ function showAppWarning(message, retryLabel, retryAction) {
   appStatus.classList.remove("hidden");
 }
 
-function clearAppStatus() {
-  appStatus?.classList.add("hidden");
-  appStatus?.classList.remove("success");
-  appStatus?.replaceChildren();
+function clearAppStatus({ source } = {}) {
+  if (!appStatus || (source !== undefined && appStatus.dataset.source !== source)) return;
+  appStatus.classList.add("hidden");
+  appStatus.classList.remove("success");
+  appStatus.replaceChildren();
+  delete appStatus.dataset.source;
 }
 
 function clearClientSession() {
@@ -1321,7 +1327,9 @@ async function loadProcessesPageFromInteraction(options) {
   renderPendingProcessesPage();
   try {
     const processes = await loadProcessesPage(options);
-    if (interactionSequence === processPageInteractionSequence) clearAppStatus();
+    if (interactionSequence === processPageInteractionSequence) {
+      clearAppStatus({ source: PROCESS_PAGE_STATUS_SOURCE });
+    }
     return processes;
   } catch (error) {
     if (error?.name === "AbortError" || interactionSequence !== processPageInteractionSequence) return null;
@@ -1329,7 +1337,12 @@ async function loadProcessesPageFromInteraction(options) {
     state.processPagePending = false;
     state.processPageError = `Nao foi possivel atualizar a lista de empenhos. ${message}`;
     renderFailedProcessesPage();
-    showAppWarning(state.processPageError, "Tentar novamente", () => loadProcessesPageFromInteraction(options));
+    showAppWarning(
+      state.processPageError,
+      "Tentar novamente",
+      () => loadProcessesPageFromInteraction(options),
+      { source: PROCESS_PAGE_STATUS_SOURCE }
+    );
     return null;
   }
 }
