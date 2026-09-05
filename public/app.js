@@ -41,6 +41,8 @@ const state = {
   processesLoading: null,
   processPage: { page: 1, limit: 25, total: 0, totalPages: 1 },
   processPageLoading: null,
+  processPagePending: false,
+  processPageError: "",
   fornecedores: [],
   suppliersLoaded: false,
   suppliersLoading: null,
@@ -111,6 +113,7 @@ let allProcessesRefreshController = null;
 let allProcessesRefreshSequence = 0;
 let processPageRefreshController = null;
 let processPageRefreshSequence = 0;
+let processPageInteractionSequence = 0;
 let dashboardSequence = 0;
 let detailController = null;
 let detailSequence = 0;
@@ -641,6 +644,8 @@ function resetApplicationData() {
   state.processesLoading = null;
   state.processPage = { page: 1, limit: 25, total: 0, totalPages: 1 };
   state.processPageLoading = null;
+  state.processPagePending = false;
+  state.processPageError = "";
   state.fornecedores = [];
   state.auditoria = [];
   state.securityAudit = [];
@@ -1223,6 +1228,8 @@ function invalidateProcessCaches() {
   processPageRefreshController?.abort();
   processPageRefreshSequence += 1;
   state.processPageLoading = null;
+  state.processPagePending = false;
+  state.processPageError = "";
 }
 
 async function retryProcessAudit(processId) {
@@ -1288,6 +1295,8 @@ async function loadProcessesPage({ page = state.processPage.page, resetPage = fa
       const normalized = normalizeProcessesPagePayload(payload, requestedPage, state.processPage.limit);
       state.processos = normalized.data;
       state.processPage = normalized;
+      state.processPagePending = false;
+      state.processPageError = "";
       renderActiveProcessFilters();
       renderProcessData();
       return normalized.data;
@@ -1303,6 +1312,36 @@ async function loadProcessesPage({ page = state.processPage.page, resetPage = fa
       renderProcessPagination();
     }
   }
+}
+
+async function loadProcessesPageFromInteraction(options) {
+  const interactionSequence = ++processPageInteractionSequence;
+  state.processPagePending = true;
+  state.processPageError = "";
+  renderPendingProcessesPage();
+  try {
+    const processes = await loadProcessesPage(options);
+    if (interactionSequence === processPageInteractionSequence) clearAppStatus();
+    return processes;
+  } catch (error) {
+    if (error?.name === "AbortError" || interactionSequence !== processPageInteractionSequence) return null;
+    const message = error?.message || "Nao foi possivel atualizar a lista de empenhos.";
+    state.processPagePending = false;
+    state.processPageError = `Nao foi possivel atualizar a lista de empenhos. ${message}`;
+    renderFailedProcessesPage();
+    showAppWarning(state.processPageError, "Tentar novamente", () => loadProcessesPageFromInteraction(options));
+    return null;
+  }
+}
+
+function renderPendingProcessesPage() {
+  table.innerHTML = '<tr class="empty-table-row"><td colspan="12" role="status">Atualizando lista de empenhos...</td></tr>';
+  renderProcessPagination();
+}
+
+function renderFailedProcessesPage() {
+  table.innerHTML = `<tr class="empty-table-row"><td colspan="12" role="alert">${escapeHtml(state.processPageError)}</td></tr>`;
+  renderProcessPagination();
 }
 
 function normalizeProcessesPagePayload(payload, requestedPage, limit) {
@@ -1353,6 +1392,20 @@ function renderProcessData() {
 
 function renderProcessPagination() {
   if (!processPaginationSummary || !processPreviousPage || !processNextPage) return;
+  if (state.processPagePending) {
+    processPaginationSummary.textContent = "Atualizando lista de empenhos...";
+    processPreviousPage.disabled = true;
+    processNextPage.disabled = true;
+    processPagination?.classList.remove("hidden");
+    return;
+  }
+  if (state.processPageError) {
+    processPaginationSummary.textContent = state.processPageError;
+    processPreviousPage.disabled = true;
+    processNextPage.disabled = true;
+    processPagination?.classList.remove("hidden");
+    return;
+  }
   const { page, total, totalPages } = state.processPage;
   processPaginationSummary.textContent = total
     ? `Página ${page} de ${totalPages} · ${total} ${total === 1 ? "empenho" : "empenhos"}`
@@ -1413,6 +1466,10 @@ function processExportFileName(format = "excel") {
 }
 
 function renderTable() {
+  if (state.processPageError) {
+    renderFailedProcessesPage();
+    return;
+  }
   table.innerHTML = state.processos.length ? state.processos.map((processo) => `
     <tr data-edit="${escapeAttribute(processo.id)}">
       <td class="strong-cell"><button type="button" class="link-button process-open-button" data-open-process="${escapeAttribute(processo.id)}" aria-label="Abrir ${escapeAttribute(processAccessibleName(processo))}">${empty(processo.numeroProcesso)}</button></td>
@@ -1566,14 +1623,14 @@ processExportChoices.forEach((button) => {
     void downloadProcesses(format);
   });
 });
-searchInput.addEventListener("input", debounce(() => void loadProcessesPage({ resetPage: true, force: true }), 180));
-statusFilter.addEventListener("change", () => void loadProcessesPage({ resetPage: true, force: true }));
+searchInput.addEventListener("input", debounce(() => void loadProcessesPageFromInteraction({ resetPage: true, force: true }), 180));
+statusFilter.addEventListener("change", () => void loadProcessesPageFromInteraction({ resetPage: true, force: true }));
 clearProcessFilters?.addEventListener("click", () => {
   searchInput.value = "";
   statusFilter.value = "";
   state.quickFilters.clear();
   renderQuickFilters();
-  void loadProcessesPage({ resetPage: true, force: true });
+  void loadProcessesPageFromInteraction({ resetPage: true, force: true });
   searchInput.focus();
 });
 quickFilter.addEventListener("change", () => {
@@ -1581,10 +1638,10 @@ quickFilter.addEventListener("change", () => {
     [...quickFilter.selectedOptions].map((option) => option.value).filter(Boolean)
   );
   renderQuickFilters();
-  void loadProcessesPage({ resetPage: true, force: true });
+  void loadProcessesPageFromInteraction({ resetPage: true, force: true });
 });
-processPreviousPage?.addEventListener("click", () => void loadProcessesPage({ page: state.processPage.page - 1, force: true }));
-processNextPage?.addEventListener("click", () => void loadProcessesPage({ page: state.processPage.page + 1, force: true }));
+processPreviousPage?.addEventListener("click", () => void loadProcessesPageFromInteraction({ page: state.processPage.page - 1, force: true }));
+processNextPage?.addEventListener("click", () => void loadProcessesPageFromInteraction({ page: state.processPage.page + 1, force: true }));
 documentMetadataForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
   await saveComplementaryDocument();
@@ -5636,7 +5693,7 @@ function renderQuickFilters() {
       state.quickFilters.add(filter);
     }
     renderQuickFilters();
-    void loadProcessesPage({ resetPage: true, force: true });
+    void loadProcessesPageFromInteraction({ resetPage: true, force: true });
   });
 }
 
