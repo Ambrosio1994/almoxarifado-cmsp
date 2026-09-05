@@ -150,6 +150,191 @@ describe("paginação de empenhos no DOM", () => {
       dom.window.close();
     }
   });
+
+  it("absorve o cancelamento de uma busca substituída sem rejeição não tratada", async () => {
+    const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
+    const dom = new JSDOM(html, { url: "http://localhost/", pretendToBeVisual: true });
+    installDialogPolyfill(dom.window);
+    const restoreGlobals = installDomGlobals(dom.window);
+    dom.window.sessionStorage.setItem("almoxActiveSection:cancelamento@example.com", "processes");
+    const unhandled = [];
+    const captureUnhandled = (reason) => unhandled.push(reason);
+    process.on("unhandledRejection", captureUnhandled);
+
+    globalThis.fetch = (input, options = {}) => {
+      const path = String(input);
+      if (path === "/auth/session") return Promise.resolve(jsonResponse({ id: "cancelamento", email: "cancelamento@example.com", nome: "Cancelamento", role: "almoxarifado" }));
+      if (path === "/api/meta") return Promise.resolve(jsonResponse({ status: [], filtrosRapidos: [] }));
+      if (path.startsWith("/api/dashboard")) return Promise.resolve(jsonResponse(dashboardPayload()));
+      if (path.startsWith("/api/processes?")) {
+        const query = new URL(`http://localhost${path}`).searchParams.get("q");
+        if (query === "primeira") {
+          return new Promise((resolve, reject) => {
+            options.signal.addEventListener("abort", () => reject(abortError()), { once: true });
+          });
+        }
+        return Promise.resolve(jsonResponse(pagePayload([processFixture({ numeroProcesso: query === "segunda" ? "SEGUNDA" : "INICIAL" })])));
+      }
+      if (path === "/api/suppliers") return Promise.resolve(jsonResponse([]));
+      throw new Error(`Requisição inesperada no teste: ${path}`);
+    };
+
+    try {
+      await import(`${new URL("../public/app.js", import.meta.url).href}?process-pagination-cancel=${Date.now()}`);
+      await waitFor(() => dom.window.document.querySelector("#processTable").textContent.includes("INICIAL"));
+
+      const search = dom.window.document.querySelector("#searchInput");
+      search.value = "primeira";
+      search.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+      await waitFor(() => dom.window.document.querySelector("#processPaginationSummary").textContent.includes("Atualizando"));
+
+      search.value = "segunda";
+      search.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+      await waitFor(() => dom.window.document.querySelector("#processTable").textContent.includes("SEGUNDA"));
+      await new Promise((resolve) => setTimeout(resolve, 25));
+
+      assert.deepEqual(unhandled, []);
+      assert.equal(dom.window.document.querySelector("#appStatus").classList.contains("hidden"), true);
+    } finally {
+      process.off("unhandledRejection", captureUnhandled);
+      restoreGlobals();
+      dom.window.close();
+    }
+  });
+
+  it("mostra falha de paginação, permite tentar novamente e não mantém resultados antigos sob o filtro novo", async () => {
+    const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
+    const dom = new JSDOM(html, { url: "http://localhost/", pretendToBeVisual: true });
+    installDialogPolyfill(dom.window);
+    const restoreGlobals = installDomGlobals(dom.window);
+    dom.window.sessionStorage.setItem("almoxActiveSection:falha@example.com", "processes");
+    let paidRequests = 0;
+
+    globalThis.fetch = async (input) => {
+      const path = String(input);
+      if (path === "/auth/session") return jsonResponse({ id: "falha", email: "falha@example.com", nome: "Falha", role: "almoxarifado" });
+      if (path === "/api/meta") return jsonResponse({ status: ["Pago"], filtrosRapidos: [] });
+      if (path.startsWith("/api/dashboard")) return jsonResponse(dashboardPayload());
+      if (path.startsWith("/api/processes?")) {
+        const status = new URL(`http://localhost${path}`).searchParams.get("status");
+        if (status === "Pago") {
+          paidRequests += 1;
+          if (paidRequests === 1) return jsonResponse({ error: "Servidor indisponível para esta consulta." }, 503);
+          return jsonResponse(pagePayload([processFixture({ numeroProcesso: "PAGO", status: "Pago" })]));
+        }
+        return jsonResponse(pagePayload([processFixture({ numeroProcesso: "ANTERIOR" })]));
+      }
+      if (path === "/api/suppliers") return jsonResponse([]);
+      throw new Error(`Requisição inesperada no teste: ${path}`);
+    };
+
+    try {
+      await import(`${new URL("../public/app.js", import.meta.url).href}?process-pagination-retry=${Date.now()}`);
+      await waitFor(() => dom.window.document.querySelector("#processTable").textContent.includes("ANTERIOR"));
+
+      const status = dom.window.document.querySelector("#statusFilter");
+      status.value = "Pago";
+      status.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+      await waitFor(() => dom.window.document.querySelector("#appStatus").textContent.includes("Servidor indisponível"));
+
+      assert.match(dom.window.document.querySelector("#processTable").textContent, /Nao foi possivel atualizar a lista de empenhos/);
+      assert.doesNotMatch(dom.window.document.querySelector("#processTable").textContent, /ANTERIOR/);
+      const retry = dom.window.document.querySelector("#appStatus button");
+      assert.equal(retry.textContent, "Tentar novamente");
+      retry.click();
+      await waitFor(() => dom.window.document.querySelector("#processTable").textContent.includes("PAGO"));
+
+      assert.equal(paidRequests, 2);
+      assert.equal(dom.window.document.querySelector("#appStatus").classList.contains("hidden"), true);
+    } finally {
+      restoreGlobals();
+      dom.window.close();
+    }
+  });
+
+  it("apresenta uma falha de rede da paginação sem rejeição não tratada", async () => {
+    const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
+    const dom = new JSDOM(html, { url: "http://localhost/", pretendToBeVisual: true });
+    installDialogPolyfill(dom.window);
+    const restoreGlobals = installDomGlobals(dom.window);
+    dom.window.sessionStorage.setItem("almoxActiveSection:rede@example.com", "processes");
+
+    globalThis.fetch = async (input) => {
+      const path = String(input);
+      if (path === "/auth/session") return jsonResponse({ id: "rede", email: "rede@example.com", nome: "Rede", role: "almoxarifado" });
+      if (path === "/api/meta") return jsonResponse({ status: ["Pago"], filtrosRapidos: [] });
+      if (path.startsWith("/api/dashboard")) return jsonResponse(dashboardPayload());
+      if (path.startsWith("/api/processes?")) {
+        const status = new URL(`http://localhost${path}`).searchParams.get("status");
+        if (status === "Pago") throw new Error("socket encerrado");
+        return jsonResponse(pagePayload([processFixture({ numeroProcesso: "ANTERIOR" })]));
+      }
+      if (path === "/api/suppliers") return jsonResponse([]);
+      throw new Error(`Requisição inesperada no teste: ${path}`);
+    };
+
+    try {
+      await import(`${new URL("../public/app.js", import.meta.url).href}?process-pagination-network=${Date.now()}`);
+      await waitFor(() => dom.window.document.querySelector("#processTable").textContent.includes("ANTERIOR"));
+
+      const status = dom.window.document.querySelector("#statusFilter");
+      status.value = "Pago";
+      status.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+      await waitFor(() => dom.window.document.querySelector("#appStatus").textContent.includes("Nao foi possivel conectar ao servidor"));
+
+      assert.match(dom.window.document.querySelector("#processTable").textContent, /Nao foi possivel atualizar a lista de empenhos/);
+      assert.doesNotMatch(dom.window.document.querySelector("#processTable").textContent, /ANTERIOR/);
+      assert.equal(dom.window.document.querySelector("#appStatus button").textContent, "Tentar novamente");
+    } finally {
+      restoreGlobals();
+      dom.window.close();
+    }
+  });
+
+  it("ignora uma resposta antiga quando uma busca mais nova já foi concluída", async () => {
+    const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
+    const dom = new JSDOM(html, { url: "http://localhost/", pretendToBeVisual: true });
+    installDialogPolyfill(dom.window);
+    const restoreGlobals = installDomGlobals(dom.window);
+    dom.window.sessionStorage.setItem("almoxActiveSection:sequencia@example.com", "processes");
+    let resolveOldResponse;
+
+    globalThis.fetch = (input) => {
+      const path = String(input);
+      if (path === "/auth/session") return Promise.resolve(jsonResponse({ id: "sequencia", email: "sequencia@example.com", nome: "Sequência", role: "almoxarifado" }));
+      if (path === "/api/meta") return Promise.resolve(jsonResponse({ status: [], filtrosRapidos: [] }));
+      if (path.startsWith("/api/dashboard")) return Promise.resolve(jsonResponse(dashboardPayload()));
+      if (path.startsWith("/api/processes?")) {
+        const query = new URL(`http://localhost${path}`).searchParams.get("q");
+        if (query === "antiga") return new Promise((resolve) => { resolveOldResponse = resolve; });
+        return Promise.resolve(jsonResponse(pagePayload([processFixture({ numeroProcesso: query === "nova" ? "NOVA" : "INICIAL" })])));
+      }
+      if (path === "/api/suppliers") return Promise.resolve(jsonResponse([]));
+      throw new Error(`Requisição inesperada no teste: ${path}`);
+    };
+
+    try {
+      await import(`${new URL("../public/app.js", import.meta.url).href}?process-pagination-sequence=${Date.now()}`);
+      await waitFor(() => dom.window.document.querySelector("#processTable").textContent.includes("INICIAL"));
+
+      const search = dom.window.document.querySelector("#searchInput");
+      search.value = "antiga";
+      search.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+      await waitFor(() => resolveOldResponse);
+
+      search.value = "nova";
+      search.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+      await waitFor(() => dom.window.document.querySelector("#processTable").textContent.includes("NOVA"));
+      resolveOldResponse(jsonResponse(pagePayload([processFixture({ numeroProcesso: "ANTIGA" })])));
+      await new Promise((resolve) => setTimeout(resolve, 25));
+
+      assert.match(dom.window.document.querySelector("#processTable").textContent, /NOVA/);
+      assert.doesNotMatch(dom.window.document.querySelector("#processTable").textContent, /ANTIGA/);
+    } finally {
+      restoreGlobals();
+      dom.window.close();
+    }
+  });
 });
 
 function dashboardPayload() {
@@ -179,6 +364,12 @@ function pagePayload(processes) {
 
 function jsonResponse(payload, status = 200) {
   return new Response(JSON.stringify(payload), { status, headers: { "content-type": "application/json" } });
+}
+
+function abortError() {
+  const error = new Error("A requisição foi cancelada.");
+  error.name = "AbortError";
+  return error;
 }
 
 function installDialogPolyfill(window) {
