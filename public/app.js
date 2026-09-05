@@ -89,7 +89,6 @@ const APP_SECTIONS = new Set(["dashboard", "processes", "board", "suppliers", "a
 const ACTIVE_SECTION_STORAGE_PREFIX = "almoxActiveSection";
 const DASHBOARD_YEAR_STORAGE_PREFIX = "almoxDashboardYear";
 const PROCESS_EXPORT_FORMATS = new Set(["excel", "pdf", "csv"]);
-const PROCESS_PAGE_STATUS_SOURCE = "process-pagination";
 const MAX_MATERIAL_ROWS = 200;
 const ALLOWED_DOCUMENT_RESPONSE_MIME_TYPES = new Set([
   "application/pdf",
@@ -115,6 +114,7 @@ let allProcessesRefreshSequence = 0;
 let processPageRefreshController = null;
 let processPageRefreshSequence = 0;
 let processPageInteractionSequence = 0;
+let processPageRetryAction = null;
 let dashboardSequence = 0;
 let detailController = null;
 let detailSequence = 0;
@@ -529,7 +529,6 @@ async function bootSafely() {
 
 function showAppError(message) {
   if (!appStatus) return;
-  appStatus.dataset.source = "error";
   appStatus.replaceChildren();
   appStatus.classList.remove("success");
   const text = document.createElement("span");
@@ -545,7 +544,6 @@ function showAppError(message) {
 
 function showAppNotice(message) {
   if (!appStatus) return;
-  appStatus.dataset.source = "notice";
   appStatus.replaceChildren();
   const text = document.createElement("span");
   text.textContent = message;
@@ -554,9 +552,8 @@ function showAppNotice(message) {
   appStatus.classList.remove("hidden");
 }
 
-function showAppWarning(message, retryLabel, retryAction, { source = "warning" } = {}) {
+function showAppWarning(message, retryLabel, retryAction) {
   if (!appStatus) return;
-  appStatus.dataset.source = source;
   appStatus.replaceChildren();
   appStatus.classList.remove("success");
   const text = document.createElement("span");
@@ -581,12 +578,10 @@ function showAppWarning(message, retryLabel, retryAction, { source = "warning" }
   appStatus.classList.remove("hidden");
 }
 
-function clearAppStatus({ source } = {}) {
-  if (!appStatus || (source !== undefined && appStatus.dataset.source !== source)) return;
-  appStatus.classList.add("hidden");
-  appStatus.classList.remove("success");
-  appStatus.replaceChildren();
-  delete appStatus.dataset.source;
+function clearAppStatus() {
+  appStatus?.classList.add("hidden");
+  appStatus?.classList.remove("success");
+  appStatus?.replaceChildren();
 }
 
 function clearClientSession() {
@@ -652,6 +647,8 @@ function resetApplicationData() {
   state.processPageLoading = null;
   state.processPagePending = false;
   state.processPageError = "";
+  processPageRetryAction = null;
+  removeProcessPageRetry();
   state.fornecedores = [];
   state.auditoria = [];
   state.securityAudit = [];
@@ -1236,6 +1233,8 @@ function invalidateProcessCaches() {
   state.processPageLoading = null;
   state.processPagePending = false;
   state.processPageError = "";
+  processPageRetryAction = null;
+  removeProcessPageRetry();
 }
 
 async function retryProcessAudit(processId) {
@@ -1303,6 +1302,7 @@ async function loadProcessesPage({ page = state.processPage.page, resetPage = fa
       state.processPage = normalized;
       state.processPagePending = false;
       state.processPageError = "";
+      processPageRetryAction = null;
       renderActiveProcessFilters();
       renderProcessData();
       return normalized.data;
@@ -1326,23 +1326,14 @@ async function loadProcessesPageFromInteraction(options) {
   state.processPageError = "";
   renderPendingProcessesPage();
   try {
-    const processes = await loadProcessesPage(options);
-    if (interactionSequence === processPageInteractionSequence) {
-      clearAppStatus({ source: PROCESS_PAGE_STATUS_SOURCE });
-    }
-    return processes;
+    return await loadProcessesPage(options);
   } catch (error) {
     if (error?.name === "AbortError" || interactionSequence !== processPageInteractionSequence) return null;
     const message = error?.message || "Nao foi possivel atualizar a lista de empenhos.";
     state.processPagePending = false;
     state.processPageError = `Nao foi possivel atualizar a lista de empenhos. ${message}`;
+    processPageRetryAction = () => loadProcessesPageFromInteraction(options);
     renderFailedProcessesPage();
-    showAppWarning(
-      state.processPageError,
-      "Tentar novamente",
-      () => loadProcessesPageFromInteraction(options),
-      { source: PROCESS_PAGE_STATUS_SOURCE }
-    );
     return null;
   }
 }
@@ -1406,6 +1397,7 @@ function renderProcessData() {
 function renderProcessPagination() {
   if (!processPaginationSummary || !processPreviousPage || !processNextPage) return;
   if (state.processPagePending) {
+    removeProcessPageRetry();
     processPaginationSummary.textContent = "Atualizando lista de empenhos...";
     processPreviousPage.disabled = true;
     processNextPage.disabled = true;
@@ -1417,8 +1409,10 @@ function renderProcessPagination() {
     processPreviousPage.disabled = true;
     processNextPage.disabled = true;
     processPagination?.classList.remove("hidden");
+    renderProcessPageRetry();
     return;
   }
+  removeProcessPageRetry();
   const { page, total, totalPages } = state.processPage;
   processPaginationSummary.textContent = total
     ? `Página ${page} de ${totalPages} · ${total} ${total === 1 ? "empenho" : "empenhos"}`
@@ -1426,6 +1420,28 @@ function renderProcessPagination() {
   processPreviousPage.disabled = page <= 1 || Boolean(state.processPageLoading);
   processNextPage.disabled = page >= totalPages || Boolean(state.processPageLoading);
   processPagination?.classList.toggle("hidden", state.processPageLoading && !state.processos.length);
+}
+
+function renderProcessPageRetry() {
+  const actions = processPagination?.querySelector(".process-pagination-actions");
+  if (!actions || !processPageRetryAction) return;
+  let retry = actions.querySelector("#processPaginationRetry");
+  if (!retry) {
+    retry = document.createElement("button");
+    retry.type = "button";
+    retry.id = "processPaginationRetry";
+    retry.className = "secondary";
+    retry.addEventListener("click", () => {
+      const retryAction = processPageRetryAction;
+      if (retryAction) void retryAction();
+    });
+    actions.append(retry);
+  }
+  retry.textContent = "Tentar novamente";
+}
+
+function removeProcessPageRetry() {
+  processPagination?.querySelector("#processPaginationRetry")?.remove();
 }
 
 function processFilterParams() {
