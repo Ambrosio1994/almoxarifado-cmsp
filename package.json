@@ -36,7 +36,7 @@
   },
   "dependencies": {
     "googleapis": "^173.0.0",
-    "pg": "^8.22.0"
+    "pg": "^8.23.1"
   },
   "devDependencies": {
     "jsdom": "^29.1.1"
