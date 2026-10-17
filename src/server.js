@@ -48,6 +48,7 @@ import {
 import {
   detectStoreBackend,
   readAuditStore,
+  readDashboardAggregates,
   readProcessById,
   readProcessesSnapshot,
   readProcessesPage,
@@ -335,15 +336,27 @@ async function readDashboardSnapshot() {
   if (dashboardCache.pending?.revision === revision) return dashboardCache.pending.promise;
 
   const generation = dashboardCache.generation;
-  const promise = readProcessesSnapshot().then((snapshot) => {
+  const defaultDashboardYear = new Date().getFullYear();
+  const promise = (databaseConfigured()
+    ? readDashboardAggregates(defaultDashboardYear).then((aggregates) => ({
+      revision,
+      databaseAggregates: true,
+      anos: aggregates.anos,
+      aggregates: new Map([[String(defaultDashboardYear), {
+        metrics: aggregates.metrics,
+        charts: aggregates.charts
+      }]])
+    }))
+    : readProcessesSnapshot().then((snapshot) => {
     const processos = snapshot.processos.map((processo) => enrichProcess(processo));
-    const value = {
+    return {
       processos,
       anos: dashboardAvailableYears(processos),
       aggregates: new Map()
     };
+  })).then((value) => {
     if (dashboardCache.generation === generation) {
-      dashboardCache.revision = snapshot.revision;
+      dashboardCache.revision = value.revision ?? revision;
       dashboardCache.expiresAt = Date.now() + DASHBOARD_CACHE_TTL_MS;
       dashboardCache.value = value;
     }
@@ -358,10 +371,25 @@ async function readDashboardSnapshot() {
   }
 }
 
-function dashboardSnapshotForYear(snapshot, year) {
+async function dashboardSnapshotForYear(snapshot, year) {
   const cacheKey = String(year);
   const cached = snapshot.aggregates?.get(cacheKey);
   if (cached) return cached;
+  if (snapshot.databaseAggregates) {
+    const pending = readDashboardAggregates(year).then((aggregates) => ({
+      metrics: aggregates.metrics,
+      charts: aggregates.charts
+    }));
+    snapshot.aggregates?.set(cacheKey, pending);
+    try {
+      const value = await pending;
+      snapshot.aggregates?.set(cacheKey, value);
+      return value;
+    } catch (error) {
+      if (snapshot.aggregates?.get(cacheKey) === pending) snapshot.aggregates.delete(cacheKey);
+      throw error;
+    }
+  }
   const value = {
     metrics: dashboardMetrics(snapshot.processos, year),
     charts: {
@@ -915,7 +943,7 @@ async function handleApi(req, res, url) {
     const snapshot = await readDashboardSnapshot();
     const anos = snapshot.anos;
     const year = resolveDashboardYear(url.searchParams.get("ano"), anos);
-    const dashboard = dashboardSnapshotForYear(snapshot, year);
+    const dashboard = await dashboardSnapshotForYear(snapshot, year);
     if (url.pathname === "/api/dashboard") {
       sendJson(res, 200, {
         metrics: dashboard.metrics,

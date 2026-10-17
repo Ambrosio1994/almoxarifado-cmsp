@@ -8,11 +8,19 @@ import {
   EXPECTED_SCHEMA_MIGRATION,
   REQUIRED_DATABASE_TABLES,
   detectStoreBackend,
+  readDashboardAggregates,
   readProcessesPage,
   readStore,
   writeStore
 } from "../../src/storage.js";
-import { createAuditEntry } from "../../src/domain/processos.js";
+import {
+  createAuditEntry,
+  dashboardAvailableYears,
+  dashboardMetrics,
+  dashboardMonthlyExecution,
+  dashboardStatusDistribution,
+  enrichProcess
+} from "../../src/domain/processos.js";
 import { createSession, resolveSessionUser } from "../../src/repositories/sessions.js";
 import { runMigrations } from "../../scripts/db-migrate.js";
 
@@ -128,6 +136,55 @@ integration("integracao PostgreSQL", () => {
       });
       assert.equal(page.total, 1);
       assert.deepEqual(page.data.map((processo) => processo.id), [processIds[0]]);
+    }
+  });
+
+  it("calcula agregados do dashboard no PostgreSQL equivalentes ao domínio", async () => {
+    const store = await readStore();
+    const marker = `DASHBOARD-DB-${crypto.randomUUID()}`;
+    const currentYear = Number(brazilianDateDaysAgo(31).slice(0, 4));
+    store.processos.push(
+      {
+        id: `${marker}-liquidado`, numeroProcesso: `${marker}-LIQUIDADO`, numeroEmpenho: `${marker}-NE-1`,
+        status: "Liquidado", dataEnvioEmpenho: "2091-01-10", dataLiquidacao: "2091-02-15",
+        materiais: [{ descricao: "Item com quatro casas", valorUnitario: 0.7326, quantidade: 100 }]
+      },
+      {
+        id: `${marker}-pago`, numeroProcesso: `${marker}-PAGO`, numeroEmpenho: `${marker}-NE-2`,
+        status: "Pago", dataEnvioFornecedor: "2091-03-10", dataLiquidacao: "2092-04-15", dataPagamento: "2092-05-20",
+        materiais: [{ descricao: "Item pago", valorUnitario: 47.475, quantidade: 2 }]
+      },
+      {
+        id: `${marker}-anulado`, numeroProcesso: `${marker}-ANULADO`, numeroEmpenho: `${marker}-NE-3`,
+        status: "Anulado", dataEnvioEmpenho: "2091-06-10",
+        materiais: [{ descricao: "Item anulado", valorUnitario: 300, quantidade: 1 }]
+      },
+      {
+        id: `${marker}-inativo`, numeroProcesso: `${marker}-INATIVO`, numeroEmpenho: `${marker}-NE-4`,
+        status: "Pago", inativo: true, dataEnvioEmpenho: "2091-07-10", dataPagamento: "2091-08-10",
+        materiais: [{ descricao: "Item inativo", valorUnitario: 500, quantidade: 1 }]
+      },
+      {
+        id: `${marker}-atrasado`, numeroProcesso: `${marker}-ATRASADO`, numeroEmpenho: `${marker}-NE-5`,
+        status: "Aguardando entrega", dataEnvioFornecedor: brazilianDateDaysAgo(31),
+        materiais: [{ descricao: "Item atrasado", valorUnitario: 1, quantidade: 1 }]
+      },
+      {
+        id: `${marker}-servico`, numeroProcesso: `${marker}-SERVICO`, numeroEmpenho: `${marker}-NE-6`,
+        status: "Em execução", tipoObjeto: "servico", acompanhamentoServico: "continuado", dataEnvioEmpenho: `${currentYear}-01-10`,
+        materiais: [{ descricao: "Servico sem entrega", valorUnitario: 2, quantidade: 1 }]
+      }
+    );
+    await writeStore(store);
+
+    const persisted = await readStore();
+    const processos = persisted.processos.map((processo) => enrichProcess(processo));
+    for (const year of [2091, 2092, currentYear]) {
+      const actual = await readDashboardAggregates(year);
+      assert.deepEqual(actual.anos, dashboardAvailableYears(processos));
+      assert.deepEqual(actual.metrics, dashboardMetrics(processos, year));
+      assert.deepEqual(actual.charts.execucaoMensal, dashboardMonthlyExecution(processos, year));
+      assert.deepEqual(actual.charts.distribuicaoStatus, dashboardStatusDistribution(processos, year));
     }
   });
 
