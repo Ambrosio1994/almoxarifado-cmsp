@@ -165,16 +165,21 @@ Ignorando 001_initial_schema.sql: ja aplicada.
 Migracoes aplicadas com sucesso.
 ```
 
-Tabelas esperadas:
+Tabelas esperadas (após `012_drop_legacy_tables`):
 
 ```text
+app_email_dispatch_claims
+app_email_history
+app_process_audit
+app_process_observations
+app_processes
 app_schema_migrations
+app_security_audit
 app_settings
+app_state_revision
+app_suppliers
 app_users
-email_template_attachments
-email_templates
-notification_recipients
-notification_rules
+auth_rate_limits
 user_sessions
 ```
 

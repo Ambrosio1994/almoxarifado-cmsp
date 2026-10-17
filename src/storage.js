@@ -23,7 +23,7 @@ import { recordSecurityEvent } from "./repositories/security-audit.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORE_FILE = fileURLToPath(new URL("../data/store.json", `file://${__dirname}/`));
-export const EXPECTED_SCHEMA_MIGRATION = "011_process_multiple_commitments";
+export const EXPECTED_SCHEMA_MIGRATION = "012_drop_legacy_tables";
 export const REQUIRED_DATABASE_TABLES = Object.freeze([
   "app_users",
   "user_sessions",

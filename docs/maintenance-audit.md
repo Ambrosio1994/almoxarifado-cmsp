@@ -1,22 +1,25 @@
 # Auditoria de manutenção — candidatos a descarte
 
-> Relatório **somente diagnóstico**. Nenhum arquivo, upload ou tabela foi
-> removido. Base revisada: `main` @ `8765e37` (árvore limpa).
+> Relatório de diagnóstico **e** registro das ações executadas. O diagnóstico
+> original não removeu nada; em 17/10 foram executados os passos 1–3
+> (assets/exports sem uso, ferramenta de varredura do Drive e migration 012
+> preparada — tabelas **não** removidas em produção).
 >
-> Origem: etapa final da varredura geral iniciada em 31/08/2026
-> ("arquivos sem uso, código descartável, riscos, escalabilidade, banco").
-> Esta etapa cobre quatro itens que exigem diagnóstico antes de qualquer
-> remoção: campos JSONB, assets/código sem uso, uploads órfãos e tabelas legadas.
+> Base revisada: `main` @ `8765e37` (diagnóstico). Origem: etapa final da
+> varredura geral iniciada em 31/08/2026 ("arquivos sem uso, código descartável,
+> riscos, escalabilidade, banco"). Esta etapa cobre quatro itens que exigem
+> diagnóstico antes de qualquer remoção: campos JSONB, assets/código sem uso,
+> uploads órfãos e tabelas legadas.
 
 ## Resumo
 
 | Item | Situação | Pode remover agora? |
 |---|---|---|
-| Campos JSONB | Colunas `data` são o modelo ativo; subcampos legados ainda são lidos | **Não** — requer perfil de dados em produção |
-| Assets sem uso | 6 arquivos, ~396 KB, sem nenhuma referência (+1 usado só em teste) | Sim, com baixo risco |
-| Código sem uso | 2 exports mortos confirmados | Sim, com baixo risco |
-| Uploads órfãos | Produção é **Drive**: 51 referências, 0 locais. dry-run local: 114/114 órfãos (dev) | **Não executável** — não há ferramenta de limpeza p/ Drive |
-| Tabelas legadas | 4 tabelas sem nenhum acesso SQL | **Não** anexado — requer backup + confirmação de consumidores externos |
+| Campos JSONB | Perfil em produção: **0** dos 79 processos usam a forma legada de topo | Ainda não — não é código morto (compatibilidade de API) |
+| Assets sem uso | **Removidos** 6 arquivos (~396 KB) + 2 exports mortos (passo 1) | Feito ✔ |
+| Código sem uso | `DOCUMENT_LABELS`, `readUsersStore` **removidos** (passo 1) | Feito ✔ |
+| Uploads órfãos | Produção é **Drive**: 51 referências, 0 locais. Varredura de Drive **implementada** (passo 2) | Execução depende de OAuth no host de produção |
+| Tabelas legadas | Migration `012_drop_legacy_tables` **preparada e validada** em banco de teste | **Não aplicada** — requer backup + confirmação de consumidores externos |
 
 Método: todas as verificações abaixo são de leitura. Comandos reproduzíveis
 estão indicados em cada seção.
@@ -59,9 +62,45 @@ não são "campos" removíveis. O que existe de legado são **subcampos dentro d
   (`src/server.js:4069`) ao lado de `dataEnvioFornecedor` e usado como alias
   (`src/domain/processos.js`, `src/server.js:1421`).
 
-**Remover os subcampos legados exige perfil de dados em produção**
-(quantos registros ainda têm a forma antiga). Como o banco local tem 0
-processos, isso não é comprovável aqui. **Não remover.**
+**Perfil em produção (somente leitura, 17/10).** `BEGIN READ ONLY` sobre
+`app_processes.data` no banco de produção (Neon):
+
+| Métrica | Valor |
+|---|---:|
+| Processos (ativos / inativos) | 79 (78 / 1) |
+| Com array `materiais` não vazio | 79 |
+| Com `material` legado de topo não vazio | 0 |
+| Com `valorUnitario` legado | 0 |
+| Com `quantidade` legado | 0 |
+| Dependem **somente** do legado (sem `materiais`) | 0 |
+| Com `dataEnvioEmpenho` | 0 |
+
+Reproduzir (read-only):
+
+```sql
+WITH src AS (
+  SELECT data,
+    CASE WHEN jsonb_typeof(data->'materiais')='array' THEN jsonb_array_length(data->'materiais') ELSE 0 END AS n,
+    btrim(COALESCE(data->>'material','')) AS material,
+    btrim(COALESCE(data->>'valorUnitario','')) AS vu,
+    btrim(COALESCE(data->>'quantidade','')) AS qt
+  FROM app_processes
+)
+SELECT count(*)::int AS total,
+       count(*) FILTER (WHERE n > 0)::int AS com_materiais,
+       count(*) FILTER (WHERE material <> '')::int AS com_material_legado,
+       count(*) FILTER (WHERE n = 0 AND material <> '')::int AS somente_legado,
+       count(*) FILTER (WHERE vu <> '')::int AS com_vu_legado,
+       count(*) FILTER (WHERE qt <> '')::int AS com_qt_legado
+FROM src;
+```
+
+**Conclusão do perfil:** nenhum processo em produção usa a forma de topo. O
+fallback legado em `DASHBOARD_AGGREGATES_SQL` (`src/storage.js:281-285`) e
+`legacyMaterials()` (`src/server.js:4535`) só é exercitado por payloads antigos
+de API/cliente, não por dados armazenados. Ainda assim é código de
+compatibilidade: a forma de topo pode chegar por uma chamada antiga, então
+**não remover sem decisão explícita** de descontinuar o contrato da API.
 
 ---
 
@@ -148,27 +187,39 @@ dev/teste (`uuid/...`, `*-documento-restaurado.pdf`, `import-167487-...`).
 
 **Revalidação em produção (somente leitura, 17/10).** Conectado ao banco de
 produção (Neon), o store tem **79 processos** (1 inativo) e **51 caminhos de
-upload referenciados — todos em Google Drive** (`/uploads/drive/<pasta>/...`),
-com **0 referências a armazenamento local**. Distinct Drive folders: 51.
+upload referenciados — todos em Google Drive** (`/uploads/drive/<fileId>/...`),
+com **0 referências a armazenamento local**. Os 51 caminhos apontam para **51
+ids de arquivo distintos** (0 malformados).
 
 ```bash
 node -e '<consulta read-only a app_processes.data->documentos usando DATABASE_URL de .env.production>'
 # Referenciados: 51 | em Drive: 51 | local: 0
 ```
 
-**Bloqueio do passo de limpeza em produção.** O armazenamento de produção é o
-**Google Drive**, não o volume local `/data/uploads`. O script
-`cleanup-orphan-uploads.js` percorre apenas o filesystem local
-(`readdir`/`stat`/`rm`) e **não enumera o Drive**; não existe no repositório
-nenhuma ferramenta de limpeza de órfãos no Drive. Portanto **a limpeza de
-uploads de produção não é executável** com o que existe hoje:
+**Ferramenta de varredura do Drive implementada (passo 2).** O armazenamento de
+produção é o **Google Drive**, não o volume local `/data/uploads`. No backend
+Drive cada upload vira um arquivo filho direto de `GOOGLE_DRIVE_FOLDER_ID` e o
+caminho público embute o próprio id do arquivo
+(`/uploads/drive/<fileId>/<nome>`, `src/uploads/upload-storage.js:182`).
+Portanto a varredura compara os ids dos filhos da pasta com os ids extraídos
+dos caminhos referenciados (documentos + anexos de template de e-mail).
 
-- não há como listar candidatos a órfãos no Drive sem uma varredura nova
-  (comparar os itens sob `GOOGLE_DRIVE_FOLDER_ID` com os 51 caminhos
-  referenciados), usando `listFilesInFolder`/`listFilesByAppProperty`
-  (`src/uploads/drive-storage.js`);
-- o `backup-production.js` arquiva um diretório/volume **local**, não o Drive.
-- Isso seria uma **funcionalidade nova**, não uma rotina de manutenção.
+Novo utilitário:
+
+- `scripts/cleanup-orphan-drive-uploads.js` — modo padrão **somente leitura**;
+  excluir exige `--apply` + `--confirm-delete-orphans` e, em produção,
+  `--confirm-backup`. Exclui o marcador de identidade
+  (`.almoxarifado-storage.json`) e aplica carência (`ORPHAN_UPLOAD_GRACE_MS`).
+- `listFolderFiles()` em `src/uploads/drive-storage.js` — lista paginada dos
+  filhos da pasta.
+- scripts npm: `uploads:drive:cleanup:dry-run` e `uploads:drive:cleanup`.
+
+A execução contra o Drive de produção **não foi feita aqui**: o `.env.production`
+local não contém as credenciais OAuth do Google (`GOOGLE_CLIENT_ID/SECRET/
+REFRESH_TOKEN`). Ela deve rodar no host de produção (ou onde o OAuth estiver
+disponível) com `UPLOAD_STORAGE_BACKEND=drive`. O `backup-production.js` arquiva
+um diretório/volume **local**, não o Drive — um backup do Drive precisa ser
+confirmado por outro meio antes de qualquer `--apply`.
 
 Nada foi removido no Drive nem localmente.
 
@@ -177,7 +228,9 @@ Nada foi removido no Drive nem localmente.
 ## 5. Tabelas legadas
 
 Sem nenhum acesso SQL (`FROM`/`INTO`/`UPDATE`/`JOIN`) em `src/` e `scripts/`;
-presentes apenas em `src/db/schema-contract.js` (contrato de drift):
+definidas em `db/migrations/001_initial_schema.sql` e, até esta rodada, listadas
+no contrato de drift `src/db/schema-contract.js` (as entradas do contrato foram
+removidas por esta mudança):
 
 | Tabela | Uso SQL na aplicação | Linhas (banco local) |
 |---|---|---:|
@@ -199,47 +252,67 @@ done
 psql "$DATABASE_URL" -c "SELECT relname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind='r' ORDER BY 1"
 ```
 
-**Não remover ainda.** Descontinuação exige: backup verificado, confirmação de
-que não há consumidores externos (relatórios/BI/integrações) lendo essas
-tabelas, e migration própria. Elas permanecem no contrato de schema enquanto
-existentes (comentário em `src/db/schema-contract.js:21`).
+**Migration preparada (passo 3), ainda não aplicada.** Criada
+`db/migrations/012_drop_legacy_tables.sql` (`DROP TABLE IF EXISTS` na ordem
+filho → pai), atualizado o contrato (`src/db/schema-contract.js`: tabelas e
+índices removidos, versão `3`, migration `012_drop_legacy_tables` exigida) e
+`EXPECTED_SCHEMA_MIGRATION` em `src/storage.js`.
+
+Validada em banco de teste isolado (`almoxarifado_test`): aplica sobre
+`001→012`, remove as 4 tabelas mesmo com dados e com a FK
+`email_template_attachments → email_templates`, é idempotente, e o verificador
+de contrato retorna `valid:true` (13 tabelas).
+
+**Ainda não aplicar em produção.** Como `prestart` (`npm start`) roda
+`scripts/db-migrate.js`, o próximo deploy aplicaria a migration automaticamente.
+Antes disso é obrigatório: backup verificado; confirmação de que não há
+consumidores externos (relatórios/BI/integrações) lendo essas tabelas; e
+registro explícito da remoção.
 
 ---
 
 ## Impacto em banco
 
-Nenhum. Todas as consultas foram somente leitura; nenhuma migration, DML, DDL
-nem exclusão foi executada. O dry-run de uploads não removeu arquivos
-(`applied:false`, `uploads/` com 115 arquivos antes e depois).
+**Nenhuma alteração em produção.** As consultas de produção foram somente
+leitura (`BEGIN READ ONLY`). A migration `012_drop_legacy_tables` foi validada
+apenas em um banco de teste local e descartável (`almoxarifado_test`); o banco
+`almoxarifado` de desenvolvimento e o banco de produção permanecem intactos. O
+dry-run de uploads não removeu arquivos (`applied:false`).
 
 ## Validações desta etapa
 
 | Check | Resultado |
 |---|---|
-| `git status` | árvore limpa |
-| Contagem de uploads antes/depois do dry-run | 115 / 115 (intacta) |
-| `app_processes` local | 0 (explica `referenced:0`) |
-| Tabelas em `public` | 17 (nenhuma tabela extra além do contrato) |
+| `npm test` | **298/298** aprovados |
+| `npm run check` | OK |
+| `npm run test:db` (banco de teste `almoxarifado_test`) | 13/13 aprovados |
+| Migration `001→012` em banco novo | aplicada; as 4 tabelas legadas ausentes |
+| Migration `012` com dados + FK | remove na ordem correta; idempotente |
+| Verificador de contrato na `almoxarifado_test` | `valid:true` (versão 3, 13 tabelas) |
+| Perfil JSONB em produção | 79 processos, 0 usam a forma legada |
+| Varredura Drive | implementada e coberta por 6 testes (`test/cleanup-orphan-drive-uploads.test.js`) |
 
 ## Riscos / limitações
 
-- **Produção não acessada**: as conclusões sobre JSONB, uploads e tabelas
-  legadas dependem de perfil de dados em produção, indisponível aqui.
-- A contagem de 51 uploads referenciados em produção vem da varredura de
-  01/09 e **não** foi revalidada.
+- **Migration 012 não aplicada em produção.** Com `prestart` disparando
+  `db-migrate.js`, o próximo deploy a aplicará automaticamente. Não fazer
+  deploy sem backup verificado e sem confirmar ausência de consumidores externos.
+- **Varredura Drive não executada em produção**: falta OAuth no ambiente local.
+  Rodar no host de produção antes de autorizar `--apply`.
+- O `backup-production.js` não cobre o Drive; um backup do Drive precisa ser
+  confirmado separadamente.
 - `eye-off.svg` é usado por teste; remover exigiria ajustar
   `test/frontend-contract.test.js`.
 
-## Próximo passo proposto (condicionado a autorização)
+## Passos 1–3 (execução 17/10)
 
 1. **Concluído (passo 1):** removidos os 6 assets sem uso e os 2 exports mortos
-   (`DOCUMENT_LABELS`, `readUsersStore`); `npm test` 292/292 e `npm run check`
-   aprovados; verificação independente `APPROVED`.
-2. **Bloqueado (passo 2):** limpeza de uploads de produção não é executável —
-   produção usa Google Drive e não há ferramenta de varredura/limpeza no Drive.
-   Opções: (a) construir uma varredura de órfãos no Drive (funcionalidade nova,
-   requer revisão); ou (b) nada a fazer no armazenamento de produção.
-3. Maior risco: descontinuação das 4 tabelas legadas via migration, após
-   confirmar ausência de consumidores externos e backup verificado.
-4. JSONB legado: só após instrumentar/perfilar a forma dos registros
-   existentes em produção.
+   (`DOCUMENT_LABELS`, `readUsersStore`); verificação independente `APPROVED`.
+2. **Concluído (passo 2):** implementada a varredura de órfãos do Drive
+   (`scripts/cleanup-orphan-drive-uploads.js`, `listFolderFiles`), com dry-run
+   padrão e exclusão sob confirmação. Execução contra produção pendente de OAuth.
+3. **Concluído (passo 3):** migration `012_drop_legacy_tables` preparada e
+   validada em banco de teste; contrato atualizado para a versão 3. Aplicação em
+   produção pendente de backup + confirmação de consumidores externos.
+4. **Concluído (perfil JSONB):** produção não usa a forma legada; remoção do
+   fallback fica condicionada a descontinuar o contrato antigo da API.
