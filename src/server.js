@@ -1489,7 +1489,7 @@ async function handleApi(req, res, url) {
     updated.versao = Number(current.versao || 0) + 1;
     updated.atualizadoEm = new Date().toISOString();
     store.processos[index] = updated;
-    store.auditoria.unshift(createAuditEntry({
+    const rollbackAudit = createAuditEntry({
       processoId: updated.id,
       ...auditActor,
       acao: "Retrocesso administrativo de status",
@@ -1498,8 +1498,9 @@ async function handleApi(req, res, url) {
         ...processChanges(current, updated),
         motivo: { anterior: null, novo: reason }
       }
-    }));
-    await writeStore(store);
+    });
+    store.auditoria.unshift(rollbackAudit);
+    await writeChangedProcesses(store, [updated.id], [rollbackAudit.id]);
     sendJson(res, 200, enrichProcess(updated));
     return;
   }
@@ -1604,14 +1605,15 @@ async function handleApi(req, res, url) {
     }
 
     store.processos[index] = updated;
-    store.auditoria.unshift(createAuditEntry({
+    const processUpdateAudit = createAuditEntry({
       processoId: updated.id,
       ...auditActor,
       acao: "Alteracao de processo",
       detalhes: `Status atual: ${updated.status}.`,
       alteracoes: processChanges(current, updated)
-    }));
-    await writeStore(store);
+    });
+    store.auditoria.unshift(processUpdateAudit);
+    await writeChangedProcesses(store, [updated.id], [processUpdateAudit.id]);
     sendJson(res, 200, enrichProcess(updated));
     return;
   }
@@ -1647,13 +1649,14 @@ async function handleApi(req, res, url) {
     };
 
     store.processos[index] = updated;
-    store.auditoria.unshift(createAuditEntry({
+    const cancellationAudit = createAuditEntry({
       processoId: updated.id,
       ...auditActor,
       acao: "Anulacao de empenho",
       detalhes: `Motivo: ${updated.motivoAnulacao}.`
-    }));
-    await writeStore(store);
+    });
+    store.auditoria.unshift(cancellationAudit);
+    await writeChangedProcesses(store, [updated.id], [cancellationAudit.id]);
     sendJson(res, 200, enrichProcess(updated));
     return;
   }
@@ -1741,7 +1744,7 @@ async function handleApi(req, res, url) {
     processo.status = totalProgress >= 100 ? "Serviço concluído" : "Em execução";
     processo.versao = Number(processo.versao || 0) + 1;
     processo.atualizadoEm = new Date().toISOString();
-    store.auditoria.unshift(createAuditEntry({
+    const serviceExecutionAudit = createAuditEntry({
       processoId: processo.id,
       ...auditActor,
       acao: "Registro de execucao de servico",
@@ -1751,8 +1754,9 @@ async function handleApi(req, res, url) {
         percentualConcluido: { anterior: currentProgress, novo: totalProgress },
         ...(previousStatus !== processo.status ? { status: { anterior: previousStatus, novo: processo.status } } : {})
       }
-    }));
-    await writeStore(store);
+    });
+    store.auditoria.unshift(serviceExecutionAudit);
+    await writeChangedProcesses(store, [processo.id], [serviceExecutionAudit.id]);
     sendJson(res, 201, enrichProcess(processo));
     return;
   }
@@ -1815,12 +1819,13 @@ async function handleApi(req, res, url) {
     processo.dataEntrega = data;
     processo.versao = Number(processo.versao || 0) + 1;
     processo.atualizadoEm = new Date().toISOString();
-    store.auditoria.unshift(createAuditEntry({
+    const deliveryAudit = createAuditEntry({
       processoId: processo.id, ...auditActor, acao: "Registro de entrega",
       detalhes: complete ? "Entrega integral registrada." : "Entrega parcial registrada.",
       alteracoes: { entregaId: entrega.id, itens: entrega.itens }
-    }));
-    await writeStore(store);
+    });
+    store.auditoria.unshift(deliveryAudit);
+    await writeChangedProcesses(store, [processo.id], [deliveryAudit.id]);
     sendJson(res, 201, enrichProcess(processo));
     return;
   }
@@ -1848,10 +1853,11 @@ async function handleApi(req, res, url) {
     processo.inativadoEm = new Date().toISOString();
     processo.inativadoPor = usuario;
     processo.versao = Number(processo.versao || 0) + 1;
-    store.auditoria.unshift(createAuditEntry({
+    const inactivationAudit = createAuditEntry({
       processoId: processo.id, ...auditActor, acao: "Inativacao de processo", detalhes: "Processo marcado como inativo."
-    }));
-    await writeStore(store);
+    });
+    store.auditoria.unshift(inactivationAudit);
+    await writeChangedProcesses(store, [processo.id], [inactivationAudit.id]);
     sendJson(res, 200, enrichProcess(processo));
     return;
   }
@@ -2158,7 +2164,7 @@ async function handleApi(req, res, url) {
       atualizadoEm: new Date().toISOString(),
       versao: Number(current.versao || 0) + 1
     };
-    store.auditoria.unshift(createAuditEntry({
+    const documentAttachmentAudit = createAuditEntry({
       processoId: current.id,
       ...auditActor,
       acao: "Anexo de documento",
@@ -2170,9 +2176,10 @@ async function handleApi(req, res, url) {
         path: documentInfo.path,
         mimeType: documentInfo.mimeType
       }
-    }));
+    });
+    store.auditoria.unshift(documentAttachmentAudit);
     try {
-      await writeStore(store);
+      await writeChangedProcesses(store, [current.id], [documentAttachmentAudit.id]);
     } catch (error) {
       await deleteUploadFile(storedPath, { root: UPLOAD_ROOT }).catch(() => null);
       throw error;
@@ -2235,13 +2242,14 @@ async function handleApi(req, res, url) {
       atualizadoEm: new Date().toISOString(),
       versao: Number(current.versao || 0) + 1
     };
-    store.auditoria.unshift(createAuditEntry({
+    const documentRemovalAudit = createAuditEntry({
       processoId: current.id,
       ...auditActor,
       acao: "Remocao de documento",
       detalhes: `Documento ${documentKey} removido.`
-    }));
-    await writeStore(store);
+    });
+    store.auditoria.unshift(documentRemovalAudit);
+    await writeChangedProcesses(store, [current.id], [documentRemovalAudit.id]);
     const removedDocumentPath = normalizeDocumentEntry(removedDocument).path;
     await removeUploadedFile(removedDocumentPath).catch((error) => {
       logError("removed_upload_cleanup_failed", { path: removedDocumentPath, message: error.message });

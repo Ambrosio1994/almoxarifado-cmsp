@@ -11,6 +11,7 @@ import {
   readDashboardAggregates,
   readProcessesPage,
   readStore,
+  writeProcessRecords,
   writeStore
 } from "../../src/storage.js";
 import {
@@ -239,6 +240,106 @@ integration("integracao PostgreSQL", () => {
     }), (error) => error.statusCode === 409);
     const events = await query("SELECT id FROM app_security_audit WHERE metadata ->> 'correlationId' = $1", [correlationId]);
     assert.equal(events.rowCount, 0);
+  });
+
+  it("persiste somente o processo e a auditoria selecionados sem tocar outras colecoes", async () => {
+    const marker = `PERSISTENCIA-DIRECIONADA-${crypto.randomUUID()}`;
+    const targetProcessId = `${marker}-alvo`;
+    const otherProcessId = `${marker}-outro`;
+    const supplierId = `${marker}-fornecedor`;
+    const observationId = `${marker}-observacao`;
+    const emailHistoryId = `${marker}-email`;
+    const now = new Date().toISOString();
+    const seed = await readStore();
+    seed.processos.push(
+      {
+        id: targetProcessId,
+        numeroProcesso: `${marker}-ALVO`,
+        numeroEmpenho: `${marker}-NE-1`,
+        status: "Enviado para SALC",
+        materiais: [],
+        versao: 1,
+        criadoEm: now,
+        atualizadoEm: now
+      },
+      {
+        id: otherProcessId,
+        numeroProcesso: `${marker}-OUTRO`,
+        numeroEmpenho: `${marker}-NE-2`,
+        status: "Enviado para SALC",
+        materiais: [],
+        versao: 1,
+        criadoEm: now,
+        atualizadoEm: now
+      }
+    );
+    seed.fornecedores.push({ id: supplierId, razaoSocial: `${marker} fornecedor`, criadoEm: now, atualizadoEm: now });
+    seed.observacoes.push({ id: observationId, processoId: otherProcessId, conteudo: "Observacao que deve permanecer", criadoEm: now });
+    seed.emailHistorico.push({ id: emailHistoryId, dedupeKey: `${marker}-dedupe`, assunto: "Historico que deve permanecer", criadoEm: now });
+    await writeStore(seed);
+
+    const targeted = await readStore();
+    const target = targeted.processos.find((processo) => processo.id === targetProcessId);
+    const other = targeted.processos.find((processo) => processo.id === otherProcessId);
+    target.status = "Aguardando entrega";
+    target.versao += 1;
+    target.atualizadoEm = new Date().toISOString();
+    other.status = "Nao deve ser persistido";
+    targeted.fornecedores.find((fornecedor) => fornecedor.id === supplierId).razaoSocial = "Fornecedor alterado apenas em memoria";
+    targeted.observacoes = targeted.observacoes.filter((observacao) => observacao.id !== observationId);
+    targeted.emailHistorico = targeted.emailHistorico.filter((entry) => entry.id !== emailHistoryId);
+    const targetAudit = createAuditEntry({
+      processoId: targetProcessId,
+      usuario: "Integracao",
+      acao: "Mutacao direcionada",
+      detalhes: "Somente o processo alvo deve ser persistido."
+    });
+    targeted.auditoria.unshift(targetAudit);
+    await writeProcessRecords(targeted, { processIds: [targetProcessId], auditIds: [targetAudit.id] });
+
+    const persisted = await readStore();
+    assert.equal(persisted.processos.find((processo) => processo.id === targetProcessId).status, "Aguardando entrega");
+    assert.equal(persisted.processos.find((processo) => processo.id === otherProcessId).status, "Enviado para SALC");
+    assert.equal(persisted.fornecedores.find((fornecedor) => fornecedor.id === supplierId).razaoSocial, `${marker} fornecedor`);
+    assert.equal(persisted.observacoes.some((observacao) => observacao.id === observationId), true);
+    assert.equal(persisted.emailHistorico.some((entry) => entry.id === emailHistoryId), true);
+    assert.equal(persisted.auditoria.some((entry) => entry.id === targetAudit.id), true);
+
+    const first = await readStore();
+    const stale = await readStore();
+    const firstTarget = first.processos.find((processo) => processo.id === targetProcessId);
+    firstTarget.status = "Entregue";
+    firstTarget.versao += 1;
+    firstTarget.atualizadoEm = new Date().toISOString();
+    const firstAudit = createAuditEntry({
+      processoId: targetProcessId,
+      usuario: "Integracao",
+      acao: "Mutacao direcionada concorrente",
+      detalhes: "A primeira gravacao deve vencer."
+    });
+    first.auditoria.unshift(firstAudit);
+    await writeProcessRecords(first, { processIds: [targetProcessId], auditIds: [firstAudit.id] });
+
+    const staleTarget = stale.processos.find((processo) => processo.id === targetProcessId);
+    staleTarget.status = "Liquidado";
+    staleTarget.versao += 1;
+    staleTarget.atualizadoEm = new Date().toISOString();
+    const staleAudit = createAuditEntry({
+      processoId: targetProcessId,
+      usuario: "Integracao",
+      acao: "Mutacao direcionada obsoleta",
+      detalhes: "Nao deve ser persistida."
+    });
+    stale.auditoria.unshift(staleAudit);
+    await assert.rejects(
+      () => writeProcessRecords(stale, { processIds: [targetProcessId], auditIds: [staleAudit.id] }),
+      (error) => error.statusCode === 409
+    );
+
+    const afterConflict = await readStore();
+    assert.equal(afterConflict.processos.find((processo) => processo.id === targetProcessId).status, "Entregue");
+    assert.equal(afterConflict.auditoria.some((entry) => entry.id === firstAudit.id), true);
+    assert.equal(afterConflict.auditoria.some((entry) => entry.id === staleAudit.id), false);
   });
 
   it("confirma usuario e eventos de seguranca no mesmo commit", async () => {
