@@ -77,12 +77,6 @@ export const QUICK_FILTERS = [
 export const REQUIRED_DOCUMENT_KEYS = ["processoSped", "notaEmpenho", "notaFiscal"];
 export const LIQUIDATION_DOCUMENT_KEYS = ["processoSped", "notaEmpenho"];
 
-export const DOCUMENT_LABELS = {
-  processoSped: "Processo SPED",
-  notaEmpenho: "Nota de Empenho",
-  notaFiscal: "Nota Fiscal"
-};
-
 export function canEditProcess(processo, userRole = "almoxarifado", nextStatus = "") {
   if (!processo || processo.inativo) return false;
   if (processo.status === "Pago") return false;
