@@ -18,7 +18,7 @@ import {
   readTransaction,
   transaction
 } from "./db/postgres.js";
-import { applyQuickFilter, enrichProcess, filterProcesses, QUICK_FILTERS } from "./domain/processos.js";
+import { applyQuickFilter, enrichProcess, filterProcesses, QUICK_FILTERS, STATUS } from "./domain/processos.js";
 import { recordSecurityEvent } from "./repositories/security-audit.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -236,6 +236,145 @@ export async function readProcessesSnapshot() {
       revision: Number(revision.rows[0]?.revision || 0)
     };
   });
+}
+
+// PostgreSQL keeps process fields in JSONB. Keep these aggregates in the
+// database so the dashboard does not need to deserialize every process just
+// to calculate its cards and charts. The JSON fallback remains in server.js.
+export async function readDashboardAggregates(year) {
+  if (!(await requireConfiguredDatabase())) return null;
+  const selectedYear = Number.isInteger(Number(year)) ? Number(year) : null;
+  const result = await readTransaction(async (client) => client.query(DASHBOARD_AGGREGATES_SQL, [selectedYear]));
+  return deserializeDashboardAggregates(result.rows[0]);
+}
+
+const DASHBOARD_AGGREGATES_SQL = `
+  WITH source AS (
+    SELECT
+      data,
+      COALESCE(NULLIF(data->>'dataEnvioFornecedor', ''), NULLIF(data->>'dataEnvioEmpenho', '')) AS prazo_data,
+      COALESCE(NULLIF(data->>'dataLiquidacao', ''), NULLIF(data->>'dataEnvioLiquidacao', '')) AS liquidacao_data,
+      NULLIF(data->>'dataPagamento', '') AS pagamento_data,
+      COALESCE(data->>'status', '') AS status
+    FROM app_processes
+    WHERE COALESCE((data->>'inativo')::boolean, false) = false
+  ), materiais AS (
+    SELECT source.*, COALESCE((
+      SELECT CASE
+        WHEN bool_or(valor_unitario IS NULL OR quantidade IS NULL) THEN 0::numeric
+        ELSE COALESCE(sum(round(round(valor_unitario * 10000) * quantidade / 100)), 0) / 100
+      END
+      FROM (
+        SELECT
+          CASE
+            WHEN jsonb_typeof(material->'valorUnitario') = 'number' THEN (material->>'valorUnitario')::numeric
+            WHEN jsonb_typeof(material->'valorUnitario') = 'boolean' THEN CASE material->>'valorUnitario' WHEN 'true' THEN 1 ELSE 0 END
+            WHEN btrim(COALESCE(material->>'valorUnitario', '')) = '' THEN 0::numeric
+            WHEN btrim(material->>'valorUnitario') ~ '^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$' THEN btrim(material->>'valorUnitario')::numeric
+            ELSE NULL
+          END AS valor_unitario,
+          CASE
+            WHEN jsonb_typeof(material->'quantidade') = 'number' THEN (material->>'quantidade')::numeric
+            WHEN jsonb_typeof(material->'quantidade') = 'boolean' THEN CASE material->>'quantidade' WHEN 'true' THEN 1 ELSE 0 END
+            WHEN btrim(COALESCE(material->>'quantidade', '')) = '' THEN 0::numeric
+            WHEN btrim(material->>'quantidade') ~ '^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$' THEN btrim(material->>'quantidade')::numeric
+            ELSE NULL
+          END AS quantidade
+        FROM jsonb_array_elements(
+          CASE
+            WHEN jsonb_typeof(source.data->'materiais') = 'array'
+                 AND jsonb_array_length(source.data->'materiais') > 0 THEN source.data->'materiais'
+            ELSE jsonb_build_array(jsonb_build_object(
+              'descricao', source.data->'material',
+              'valorUnitario', source.data->'valorUnitario',
+              'quantidade', source.data->'quantidade'
+            ))
+          END
+        ) AS material
+        WHERE btrim(COALESCE(material->>'descricao', '')) <> ''
+      ) AS itens
+    ), 0::numeric) AS valor_total
+    FROM source
+  ), processos AS (
+    SELECT materiais.*,
+      CASE WHEN prazo_data ~ '^\\d{4}-\\d{2}-\\d{2}' THEN substring(prazo_data FROM 1 FOR 4)::integer END AS prazo_ano,
+      CASE WHEN prazo_data ~ '^\\d{4}-\\d{2}-\\d{2}' THEN substring(prazo_data FROM 6 FOR 2)::integer END AS prazo_mes,
+      CASE WHEN liquidacao_data ~ '^\\d{4}-\\d{2}-\\d{2}' THEN substring(liquidacao_data FROM 1 FOR 4)::integer END AS liquidacao_ano,
+      CASE WHEN liquidacao_data ~ '^\\d{4}-\\d{2}-\\d{2}' THEN substring(liquidacao_data FROM 6 FOR 2)::integer END AS liquidacao_mes,
+      CASE WHEN pagamento_data ~ '^\\d{4}-\\d{2}-\\d{2}' THEN substring(pagamento_data FROM 1 FOR 4)::integer END AS pagamento_ano,
+      CASE WHEN pagamento_data ~ '^\\d{4}-\\d{2}-\\d{2}' THEN substring(pagamento_data FROM 6 FOR 2)::integer END AS pagamento_mes
+    FROM materiais
+  ), anos AS (
+    SELECT DISTINCT ano
+    FROM processos
+    CROSS JOIN LATERAL unnest(ARRAY[prazo_ano, liquidacao_ano, pagamento_ano]) AS data(ano)
+    WHERE ano IS NOT NULL
+  ), escopo AS (
+    SELECT * FROM processos WHERE prazo_ano = $1
+  ), status_por_ano AS (
+    SELECT status, count(*)::integer AS quantidade
+    FROM escopo
+    GROUP BY status
+  ), execucao AS (
+    SELECT mes, jsonb_build_object(
+      'mes', CASE mes
+        WHEN 1 THEN 'Jan' WHEN 2 THEN 'Fev' WHEN 3 THEN 'Mar' WHEN 4 THEN 'Abr'
+        WHEN 5 THEN 'Mai' WHEN 6 THEN 'Jun' WHEN 7 THEN 'Jul' WHEN 8 THEN 'Ago'
+        WHEN 9 THEN 'Set' WHEN 10 THEN 'Out' WHEN 11 THEN 'Nov' WHEN 12 THEN 'Dez'
+      END,
+      'empenhado', COALESCE((SELECT sum(valor_total) FROM processos WHERE status <> 'Anulado' AND prazo_ano = $1 AND prazo_mes = mes), 0),
+      'liquidado', COALESCE((SELECT sum(valor_total) FROM processos WHERE status IN ('Liquidado', 'Pago') AND liquidacao_ano = $1 AND liquidacao_mes = mes), 0),
+      'pago', COALESCE((SELECT sum(valor_total) FROM processos WHERE status = 'Pago' AND pagamento_ano = $1 AND pagamento_mes = mes), 0)
+    ) AS linha
+    FROM generate_series(1, 12) AS meses(mes)
+  )
+  SELECT
+    COALESCE((SELECT jsonb_agg(ano ORDER BY ano DESC) FROM anos), '[]'::jsonb) AS anos,
+    jsonb_build_object(
+      'processosAtivos', (SELECT count(*)::integer FROM escopo WHERE status <> 'Anulado'),
+      'aguardandoEntrega', (SELECT count(*)::integer FROM escopo WHERE status <> 'Anulado' AND (COALESCE(data->>'tipoObjeto', 'material') <> 'servico' OR data->>'acompanhamentoServico' = 'entrega') AND status IN ('Empenho enviado ao fornecedor', 'Aguardando entrega')),
+      'atrasados', (SELECT count(*)::integer FROM escopo WHERE status <> 'Anulado' AND (COALESCE(data->>'tipoObjeto', 'material') <> 'servico' OR data->>'acompanhamentoServico' = 'entrega') AND status NOT IN ('Entregue', 'Aguardando envio para liquidacao', 'Enviado para liquidacao', 'Liquidado', 'Pago') AND prazo_data ~ '^\\d{4}-\\d{2}-\\d{2}$' AND to_char(to_date(prazo_data, 'YYYY-MM-DD'), 'YYYY-MM-DD') = prazo_data AND ((now() AT TIME ZONE 'America/Sao_Paulo')::date - prazo_data::date) > 30),
+      'enviadosLiquidacao', (SELECT count(*)::integer FROM escopo WHERE status = 'Enviado para liquidacao'),
+      'pendentesLiquidacao', (SELECT count(*)::integer FROM escopo WHERE status IN ('Entregue', 'Serviço concluído', 'Aguardando envio para liquidacao', 'Enviado para liquidacao') AND COALESCE(liquidacao_data, '') = ''),
+      'valorEmpenhado', COALESCE((SELECT sum(valor_total) FROM escopo WHERE status <> 'Anulado'), 0),
+      'valorLiquidado', COALESCE((SELECT sum(valor_total) FROM processos WHERE status IN ('Liquidado', 'Pago') AND liquidacao_ano = $1), 0),
+      'valorPago', COALESCE((SELECT sum(valor_total) FROM processos WHERE status = 'Pago' AND pagamento_ano = $1), 0),
+      'porStatus', COALESCE((SELECT jsonb_object_agg(status, quantidade) FROM status_por_ano), '{}'::jsonb)
+    ) AS metricas,
+    COALESCE((SELECT jsonb_agg(linha ORDER BY mes) FROM execucao), '[]'::jsonb) AS execucao_mensal,
+    COALESCE((SELECT jsonb_object_agg(status, quantidade) FROM status_por_ano), '{}'::jsonb) AS distribuicao_status
+`;
+
+function deserializeDashboardAggregates(row = {}) {
+  const statusCounts = row.distribuicao_status || {};
+  const metrics = row.metricas || {};
+  return {
+    anos: (row.anos || []).map(Number).filter(Number.isFinite),
+    metrics: {
+      processosAtivos: Number(metrics.processosAtivos || 0),
+      aguardandoEntrega: Number(metrics.aguardandoEntrega || 0),
+      atrasados: Number(metrics.atrasados || 0),
+      enviadosLiquidacao: Number(metrics.enviadosLiquidacao || 0),
+      pendentesLiquidacao: Number(metrics.pendentesLiquidacao || 0),
+      valorEmpenhado: Number(metrics.valorEmpenhado || 0),
+      valorLiquidado: Number(metrics.valorLiquidado || 0),
+      valorPago: Number(metrics.valorPago || 0),
+      porStatus: STATUS
+        .map((status) => [status, Number(metrics.porStatus?.[status] || 0)])
+        .filter(([, quantidade]) => quantidade > 0)
+    },
+    charts: {
+      execucaoMensal: (row.execucao_mensal || []).map((item) => ({
+        mes: String(item.mes || ""),
+        empenhado: Number(item.empenhado || 0),
+        liquidado: Number(item.liquidado || 0),
+        pago: Number(item.pago || 0)
+      })),
+      distribuicaoStatus: STATUS
+        .map((status) => ({ status, quantidade: Number(statusCounts[status] || 0) }))
+        .filter((item) => item.quantidade > 0)
+    }
+  };
 }
 
 function usersSelectSql(options = {}) {
