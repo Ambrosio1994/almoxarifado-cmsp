@@ -67,12 +67,6 @@ export async function readStore() {
   }
 }
 
-export async function readUsersStore() {
-  if (!(await requireConfiguredDatabase())) return readStore();
-  const users = await query(usersSelectSql());
-  return { ...emptyStore(), usuarios: users.rows.map(deserializeUser) };
-}
-
 export async function readUserById(userId, options = {}) {
   if (!userId) return null;
   if (!(await requireConfiguredDatabase())) {
