@@ -3,7 +3,7 @@
 // migrations is unsafe here because they can contain data changes and
 // conditional DDL that do not describe the final catalog state.
 
-export const SCHEMA_CONTRACT_VERSION = 2;
+export const SCHEMA_CONTRACT_VERSION = 3;
 
 const column = (type, options = {}) => ({ type, nullable: options.nullable === true, default: options.default ?? null });
 const text = (options) => column("text", options);
@@ -15,11 +15,11 @@ export const REQUIRED_SCHEMA_MIGRATIONS = Object.freeze([
   "001_initial_schema", "002_process_data", "003_state_revision", "004_integrity_and_audit",
   "005_notification_deadlines", "006_email_dispatch_claims", "007_auth_rate_limits",
   "008_access_request_metadata", "009_security_audit", "010_auth_session_version",
-  "011_process_multiple_commitments"
+  "011_process_multiple_commitments", "012_drop_legacy_tables"
 ]);
 
-// This includes legacy relations too. They remain part of the contract while
-// retained by migrations; their removal requires a separate migration.
+// The catalog describes the post-migration state. Legacy relations that are
+// dropped by a migration must be removed here too (see 012_drop_legacy_tables).
 export const RUNTIME_SCHEMA_CONTRACT = Object.freeze({
   version: SCHEMA_CONTRACT_VERSION,
   schema: "public",
@@ -39,23 +39,6 @@ export const RUNTIME_SCHEMA_CONTRACT = Object.freeze({
     user_sessions: {
       columns: { token_hash: text(), user_id: text(), created_at: timestamp({ default: "now()" }), last_activity_at: timestamp({ default: "now()" }), expires_at: timestamp(), revoked_at: timestamp({ nullable: true }), auth_version: column("bigint", { default: "1" }) },
       primaryKeys: [["token_hash"]], foreignKeys: [{ columns: ["user_id"], referencesTable: "app_users", referencesColumns: ["id"], onDelete: "c" }], checks: [check("CHECK (auth_version > 0)")]
-    },
-    email_templates: { columns: { template_key: text(), assunto: text(), corpo: text(), atualizado_em: timestamp({ default: "now()" }) }, primaryKeys: [["template_key"]] },
-    email_template_attachments: {
-      columns: {
-        id: text({ default: "(gen_random_uuid())::text" }), template_key: text(), file_name: text(), storage_key: text(), public_path: text({ default: "''::text" }),
-        mime_type: text({ default: "''::text" }), size_bytes: column("bigint", { default: "0" }), uploaded_by_name: text({ default: "''::text" }),
-        uploaded_by_user_id: text({ nullable: true }), uploaded_at: timestamp({ default: "now()" })
-      },
-      primaryKeys: [["id"]], unique: [["storage_key"]], foreignKeys: [{ columns: ["template_key"], referencesTable: "email_templates", referencesColumns: ["template_key"], onDelete: "c" }, { columns: ["uploaded_by_user_id"], referencesTable: "app_users", referencesColumns: ["id"], onDelete: "n" }], checks: [check("CHECK (size_bytes >= 0)")]
-    },
-    notification_rules: {
-      columns: { id: column("bool", { default: "true" }), dias_aviso_interno: column("_int4", { default: "ARRAY[14, 21, 28]" }), dia_oficio_fornecedor: column("integer", { default: "31" }), atualizado_em: timestamp({ default: "now()" }) },
-      primaryKeys: [["id"]], checks: [check("CHECK (id = true)"), check("CHECK (dia_oficio_fornecedor > 0)")]
-    },
-    notification_recipients: {
-      columns: { id: text({ default: "(gen_random_uuid())::text" }), nome: text(), email: column("citext"), funcao: text({ default: "''::text" }), ativo: column("boolean", { default: "true" }), criado_em: timestamp({ default: "now()" }), atualizado_em: timestamp({ default: "now()" }) },
-      primaryKeys: [["id"]]
     },
     app_settings: { columns: { key: text(), value: jsonb(), updated_at: timestamp({ default: "now()" }) }, primaryKeys: [["key"]] },
     app_processes: { columns: { id: text(), data: jsonb(), created_at: timestamp({ default: "now()" }), updated_at: timestamp({ default: "now()" }) }, primaryKeys: [["id"]] },
@@ -78,8 +61,6 @@ export const RUNTIME_SCHEMA_CONTRACT = Object.freeze({
     { table: "user_sessions", name: "user_sessions_user_idx", unique: false, keys: ["user_id"] },
     { table: "user_sessions", name: "user_sessions_active_idx", unique: false, keys: ["expires_at"], predicate: "revoked_at IS NULL" },
     { table: "user_sessions", name: "user_sessions_auth_version_idx", unique: false, keys: ["user_id", "auth_version"], predicate: "revoked_at IS NULL" },
-    { table: "email_template_attachments", name: "email_template_attachments_template_idx", unique: false, keys: ["template_key"] },
-    { table: "notification_recipients", name: "notification_recipients_email_uidx", unique: true, keys: ["email"] },
     { table: "app_processes", name: "app_processes_updated_idx", unique: false, keys: ["updated_at"] },
     { table: "app_processes", name: "app_processes_numero_processo_idx", unique: false, keys: ["regexp_replace(lower(data ->> 'numeroProcesso'::text), '[^a-z0-9]'::text, ''::text, 'g'::text)"], predicate: "COALESCE(data ->> 'numeroProcesso'::text, ''::text) <> ''::text AND COALESCE((data ->> 'inativo'::text)::boolean, false) = false" },
     { table: "app_processes", name: "app_processes_numero_empenho_uidx", unique: true, keys: ["regexp_replace(lower(data ->> 'numeroEmpenho'::text), '[^a-z0-9]'::text, ''::text, 'g'::text)"], predicate: "COALESCE(data ->> 'numeroEmpenho'::text, ''::text) <> ''::text AND COALESCE((data ->> 'inativo'::text)::boolean, false) = false" },

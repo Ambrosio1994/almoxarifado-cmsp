@@ -91,6 +91,9 @@ As tabelas abaixo pertencem ao schema e aparecem no contrato/migrations, mas uma
 busca estatica nao encontrou consulta de runtime da aplicacao contra elas. Elas
 nao devem receber grant para `almoxarifado_app` apenas por existirem:
 
+> Nota (012): `012_drop_legacy_tables` remove as quatro tabelas abaixo. Depois de
+> aplicada, esta secao deixa de se aplicar a elas.
+
 | Objeto | Uso encontrado |
 | --- | --- |
 | `email_templates` | seed da migration `001_initial_schema`; nenhum leitor/escritor runtime atual |
@@ -148,6 +151,7 @@ PostgreSQL para os objetos abaixo. Runtime nao deve receber estas capacidades.
 | `009_security_audit` | `CREATE TABLE`, `CREATE INDEX`, `DROP/CREATE TRIGGER` em `app_security_audit` |
 | `010_auth_session_version` | `ALTER TABLE app_users` e `user_sessions`; `UPDATE user_sessions ... FROM app_users`; `CREATE INDEX` |
 | `011_process_multiple_commitments` | `DROP INDEX app_processes_numero_processo_uidx`, `CREATE INDEX app_processes_numero_processo_idx`, `INSERT` da versao. O `DROP INDEX` exige o owner do indice; um grant de DML para runtime nao resolve `42501 must be owner`. |
+| `012_drop_legacy_tables` | `DROP TABLE IF EXISTS` em `email_template_attachments`, `notification_recipients`, `notification_rules`, `email_templates` (filho antes do pai); `INSERT` da versao. Exige o owner das tabelas. |
 
 As migrations atuais sao transacionais; o runner remove o `BEGIN/COMMIT` externo
 do arquivo, abre sua propria transacao, usa advisory lock e faz rollback se

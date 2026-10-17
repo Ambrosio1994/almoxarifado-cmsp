@@ -167,6 +167,32 @@ export async function listFilesInFolder(name, options = {}) {
   }
 }
 
+export async function listFolderFiles(options = {}) {
+  const folderId = resolveFolderId(options);
+  const drive = options.client || getDriveClient(options);
+  const pageSize = normalizePageSize(options.pageSize, 100);
+  const files = [];
+  let pageToken = "";
+  try {
+    do {
+      const response = await drive.files.list({
+        q: `'${escapeDriveQueryValue(folderId)}' in parents and trashed=false`,
+        fields: "nextPageToken, files(id, name, mimeType, size, modifiedTime, md5Checksum, trashed)",
+        spaces: "drive",
+        pageSize,
+        pageToken: pageToken || undefined,
+        includeItemsFromAllDrives: true,
+        supportsAllDrives: true
+      });
+      files.push(...(response.data.files || []));
+      pageToken = String(response.data.nextPageToken || "");
+    } while (pageToken);
+    return files;
+  } catch (error) {
+    throw wrapDriveError(error, "listar arquivos da pasta");
+  }
+}
+
 export async function listFilesByAppProperty(propertyName, propertyValue, options = {}) {
   const folderId = resolveFolderId(options);
   const drive = options.client || getDriveClient(options);
@@ -266,6 +292,11 @@ function driveFolderValidationError(message, code, statusCode) {
   error.code = code;
   error.statusCode = statusCode;
   return error;
+}
+
+function normalizePageSize(value, fallback) {
+  const parsed = Number(value ?? fallback);
+  return Number.isSafeInteger(parsed) && parsed > 0 && parsed <= 1000 ? parsed : fallback;
 }
 
 function normalizeMaximumBytes(value) {

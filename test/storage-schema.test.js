@@ -58,7 +58,7 @@ describe("validacao do schema PostgreSQL", () => {
         assert.deepEqual(error.missingObjects, []);
         assert.equal(error.pendingMigration, EXPECTED_SCHEMA_MIGRATION);
         assert.doesNotMatch(error.message, /Objetos ausentes/);
-        assert.match(error.message, /Migration pendente: 011_process_multiple_commitments/);
+        assert.match(error.message, new RegExp(`Migration pendente: ${EXPECTED_SCHEMA_MIGRATION}`));
         assert.match(error.suggestedAction, /npm run db:migrate:production/);
         return true;
       }
