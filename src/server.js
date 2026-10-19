@@ -98,6 +98,11 @@ import {
   UnsafeFilePathError
 } from "./security/private-files.js";
 
+// Declared before any top-level initialization. The logger functions below are
+// hoisted and may run during module evaluation (e.g. startApplication()), so this
+// constant must already be initialized to avoid a temporal dead zone error.
+const SENSITIVE_LOG_KEY = /password|passwd|secret|token|authorization|cookie|api[_-]?key|connection(?:[_-]?string)?|database[_-]?url|refresh/i;
+
 const processStartedAt = performance.now();
 
 loadLocalEnv();
@@ -3054,8 +3059,6 @@ function logError(event, data = {}) {
     ...sanitizeLogData(data)
   }));
 }
-
-const SENSITIVE_LOG_KEY = /password|passwd|secret|token|authorization|cookie|api[_-]?key|connection(?:[_-]?string)?|database[_-]?url|refresh/i;
 
 export function sanitizeLogData(value, key = "") {
   if (SENSITIVE_LOG_KEY.test(key)) return "[redacted]";
