@@ -32,7 +32,7 @@ read_env_value() {
 
 file_domain="$(read_env_value PRODUCTION_DOMAIN "$ENV_FILE" || true)"
 file_app_port="$(read_env_value APP_PORT "$ENV_FILE" || true)"
-DOMAIN="${PRODUCTION_DOMAIN:-${file_domain:-sapgestao.dpdns.org}}"
+DOMAIN="${PRODUCTION_DOMAIN:-${file_domain:-app.example.com}}"
 APP_PORT="${APP_PORT:-${file_app_port:-3000}}"
 COMPOSE=(docker compose --env-file "$ENV_FILE" -f compose.production.yml)
 STATE_DIR="$ROOT_DIR/.deploy"
@@ -41,7 +41,7 @@ UPLOAD_VOLUME_NAME="almoxarifado_uploads"
 
 usage() {
   echo "Uso: $0 {check|backup|deploy|smoke|rollback|target}"
-  echo "Dominio padrao: sapgestao.dpdns.org"
+  echo "Dominio padrao: app.example.com"
 }
 
 validate_runtime_target() {

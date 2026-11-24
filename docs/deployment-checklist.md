@@ -1,6 +1,6 @@
 # Checklist de implantacao em producao
 
-Alvo oficial: `https://sapgestao.dpdns.org`, com PostgreSQL de producao no Neon. Este roteiro nao contem segredos; os valores reais devem existir apenas em `.env.production` no servidor ou no cofre da plataforma.
+Alvo oficial: `https://app.example.com`, com PostgreSQL de producao no Neon. Este roteiro nao contem segredos; os valores reais devem existir apenas em `.env.production` no servidor ou no cofre da plataforma.
 
 ## Antes da janela
 
@@ -16,7 +16,7 @@ Alvo oficial: `https://sapgestao.dpdns.org`, com PostgreSQL de producao no Neon.
 
 ## DNS, firewall e TLS
 
-- [ ] Conferir os registros A e, se usado, AAAA de `sapgestao.dpdns.org` contra os IPs publicos do servidor; remover AAAA incorreto para evitar falhas intermitentes.
+- [ ] Conferir os registros A e, se usado, AAAA de `app.example.com` contra os IPs publicos do servidor; remover AAAA incorreto para evitar falhas intermitentes.
 - [ ] Liberar publicamente apenas TCP 80/443. A aplicacao deve continuar ligada a `127.0.0.1:3000`; PostgreSQL nao deve ser exposto pelo servidor.
 - [ ] Instalar Caddy e copiar `deploy/Caddyfile.example` para a configuracao ativa. O Caddy obtem e renova o certificado TLS automaticamente quando DNS e portas estao corretos.
 - [ ] Validar a configuracao (`caddy validate --config /etc/caddy/Caddyfile`) antes de recarregar o proxy.
@@ -37,7 +37,7 @@ Alvo oficial: `https://sapgestao.dpdns.org`, com PostgreSQL de producao no Neon.
 - [ ] Executar `npm run smoke:production`.
 - [ ] Validar login, consulta autenticada, criacao/edicao controlada, download autenticado e envio de e-mail de teste.
 - [ ] Conferir logs por `requestId`, erros de banco, falhas SMTP, limites de login e espaco do volume de uploads.
-- [ ] Manter monitor externo em `https://sapgestao.dpdns.org/health/ready` e alerta separado para expiração TLS.
+- [ ] Manter monitor externo em `https://app.example.com/health/ready` e alerta separado para expiração TLS.
 
 ## Rollback
 

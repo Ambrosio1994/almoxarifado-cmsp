@@ -4,8 +4,6 @@ Aplicação web para centralizar e acompanhar os processos administrativos do al
 
 O sistema reúne processos, fornecedores, materiais, documentos, entregas, observações, notificações e registros de auditoria em uma única interface, com regras de acesso e bloqueio adequadas ao fluxo operacional.
 
-> Produção: [https://sapgestao.dpdns.org](https://sapgestao.dpdns.org)
-
 ## Principais recursos
 
 - Dashboard com indicadores operacionais e financeiros.

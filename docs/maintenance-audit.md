@@ -15,10 +15,10 @@
 
 | Item | Situação | Pode remover agora? |
 |---|---|---|
-| Campos JSONB | Perfil em produção: **0** dos 79 processos usam a forma legada de topo | Ainda não — não é código morto (compatibilidade de API) |
+| Campos JSONB | Perfil em produção: **0%** (nenhum processo usa a forma legada de topo) | Ainda não — não é código morto (compatibilidade de API) |
 | Assets sem uso | **Removidos** 6 arquivos (~396 KB) + 2 exports mortos (passo 1) | Feito ✔ |
 | Código sem uso | `DOCUMENT_LABELS`, `readUsersStore` **removidos** (passo 1) | Feito ✔ |
-| Uploads órfãos | Produção é **Drive**: 51 referências, 0 locais. Varredura de Drive **implementada** (passo 2) | Execução depende de OAuth no host de produção |
+| Uploads órfãos | Produção é **Drive**: 100% das referências em Drive, 0 locais. Varredura de Drive **implementada** (passo 2) | Execução depende de OAuth no host de produção |
 | Tabelas legadas | Migration `012_drop_legacy_tables` **preparada e validada** em banco de teste | **Não aplicada** — requer backup + confirmação de consumidores externos |
 
 Método: todas as verificações abaixo são de leitura. Comandos reproduzíveis
@@ -67,8 +67,8 @@ não são "campos" removíveis. O que existe de legado são **subcampos dentro d
 
 | Métrica | Valor |
 |---|---:|
-| Processos (ativos / inativos) | 79 (78 / 1) |
-| Com array `materiais` não vazio | 79 |
+| Processos avaliados | todos (ativos e inativos) |
+| Com array `materiais` não vazio | 100% |
 | Com `material` legado de topo não vazio | 0 |
 | Com `valorUnitario` legado | 0 |
 | Com `quantidade` legado | 0 |
@@ -186,14 +186,14 @@ indicam órfãos em produção**. Os 114 arquivos são artefatos locais de
 dev/teste (`uuid/...`, `*-documento-restaurado.pdf`, `import-167487-...`).
 
 **Revalidação em produção (somente leitura, 17/10).** Conectado ao banco de
-produção (Neon), o store tem **79 processos** (1 inativo) e **51 caminhos de
-upload referenciados — todos em Google Drive** (`/uploads/drive/<fileId>/...`),
-com **0 referências a armazenamento local**. Os 51 caminhos apontam para **51
-ids de arquivo distintos** (0 malformados).
+produção (Neon), **100% dos caminhos de upload referenciados estão em Google
+Drive** (`/uploads/drive/<fileId>/...`), com **0 referências a armazenamento
+local**. Todos os caminhos apontam para **ids de arquivo distintos** (0
+malformados).
 
 ```bash
 node -e '<consulta read-only a app_processes.data->documentos usando DATABASE_URL de .env.production>'
-# Referenciados: 51 | em Drive: 51 | local: 0
+# 100% em Drive | local: 0 | malformados: 0
 ```
 
 **Ferramenta de varredura do Drive implementada (passo 2).** O armazenamento de
@@ -289,7 +289,7 @@ dry-run de uploads não removeu arquivos (`applied:false`).
 | Migration `001→012` em banco novo | aplicada; as 4 tabelas legadas ausentes |
 | Migration `012` com dados + FK | remove na ordem correta; idempotente |
 | Verificador de contrato na `almoxarifado_test` | `valid:true` (versão 3, 13 tabelas) |
-| Perfil JSONB em produção | 79 processos, 0 usam a forma legada |
+| Perfil JSONB em produção | 100% com `materiais`, 0% usam a forma legada |
 | Varredura Drive | implementada e coberta por 6 testes (`test/cleanup-orphan-drive-uploads.test.js`) |
 
 ## Riscos / limitações

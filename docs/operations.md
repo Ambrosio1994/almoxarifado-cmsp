@@ -1,6 +1,6 @@
 # Operacao
 
-O ambiente oficial usa Neon como PostgreSQL de producao e atende em `https://sapgestao.dpdns.org`. As URLs reais do banco e demais segredos ficam somente em `.env.production` ou no cofre da plataforma.
+O ambiente oficial usa Neon como PostgreSQL de producao e atende em `https://app.example.com`. As URLs reais do banco e demais segredos ficam somente em `.env.production` ou no cofre da plataforma.
 
 ## Health check
 
@@ -157,7 +157,7 @@ O workflow de CI executa:
 
 ## Monitor externo
 
-Configurar o monitor externo contra `https://sapgestao.dpdns.org/health/ready`, o supervisor contra `GET /health/live` e um monitor de diagnostico contra `GET /health`.
+Configurar o monitor externo contra `https://app.example.com/health/ready`, o supervisor contra `GET /health/live` e um monitor de diagnostico contra `GET /health`.
 
 Critério prático:
 

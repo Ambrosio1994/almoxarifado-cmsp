@@ -204,7 +204,7 @@ npm run db:import-store
 
 ## Neon em producao
 
-O PostgreSQL oficial de producao e o Neon usado por `https://sapgestao.dpdns.org`. Configure o ambiente real a partir de `.env.production.example` e rode `npm run db:migrate:production` ou `NODE_ENV=production npm run db:migrate`. O carregamento de `.env.production` acontece no proprio processo, mas so depois que `NODE_ENV=production` ja esta definido antes do start.
+O PostgreSQL oficial de producao e o Neon usado por `https://app.example.com`. Configure o ambiente real a partir de `.env.production.example` e rode `npm run db:migrate:production` ou `NODE_ENV=production npm run db:migrate`. O carregamento de `.env.production` acontece no proprio processo, mas so depois que `NODE_ENV=production` ja esta definido antes do start.
 
 Regras confirmadas no codigo:
 

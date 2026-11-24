@@ -272,11 +272,11 @@ describe("configuracao SMTP", () => {
     const configuration = resolveEmailConfiguration({
       SMTP_USER: "resend",
       SMTP_PASS: "re_fake_key",
-      EMAIL_FROM_ADDRESS: "NOREPLY@SAPGESTAO.DPDNS.ORG"
+      EMAIL_FROM_ADDRESS: "NOREPLY@APP.EXAMPLE.COM"
     });
 
     assert.equal(configuration.authUser, "resend");
-    assert.equal(configuration.fromAddress, "noreply@sapgestao.dpdns.org");
+    assert.equal(configuration.fromAddress, "noreply@app.example.com");
     assert.equal(configuration.configured, true);
   });
 
