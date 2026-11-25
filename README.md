@@ -39,8 +39,7 @@ O sistema também registra alterações importantes em trilha de auditoria, pres
 
 - Node.js 20 ou superior
 - JavaScript com ES Modules
-- PostgreSQL
-- Neon PostgreSQL em produção
+- PostgreSQL 15+ (Neon PostgreSQL em produção)
 - Google Drive via OAuth 2.0 para armazenamento de arquivos
 - HTML, CSS e JavaScript no frontend
 - Docker e Docker Compose
@@ -74,7 +73,7 @@ Antes de iniciar, instale:
 
 - Node.js 20+
 - npm
-- PostgreSQL 14+ ou Docker
+- PostgreSQL 15+ ou Docker
 - Git
 
 Para recursos opcionais, também será necessário configurar:
@@ -285,7 +284,9 @@ A importação utiliza modo de simulação por padrão e exige confirmações ex
 
 ### Limpeza de arquivos órfãos
 
-Simulação:
+#### Volume local (`UPLOAD_STORAGE_BACKEND=local`)
+
+Simulação (somente leitura):
 
 ```bash
 npm run uploads:cleanup:dry-run
@@ -295,6 +296,29 @@ Aplicação da limpeza:
 
 ```bash
 npm run uploads:cleanup
+```
+
+#### Google Drive (`UPLOAD_STORAGE_BACKEND=drive`)
+
+Simulação (compara arquivos da pasta do Drive com as referências ativas no PostgreSQL):
+
+```bash
+npm run uploads:drive:cleanup:dry-run
+```
+
+Aplicação da limpeza (exige confirmação explícita e backup validado em produção):
+
+```bash
+npm run uploads:drive:cleanup
+```
+
+### Auditoria de banco, permissões e integridade de schema
+
+```bash
+npm run db:verify-schema          # Valida tabelas, índices, triggers e migrations contra o contrato
+npm run db:audit-runtime-role     # Audita privilégios somente leitura da role de aplicação
+npm run db:verify-restored        # Confere integridade de banco/uploads em ambiente restaurado isolado
+npm run permissions:local         # Verifica permissões POSIX locais de arquivos sensíveis (.env, data/)
 ```
 
 ### Substituição controlada de documentos
@@ -329,7 +353,15 @@ Entre as medidas adotadas no projeto estão:
 
 ## Documentação complementar
 
-A pasta `docs/` contém materiais de apoio sobre requisitos, implantação, operação, backup, restauração e decisões técnicas do sistema.
+Guias técnicos e operacionais detalhados do projeto:
+
+- [`db/README.md`](db/README.md) — Configuração PostgreSQL 15+ com Docker/TLS local, migrações versionadas e Neon em produção.
+- [`docs/requisitos-resumidos.md`](docs/requisitos-resumidos.md) — Papéis de acesso, módulos, os 9 status operacionais, regras de negócio e régua de notificações.
+- [`docs/deployment-checklist.md`](docs/deployment-checklist.md) — Checklist passo a passo de pré-deploy, DNS/TLS (Caddy), release, validação pós-deploy e rollback.
+- [`docs/operations.md`](docs/operations.md) — Health checks, identidade criptográfica de volumes/Drive, backup consistente, restauração e monitoramento.
+- [`docs/runtime-permissions-inventory.md`](docs/runtime-permissions-inventory.md) — Matriz de menor privilégio separando a role de runtime (`almoxarifado_app`) da role de migração (`neondb_owner`).
+- [`docs/security-recovery-runbook.md`](docs/security-recovery-runbook.md) — Runbook de auditoria de roles, verificação de drift de schema e validação de restore isolado.
+- [`docs/maintenance-audit.md`](docs/maintenance-audit.md) — Diagnóstico e histórico de higienização de schema, campos JSONB e varredura de uploads no Google Drive.
 
 ## Status
 

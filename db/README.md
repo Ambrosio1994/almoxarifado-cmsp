@@ -58,7 +58,7 @@ Esses arquivos ficam fora do Git. Nunca use certificados de producao no ambiente
 
 ### Variaveis locais
 
-Copie `.env.example` para `.env` se ainda nao existir e preencha senhas fortes, unicas e locais:
+Copie `.env.example` para `.env` se ainda nao existir. O `.env.example` traz um perfil simplificado sem TLS (`DB_SSL=false`) para partida rapida local; para reproduzir o perfil endurecido validado abaixo (com role `almoxarifado_app` sem superusuario e TLS verificado por CA local), ajuste as variaveis com senhas fortes, unicas e locais:
 
 ```text
 LOCAL_POSTGRES_ADMIN_PASSWORD=<senha-forte-admin-local>
@@ -277,18 +277,19 @@ Validacao real executada em 2026-07-08:
 - O import gravou o estado completo do aplicativo no banco.
 - `NODE_ENV=production` com a app apontando para o Neon retornou `200` em `POST /auth/login`, `GET /auth/session` e `GET /api/processes`.
 
-## Modelo inicial
+## Evolucao do modelo (de `001` a `012`)
 
-O schema separa os principais objetos que hoje ficam dentro do JSON:
+Na modelagem atual em producao (contrato versao 3, 13 tabelas listadas acima):
 
-- `app_users`: usuarios locais/Google e perfil de acesso.
-- `user_sessions`: base para substituir sessoes em memoria.
-- `email_templates` e `email_template_attachments`: templates e anexos de e-mail.
-- `notification_rules` e `notification_recipients`: regras e responsaveis por notificacao.
-- `app_settings`: configuracoes futuras em JSONB quando nao justificarem tabela propria.
+- `app_users` e `user_sessions`: usuarios locais/Google, versao de autenticacao (`auth_version`) e sessoes persistidas com revogacao imediata ao redefinir senha.
+- `app_processes`, `app_suppliers`, `app_process_observations`, `app_email_history`: colecoes operacionais persistidas com JSONB estruturado e indices dedicados.
+- `app_process_audit` e `app_security_audit`: trilhas de auditoria imutaveis protegidas por trigger `BEFORE UPDATE OR DELETE`.
+- `app_email_dispatch_claims` e `auth_rate_limits`: coordenacao idempotente de disparos de e-mail e controle distribuido de tentativas de login.
+- `app_settings` e `app_state_revision`: configuracoes globais (incluindo templates/regras de e-mail e marcadores de identidade de storage) e revisao monotônica para invalidacao de cache.
+- As tabelas iniciais sem uso em runtime (`email_templates`, `email_template_attachments`, `notification_rules` e `notification_recipients`) foram substituidas por `app_settings` e removidas pela migration `012_drop_legacy_tables.sql` (ver `docs/maintenance-audit.md`).
 
-## Proximas etapas
+## Governanca continua
 
-1. Adicionar testes de integracao para login, logout e renovacao de sessao.
-2. Evoluir o schema de processos se novos campos estruturados passarem a justificar tabelas proprias.
-3. Revisar a limpeza e a retencao dos uploads montados em volume.
+1. Manter `npm test`, `npm run test:db` (em banco `*_test` isolado) e `npm run db:verify-schema` verdes a cada nova migration.
+2. Preservar a separacao estrita entre `DATABASE_URL` (role de menor privilegio `almoxarifado_app`) e `DATABASE_URL_MIGRATION` (owner de schema), conforme `docs/runtime-permissions-inventory.md`.
+3. Auditar periodicamente uploads orfaos locais (`uploads:cleanup:dry-run`) ou no Google Drive (`uploads:drive:cleanup:dry-run`) conforme `docs/operations.md`.
